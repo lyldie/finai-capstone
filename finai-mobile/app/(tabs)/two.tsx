@@ -1,198 +1,220 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList } from 'react-native';
+import React, {useEffect, useState, useCallback } from 'react';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+// 1. Dito natin kinuha ang global state (categories at accounts)
 import { useTransactions, TransactionType } from '../../context/TransactionContext'; 
+import DateTimePicker from '@react-native-community/datetimepicker'; 
 
-export default function AddTransactionScreen() {
+export default function TabTwoScreen() {
   const router = useRouter();
-  const { addTransaction } = useTransactions(); 
+  const params = useLocalSearchParams();
+  // 2. Dinagdag ang 'categories' at 'accounts' mula sa Context
+  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts } = useTransactions(); 
 
-  // --- STATES ---
   const [type, setType] = useState<TransactionType>('Expense');
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [category, setCategory] = useState('Select Category');
-  const [fromAccount, setFromAccount] = useState('Cash'); // Para sa Transfer
-  const [toAccount, setToAccount] = useState('GCash');   // Para sa Transfer
-  const [isModalVisible, setIsModalVisible] = useState(false);
+  const [account, setAccount] = useState('Cash'); 
+  const [toAccount, setToAccount] = useState('GCash'); 
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]); 
+  
+  const [isCatModalVisible, setIsCatModalVisible] = useState(false);
+  const [isAccModalVisible, setIsAccModalVisible] = useState(false);
+  const [selectingTarget, setSelectingTarget] = useState<'from' | 'to'>('from');
+  const [showDatePicker, setShowDatePicker] = useState(false); 
+  const [tempDate, setTempDate] = useState(new Date()); 
 
-  // --- DYNAMIC CONTENT ---
-  const expenseCategories = [
-    { id: 'e1', name: 'Food', icon: 'fast-food-outline' },
-    { id: 'e2', name: 'Transpo', icon: 'bus-outline' },
-    { id: 'e3', name: 'Bills', icon: 'card-outline' },
-    { id: 'e4', name: 'Shopping', icon: 'cart-outline' },
-    { id: 'e5', name: 'Health', icon: 'medical-outline' },
-    { id: 'e6', name: 'Others', icon: 'ellipsis-horizontal-outline' },
-  ];
+  // 3. Dynamic Filtering: Gagamitin na natin ang 'categories' mula sa Context
+  const displayedCategories = categories.filter((c: any) => c.type === type.toLowerCase());
 
-  const incomeCategories = [
-    { id: 'i1', name: 'Salary', icon: 'cash-outline' },
-    { id: 'i2', name: 'Allowance', icon: 'wallet-outline' },
-    { id: 'i3', name: 'Investment', icon: 'trending-up-outline' },
-    { id: 'i4', name: 'Business', icon: 'business-outline' },
-    { id: 'i5', name: 'Others', icon: 'add-circle-outline' },
-  ];
+  useEffect(() => {
+    if (params && params.id) {
+      if (params.type) {
+        const pType = params.type as string;
+        if (pType === 'Income' || pType === 'Expense' || pType === 'Transfer') {
+          setType(pType as TransactionType);
+        }
+      }
+      if (params.amount) setAmount(params.amount as string);
+      if (params.note) setNote(params.note as string);
+      if (params.category) setCategory(params.category as string);
+      if (params.account) setAccount(params.account as string);
+      if (params.to_account) setToAccount(params.to_account as string);
+      if (params.date) setDate(params.date as string); 
+    }
+  }, [params.id]); 
+
+  useFocusEffect(
+    useCallback(() => {
+      if (!params || !params.id) {
+        setAmount('');
+        setNote('');
+        setCategory('Select Category');
+        setAccount('Cash');
+        setToAccount('GCash');
+        setDate(new Date().toISOString().split('T')[0]);
+      }
+    }, [params.id]) 
+  );
 
   const getActiveColor = () => {
-    if (type === 'Income') return '#4facfe'; // Blue
-    if (type === 'Expense') return '#ff4b2b'; // Red
-    return '#9b59b6'; // Purple for Transfer
+    if (type === 'Income') return '#10B981';
+    if (type === 'Expense') return '#EF4444';
+    return '#3B82F6';
   };
 
-  const handleSave = () => {
-    if (!amount || parseFloat(amount) <= 0) {
-      Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂");
-      return;
-    }
-    
-    // Logic for saving based on type
-    const finalCategory = type === 'Transfer' ? `${fromAccount} ➔ ${toAccount}` : category;
-    
-    if (type !== 'Transfer' && finalCategory === 'Select Category') {
-      Alert.alert("Wait lang!", "Pili ka muna ng category paps.");
-      return;
-    }
-
-    addTransaction(amount, finalCategory, note, type); 
-
-    Alert.alert("Success!", `Na-record na ang iyong ${type}!`, [
-      { text: "OK", onPress: () => router.back() }
-    ]);
+  const handleSave = async () => {
+    if (!amount || parseFloat(amount) <= 0) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
+    if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
+    const finalCategory = type === 'Transfer' ? 'Transfer' : category;
+    if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert("Wait lang!", "Pili ka muna ng category paps."); return; }
+    try {
+      if (params && params.id) {
+        await updateTransaction(params.id as string, amount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
+        Alert.alert("Success!", "Na-update na ang record!", [{ text: "OK", onPress: () => router.back() }]);
+      } else {
+        await addTransaction(amount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date); 
+        Alert.alert("Success!", `Na-record na ang iyong ${type}!`, [{ text: "OK", onPress: () => router.back() }]);
+      }
+    } catch (err) { console.error("Save Error:", err); Alert.alert("Ops!", "Hindi nagawa ang operation."); }
   };
+
+  const InputRow = ({ label, value, onPress, icon }: any) => (
+    <TouchableOpacity style={styles.inputRow} onPress={onPress} activeOpacity={0.7}>
+      <View style={styles.rowLabelContainer}>
+        <Ionicons name={icon} size={20} color="#7C9A95" style={{ marginRight: 10 }} />
+        <Text style={styles.rowLabel}>{label}</Text>
+      </View>
+      <View style={styles.rowValueContainer}>
+        <Text style={[styles.rowValue, value === 'Select Category' && { color: '#A2B5B0' }]}>{value}</Text>
+        <Ionicons name="chevron-forward" size={16} color="#7C9A95" />
+      </View>
+    </TouchableOpacity>
+  );
 
   return (
     <View style={styles.container}>
-      {/* HEADER */}
+      {/* UI Remains same... */}
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()}>
-          <Ionicons name="close" size={28} color="white" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Add {type}</Text>
-        <View style={{ width: 28 }} /> 
+        <TouchableOpacity onPress={() => router.back()}><Ionicons name="close" size={28} color="#142D2A" /></TouchableOpacity>
+        <Text style={styles.headerTitle}>{params && params.id ? 'Edit Transaction' : 'New Transaction'}</Text>
+        <TouchableOpacity onPress={handleSave}><Ionicons name="checkmark" size={28} color={getActiveColor()} /></TouchableOpacity>
       </View>
 
-      {/* SEGMENTED CONTROL (3 Options) */}
       <View style={styles.selectorContainer}>
         {(['Income', 'Expense', 'Transfer'] as TransactionType[]).map((t) => (
-          <TouchableOpacity 
-            key={t}
-            style={[styles.selectorItem, type === t && { backgroundColor: getActiveColor() }]} 
-            onPress={() => { setType(t); setCategory('Select Category'); }}
-          >
+          <TouchableOpacity key={t} style={[styles.selectorItem, type === t && { backgroundColor: getActiveColor() }]} onPress={() => { setType(t); if (t === 'Transfer') setCategory('Transfer'); else setCategory('Select Category'); }}>
             <Text style={[styles.selectorText, type === t && { color: 'white' }]}>{t}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      <ScrollView style={styles.form}>
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Amount</Text>
-          <TextInput 
-            style={[styles.amountInput, { color: getActiveColor() }]} 
-            placeholder="0.00" 
-            placeholderTextColor="#666"
-            keyboardType="numeric"
-            autoFocus={true}
-            value={amount}
-            onChangeText={setAmount}
-          />
-        </View>
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
+        <ScrollView style={styles.form} showsVerticalScrollIndicator={false}>
+          <View style={styles.amountSection}>
+            <Text style={styles.currencyLabel}>PHP</Text>
+            <TextInput style={[styles.amountInput, { color: getActiveColor() }]} placeholder="0.00" placeholderTextColor="#A2B5B0" keyboardType="decimal-pad" autoFocus={!params?.id} value={amount} onChangeText={(text) => setAmount(text)} />
+          </View>
 
-        {type === 'Transfer' ? (
-          /* TRANSFER SPECIFIC FIELDS */
-          <View style={styles.transferRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.label}>From</Text>
-              <TextInput style={styles.valueText} value={fromAccount} onChangeText={setFromAccount} />
-            </View>
-            <Ionicons name="arrow-forward" size={20} color="#666" style={{ marginTop: 20 }} />
-            <View style={{ flex: 1, alignItems: 'flex-end' }}>
-              <Text style={styles.label}>To</Text>
-              <TextInput style={styles.valueText} value={toAccount} onChangeText={setToAccount} />
+          <View style={styles.card}>
+            <InputRow label="Date" value={date} icon="calendar-outline" onPress={() => { setTempDate(new Date(date)); setShowDatePicker(true); }} />
+            {showDatePicker && (Platform.OS === 'ios' ? (
+              <Modal visible={showDatePicker} animationType="slide" transparent={true}>
+                <View style={styles.pickerModalOverlay}>
+                  <View style={styles.pickerModalContainer}>
+                    <View style={styles.pickerHeader}><TouchableOpacity onPress={() => setShowDatePicker(false)}><Text style={styles.pickerCancelText}>Cancel</Text></TouchableOpacity><Text style={styles.pickerHeaderTitle}>Select Date</Text><TouchableOpacity onPress={() => { setDate(tempDate.toISOString().split('T')[0]); setShowDatePicker(false); }}><Text style={styles.pickerDoneText}>Done</Text></TouchableOpacity></View>
+                    <DateTimePicker value={tempDate} mode="date" display="spinner" themeVariant="light" maximumDate={new Date()} onChange={(e, d) => { if (d) setTempDate(d); }} />
+                  </View>
+                </View>
+              </Modal>
+            ) : (
+              <DateTimePicker value={new Date(date)} mode="date" display="default" maximumDate={new Date()} onChange={(e, d) => { setShowDatePicker(false); if (d) setDate(d.toISOString().split('T')[0]); }} />
+            ))}
+            
+            <InputRow label={type === 'Transfer' ? "From" : "Account"} value={account} icon="wallet-outline" onPress={() => { setSelectingTarget('from'); setIsAccModalVisible(true); }} />
+            {type === 'Transfer' && <InputRow label="To" value={toAccount} icon="swap-horizontal-outline" onPress={() => { setSelectingTarget('to'); setIsAccModalVisible(true); }} />}
+            {type !== 'Transfer' && <InputRow label="Category" value={category} icon="grid-outline" onPress={() => setIsCatModalVisible(true)} />}
+
+            <View style={styles.inputRow}>
+              <View style={styles.rowLabelContainer}>
+                <Ionicons name="pencil-outline" size={20} color="#7C9A95" style={{ marginRight: 10 }} />
+                <Text style={styles.rowLabel}>Note</Text>
+              </View>
+              <TextInput style={styles.noteInput} placeholder="Optional" placeholderTextColor="#A2B5B0" value={note} onChangeText={setNote} textAlign="right" />
             </View>
           </View>
-        ) : (
-          /* INCOME/EXPENSE CATEGORY */
-          <TouchableOpacity style={styles.inputGroup} onPress={() => setIsModalVisible(true)}>
-            <Text style={styles.label}>Category</Text>
-            <View style={styles.row}>
-              <Text style={[styles.valueText, category === 'Select Category' && { color: '#666' }]}>{category}</Text>
-              <Ionicons name="chevron-forward" size={20} color="#666" />
-            </View>
-          </TouchableOpacity>
-        )}
+        </ScrollView>
+      </KeyboardAvoidingView>
 
-        <View style={styles.inputGroup}>
-          <Text style={styles.label}>Note</Text>
-          <TextInput 
-            style={styles.noteInput} 
-            placeholder="Optional note..." 
-            placeholderTextColor="#666"
-            value={note}
-            onChangeText={setNote}
-          />
-        </View>
-      </ScrollView>
-
-      {/* MODAL FOR CATEGORIES */}
-      <Modal visible={isModalVisible} animationType="slide" transparent={true}>
+      <Modal visible={isCatModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Category</Text>
-            <FlatList
-              data={type === 'Income' ? incomeCategories : expenseCategories}
-              keyExtractor={(item) => item.id}
-              numColumns={3}
-              renderItem={({ item }) => (
-                <TouchableOpacity 
-                  style={styles.categoryGridItem}
-                  onPress={() => { setCategory(item.name); setIsModalVisible(false); }}
-                >
-                  <View style={[styles.iconCircle, { backgroundColor: getActiveColor() }]}>
-                    <Ionicons name={item.icon as any} size={24} color="white" />
-                  </View>
-                  <Text style={styles.categoryText}>{item.name}</Text>
-                </TouchableOpacity>
-              )}
-            />
-            <TouchableOpacity onPress={() => setIsModalVisible(false)} style={styles.closeModalButton}>
-              <Text style={{color: getActiveColor(), fontWeight: 'bold'}}>CANCEL</Text>
-            </TouchableOpacity>
+            {/* 4. Dito ginamit ang dynamic 'displayedCategories' */}
+            <FlatList data={displayedCategories} keyExtractor={(item: any) => item.id || item.name} numColumns={3} renderItem={({ item }: any) => (
+              <TouchableOpacity style={styles.categoryGridItem} onPress={() => { setCategory(item.name); setIsCatModalVisible(false); }}>
+                <View style={styles.iconCircle}><Ionicons name={item.icon as any} size={24} color={getActiveColor()} /></View>
+                <Text style={styles.categoryText}>{item.name}</Text>
+              </TouchableOpacity>
+            )} />
+            <TouchableOpacity onPress={() => setIsCatModalVisible(false)} style={styles.closeModalButton}><Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text></TouchableOpacity>
           </View>
         </View>
       </Modal>
 
-      <TouchableOpacity style={[styles.saveButton, { backgroundColor: getActiveColor() }]} onPress={handleSave}>
-        <Text style={styles.saveButtonText}>SAVE {type.toUpperCase()}</Text>
-      </TouchableOpacity>
+      <Modal visible={isAccModalVisible} animationType="fade" transparent={true}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Select Account</Text>
+            {/* 5. Dito ginamit ang dynamic 'accounts' mula sa Context */}
+            {accounts.map((acc) => (
+              <TouchableOpacity key={acc.id} style={styles.accOption} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
+                <Ionicons name="wallet-outline" size={20} color={getActiveColor()} />
+                <Text style={styles.accOptionText}>{acc.name}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}><Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text></TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }
 
+
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#121212', paddingHorizontal: 20 },
+  container: { flex: 1, backgroundColor: '#F4F7F6', paddingHorizontal: 20 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 50, marginBottom: 20 },
-  headerTitle: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  selectorContainer: { flexDirection: 'row', backgroundColor: '#1e1e1e', borderRadius: 12, padding: 4, marginBottom: 25 },
-  selectorItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 10 },
-  selectorText: { color: '#888', fontWeight: 'bold', fontSize: 13 },
+  headerTitle: { color: '#142D2A', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
+  selectorContainer: { flexDirection: 'row', backgroundColor: '#E2EAF4', borderRadius: 25, padding: 4, marginBottom: 30 },
+  selectorItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 20 },
+  selectorText: { color: '#7C9A95', fontWeight: 'bold', fontSize: 12 },
   form: { flex: 1 },
-  inputGroup: { marginBottom: 25, borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 10 },
-  transferRow: { flexDirection: 'row', marginBottom: 25, borderBottomWidth: 1, borderBottomColor: '#333', paddingBottom: 10, alignItems: 'center' },
-  label: { color: '#888', fontSize: 12, marginBottom: 5 },
-  amountInput: { fontSize: 42, fontWeight: 'bold' },
-  row: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  valueText: { color: 'white', fontSize: 18 },
-  noteInput: { color: 'white', fontSize: 16 },
-  saveButton: { padding: 18, borderRadius: 15, alignItems: 'center', marginBottom: 30, elevation: 5 },
-  saveButtonText: { color: 'white', fontWeight: 'bold', fontSize: 16 },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.85)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#1e1e1e', padding: 20, borderTopLeftRadius: 30, borderTopRightRadius: 30, maxHeight: '70%' },
-  modalTitle: { color: 'white', fontSize: 18, fontWeight: 'bold', marginBottom: 25, textAlign: 'center' },
+  amountSection: { alignItems: 'center', marginBottom: 40, marginTop: 10 },
+  currencyLabel: { color: '#7C9A95', fontSize: 14, fontWeight: 'bold', marginBottom: 5, letterSpacing: 1 },
+  amountInput: { fontSize: 54, fontWeight: '300' },
+  card: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 10, overflow: 'hidden', shadowColor: '#142D2A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2 },
+  inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 10, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4' },
+  rowLabelContainer: { flexDirection: 'row', alignItems: 'center' },
+  rowLabel: { color: '#142D2A', fontSize: 14, fontWeight: '500' },
+  rowValueContainer: { flexDirection: 'row', alignItems: 'center' },
+  rowValue: { color: '#142D2A', fontSize: 15, marginRight: 5, fontWeight: '600' },
+  noteInput: { color: '#142D2A', fontSize: 15, flex: 1, marginLeft: 20, fontWeight: '500' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.4)', justifyContent: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#FFFFFF', padding: 25, borderRadius: 30, borderWidth: 1, borderColor: '#E2EAF4', elevation: 5 },
+  modalTitle: { color: '#142D2A', fontSize: 18, fontWeight: 'bold', marginBottom: 25, textAlign: 'center', letterSpacing: 0.5 },
   categoryGridItem: { flex: 1/3, alignItems: 'center', marginBottom: 25 },
-  iconCircle: { width: 55, height: 55, borderRadius: 28, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  categoryText: { color: '#ccc', fontSize: 12, textAlign: 'center' },
-  closeModalButton: { padding: 15, alignItems: 'center' }
+  iconCircle: { width: 55, height: 55, borderRadius: 18, backgroundColor: '#F4F7F6', justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  categoryText: { color: '#7C9A95', fontSize: 12, textAlign: 'center', fontWeight: '500' },
+  closeModalButton: { marginTop: 20, alignItems: 'center', paddingVertical: 10 },
+  accOption: { flexDirection: 'row', alignItems: 'center', padding: 18, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4' },
+  accOptionText: { color: '#142D2A', fontSize: 16, marginLeft: 15, fontWeight: '500' },
+  pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.3)', justifyContent: 'flex-end' },
+  pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },
+  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4', width: '100%' },
+  pickerHeaderTitle: { color: '#142D2A', fontSize: 16, fontWeight: 'bold' },
+  pickerCancelText: { color: '#7C9A95', fontSize: 15, fontWeight: '500' },
+  pickerDoneText: { color: '#142D2A', fontSize: 15, fontWeight: 'bold' },
 });

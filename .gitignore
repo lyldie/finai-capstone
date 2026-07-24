@@ -1,6 +1,20 @@
+# Python / Virtual Environments
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Node / React Native / Expo
 node_modules/
 .expo/
-dist/
+.vscode/
+
+# Environment Variables & Secrets
 .env
-.venv/
-__pycache__/
+.env.local
+
+# OS junk files
+.DS_Store
+Thumbs.db
