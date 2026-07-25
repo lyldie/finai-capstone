@@ -15,7 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useTransactions } from '../context/TransactionContext'; 
-import { router } from 'expo-router';
+import { router, useLocalSearchParams } from 'expo-router';
 import { API_URL } from '../config'; 
 
 const FINAI_DEEP_GREEN = '#0D5C3A';
@@ -31,24 +31,30 @@ interface GoalType {
 }
 
 export default function CreateGoal() {
-  const { addGoal } = useTransactions();
+  const params = useLocalSearchParams();
+  const { addGoal, updateGoal } = useTransactions();
+
+  // Mode check
+  const isEditMode = Boolean(params.id);
+
   const [name, setName] = useState('');
   const [amount, setAmount] = useState('');
   const [date, setDate] = useState(new Date());
   const [showPicker, setShowPicker] = useState(false);
+  const [currentSavings, setCurrentSavings] = useState(0);
 
   // States para sa Admin Goal Type Presets
   const [goalTypes, setGoalTypes] = useState<GoalType[]>([]);
   const [selectedType, setSelectedType] = useState<GoalType | null>(null);
   const [showTypeModal, setShowTypeModal] = useState(false);
 
-  // I-fetch ang Goal Types mula sa Backend pagka-load ng screen
+  // 1. I-fetch ang Goal Types mula sa Backend
   useEffect(() => {
     const fetchTypes = async () => {
       try {
         const res = await fetch(`${API_URL}/api/goal-types/`);
         if (res.ok) {
-          const data = await res.json();
+          const data: GoalType[] = await res.json();
           setGoalTypes(data);
         } else {
           console.error("Failed to fetch goal types status:", res.status);
@@ -60,14 +66,49 @@ export default function CreateGoal() {
     fetchTypes();
   }, []);
 
+  // 2. Pre-select Preset / Goal Type (Flexible param checking)
+  useEffect(() => {
+    if (goalTypes.length > 0) {
+      const targetParam = params.goal_type_id || params.preset_id || params.type_id || params.goal_type;
+      if (targetParam) {
+        const matched = goalTypes.find(
+          (gt) => String(gt.id) === String(targetParam) || 
+                  gt.name.toLowerCase() === String(targetParam).toLowerCase()
+        );
+        if (matched) {
+          setSelectedType(matched);
+        }
+      }
+    }
+  }, [goalTypes, params.goal_type_id, params.preset_id, params.type_id, params.goal_type]);
+
+  // 3. I-populate ang Form Fields kapag Edit Mode
+  useEffect(() => {
+    if (isEditMode) {
+      if (params.target_name) setName(String(params.target_name));
+      if (params.target_amount) setAmount(String(params.target_amount));
+      if (params.current_savings) setCurrentSavings(parseFloat(String(params.current_savings)) || 0);
+      if (params.target_date) {
+        const parsedDate = new Date(String(params.target_date));
+        if (!isNaN(parsedDate.getTime())) {
+          setDate(parsedDate);
+        }
+      }
+    }
+  }, [params.id, params.target_name, params.target_amount, params.current_savings, params.target_date]);
+
+  // 4. Date Change Handler (Inayos para sa iOS Wheels at Android)
   const onDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
     if (Platform.OS === 'android') {
-      setShowPicker(false);
+      setShowPicker(false); // Matic close lang sa Android OK button
     }
-    if (selectedDate) setDate(selectedDate);
+    
+    if (selectedDate) {
+      setDate(selectedDate); // Ino-update lang ang date value nang hindi isinasara ang wheel sa iOS
+    }
   };
 
-  const handleCreate = async () => {
+  const handleSave = async () => {
     if (!selectedType) {
       Alert.alert("Oops!", "Pumili ka muna ng Goal Type preset, paps.");
       return;
@@ -87,9 +128,20 @@ export default function CreateGoal() {
     const formattedDate = date.toISOString().split('T')[0];
 
     try {
-      // Ipapasa ang apat na argument papunta sa Context
-      await addGoal(name, parsedAmount, formattedDate, selectedType.id);
-      Alert.alert("Success 🎉", "Na-save na ang bagong goal!");
+      if (isEditMode) {
+        await updateGoal(
+          String(params.id),
+          name,
+          parsedAmount,
+          formattedDate,
+          selectedType.id,
+          currentSavings
+        );
+        Alert.alert("Success 🎉", "Na-update na ang goal mo!");
+      } else {
+        await addGoal(name, parsedAmount, formattedDate, selectedType.id);
+        Alert.alert("Success 🎉", "Na-save na ang bagong goal!");
+      }
       router.back();
     } catch (error) {
       Alert.alert("Error", "Bumagsak ang pag-save ng goal.");
@@ -105,7 +157,7 @@ export default function CreateGoal() {
         <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={24} color={FINAI_TEXT} />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>New Financial Goal</Text>
+        <Text style={styles.headerTitle}>{isEditMode ? 'Edit Goal' : 'New Financial Goal'}</Text>
         <View style={{ width: 24 }} />
       </View>
 
@@ -173,13 +225,14 @@ export default function CreateGoal() {
                 </Text>
               </View>
               <Ionicons
-                name={showPicker && Platform.OS === 'ios' ? 'chevron-up' : 'chevron-down'}
+                name={showPicker ? 'chevron-up' : 'chevron-down'}
                 size={20}
                 color={FINAI_MUTED}
               />
             </TouchableOpacity>
 
-            {showPicker ? (
+            {/* DATE PICKER + DONE BUTTON FOR IOS */}
+            {showPicker && (
               <View style={styles.pickerContainer}>
                 <DateTimePicker
                   value={date}
@@ -188,22 +241,21 @@ export default function CreateGoal() {
                   onChange={onDateChange}
                   minimumDate={new Date()}
                 />
-                {Platform.OS === 'ios' ? (
-                  <TouchableOpacity
-                    style={styles.iosDoneBtn}
-                    onPress={() => setShowPicker(false)}
-                  >
-                    <Text style={styles.iosDoneText}>Done</Text>
-                  </TouchableOpacity>
-                ) : null}
+                <TouchableOpacity
+                  style={styles.doneBtn}
+                  onPress={() => setShowPicker(false)}
+                  activeOpacity={0.8}
+                >
+                  <Text style={styles.doneBtnText}>Done</Text>
+                </TouchableOpacity>
               </View>
-            ) : null}
+            )}
           </View>
         </View>
 
-        <TouchableOpacity style={styles.saveBtn} onPress={handleCreate} activeOpacity={0.85}>
+        <TouchableOpacity style={styles.saveBtn} onPress={handleSave} activeOpacity={0.85}>
           <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
-          <Text style={styles.saveBtnText}>Save Goal</Text>
+          <Text style={styles.saveBtnText}>{isEditMode ? 'Update Goal' : 'Save Goal'}</Text>
         </TouchableOpacity>
 
         <TouchableOpacity style={styles.cancelBtn} onPress={() => router.back()} activeOpacity={0.7}>
@@ -220,7 +272,6 @@ export default function CreateGoal() {
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            {/* INAYOS NA: pinalitan ng View ang div dito paps */}
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Select Goal Type</Text>
               <TouchableOpacity onPress={() => setShowTypeModal(false)}>
@@ -375,16 +426,16 @@ const styles = StyleSheet.create({
     borderColor: FINAI_BORDER,
     overflow: 'hidden',
   },
-  iosDoneBtn: {
+  doneBtn: {
     alignItems: 'center',
-    paddingVertical: 10,
-    backgroundColor: FINAI_BG,
+    paddingVertical: 12,
+    backgroundColor: FINAI_DEEP_GREEN,
     borderTopWidth: 1,
     borderTopColor: FINAI_BORDER,
   },
-  iosDoneText: {
-    color: FINAI_DEEP_GREEN,
-    fontWeight: '600',
+  doneBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
     fontSize: 15,
   },
   saveBtn: {
@@ -416,7 +467,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '600',
   },
-  /* MODAL DROPDOWN STYLES */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',

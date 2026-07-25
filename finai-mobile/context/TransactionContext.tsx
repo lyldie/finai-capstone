@@ -33,6 +33,7 @@ type TransactionContextType = {
   updateBudget: (id: string, amount: number) => Promise<void>;
   deleteBudget: (id: string) => Promise<void>;
   addGoal: (name: string, target_amount: number, target_date: string, goal_type_id: string) => Promise<void>;
+  updateGoal: (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings?: number) => Promise<void>;
   deleteGoal: (id: string) => Promise<void>;
   depositToGoal: (goalId: string, amount: number, account: string) => Promise<boolean>;
   getAccountBalance: (name: string) => number;
@@ -66,7 +67,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : [])
       ]);
 
-      // May distinct response logic ang expense schema kaya may .data check
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         setTransactions(transRes.data.map((i: any) => ({
           id: i._id || i.id, amount: i.amount?.toString() || '0', category: i.category || 'General',
@@ -75,10 +75,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         })));
       }
       
-      // FIXES HERE: Diretsong arrays na tinatanggap ng FastAPI response parameters
-      //  ITONG SOLID NA PARSING VERSION ANG IPALIT MO:
-const parsedBudgets = Array.isArray(budRes) ? budRes : (budRes.data || []);
-setBudgets(parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id })));
+      const parsedBudgets = Array.isArray(budRes) ? budRes : (budRes.data || []);
+      setBudgets(parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id })));
       
       const parsedCategories = Array.isArray(catRes) ? catRes : (catRes.data || []);
       setCategories(parsedCategories.map((c: any) => ({ ...c, id: c._id || c.id })));
@@ -151,6 +149,32 @@ setBudgets(parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id })));
     } catch (error) { console.error("addGoal Error:", error); Alert.alert("Error", "Bumagsak ang pag-save ng goal."); }
   };
 
+  const updateGoal = async (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings: number = 0) => {
+    try {
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      
+      const response = await fetch(`${API_URL}/api/goals/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          user_id: userId, 
+          goal_type_id, 
+          target_name: name, 
+          target_amount, 
+          current_savings, 
+          target_date 
+        }),
+      });
+
+      if (!response.ok) throw new Error('Failed to update goal');
+      await fetchTransactions(); 
+    } catch (error) { 
+      console.error("updateGoal Error:", error); 
+      Alert.alert("Error", "Bumagsak ang pag-update ng goal."); 
+    }
+  };
+
   const deleteGoal = async (id: string) => {
     const res = await fetch(`${API_URL}/api/goals/${id}`, { method: 'DELETE' });
     if (res.ok) fetchTransactions(); else Alert.alert("Error", "Failed to delete.");
@@ -181,7 +205,7 @@ setBudgets(parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id })));
   const balance = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions }}>
       {children}
     </TransactionContext.Provider>
   );

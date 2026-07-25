@@ -12,28 +12,49 @@ const FINAI_SAGE = '#8A9A86';
 const FINAI_LIGHT_BG = '#F7F9F8';
 const FINAI_CARD_BG = '#FFFFFF';
 const ALERT_YELLOW = '#F59E0B';
-const CRITICAL_RED = '#EF4444'; // Added for critical 90%+ alerts
+const CRITICAL_RED = '#EF4444';
+
+// HELPER: Currency Formatter (Exact amount, comma-separated)
+const formatCurrency = (amount: number) => {
+  return '₱' + Number(amount || 0).toLocaleString('en-US', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  });
+};
 
 export default function InsightsScreen() {
   const router = useRouter();
   const [activeTab, setActiveTab] = useState<'Stats' | 'Budget'>('Stats');
   const [timeframe, setTimeframe] = useState<'Week' | 'Month' | 'Year'>('Month');
   const [subTab, setSubTab] = useState<'Income' | 'Expense'>('Expense');
-  // Idagdag mo ito kasama ng ibang useState declarations
+  
   const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState<any>(null);
 
-  // DYNAMIC: Dinagdag ko yung goals dito paps
-  const { budgets, transactions, isLoading, categories, deleteBudget, goals,accounts,depositToGoal } = useTransactions();
+  // DYNAMIC Context (Sama natin si goalTypes/presetTypes kung mayroon sa context)
+  const transactionContext = useTransactions();
+  const { 
+    budgets = [], 
+    transactions = [], 
+    isLoading = false, 
+    categories = [], 
+    deleteBudget, 
+    goals = [], 
+    deleteGoal, 
+    accounts = [], 
+    depositToGoal 
+  } = transactionContext;
+  
+  // Safe extraction ng goalTypes list mula sa context kung available
+  const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
   const getAccountBalance = (accName: string) => {
-  const account = accounts?.find((a: any) => a.name === accName);
-  return account ? ((account as any).balance || (account as any).initial_balance || 0) : 0;
-};
+    const account = accounts?.find((a: any) => a.name === accName);
+    return account ? ((account as any).balance || (account as any).initial_balance || 0) : 0;
+  };
 
-  // DYNAMIC COMPUTATIONS (Para wala nang hardcoded)
+  // DYNAMIC COMPUTATIONS
   const stats = useMemo(() => {
-    // Pinalitan natin ng Number() para iwas TypeScript strict type error
     const totalBudget = budgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
     const totalSpent = transactions
       .filter(t => t.type === 'Expense')
@@ -41,11 +62,9 @@ export default function InsightsScreen() {
     
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
     
-    // Net Cash Flow computation
     const netCashFlow = transactions.reduce((acc, t) => 
       t.type === 'Income' ? acc + (Number(t.amount) || 0) : acc - (Number(t.amount) || 0), 0);
 
-    // DYNAMIC: Goals Computation
     const safeGoals = goals || [];
     const totalTarget = safeGoals.reduce((acc, g) => acc + (Number(g.target_amount) || 0), 0);
     const totalSavings = safeGoals.reduce((acc, g) => acc + (Number(g.current_savings) || 0), 0);
@@ -54,7 +73,6 @@ export default function InsightsScreen() {
     return { totalBudget, totalSpent, usage, netCashFlow, totalTarget, totalSavings, overallGoalProgress };
   }, [budgets, transactions, goals]);
 
-  // Alert system logic base sa Scope Documentation
   const getAlertColor = (percentage: number) => {
     if (percentage >= 100) return CRITICAL_RED;     // Over budget
     if (percentage >= 90) return CRITICAL_RED;      // Critical alert
@@ -77,6 +95,27 @@ export default function InsightsScreen() {
       case 'Utilities': return 'flash-outline';
       default: return 'wallet-outline';
     }
+  };
+
+  // SMART RESOLUTION FOR PRESET / GOAL TYPE NAME ("Travel", "Gadgets", etc.)
+  const resolvePresetName = (goal: any) => {
+    // 1. Direct name properties mula sa object
+    if (goal.goal_type_name) return goal.goal_type_name;
+    if (goal.preset_name) return goal.preset_name;
+    if (goal.type_name) return goal.type_name;
+    if (goal.goal_type?.name) return goal.goal_type.name;
+    if (typeof goal.goal_type === 'string' && isNaN(Number(goal.goal_type)) && goal.goal_type.length < 20) {
+      return goal.goal_type;
+    }
+
+    // 2. Fallback: Kuhanin via ID lookup sa goalTypes array (mula sa context)
+    const typeId = goal.goal_type_id || goal.preset_id || (typeof goal.goal_type === 'string' ? goal.goal_type : null);
+    if (typeId && goalTypes.length > 0) {
+      const foundType = goalTypes.find((gt: any) => gt.id === typeId || gt._id === typeId);
+      if (foundType?.name) return foundType.name;
+    }
+
+    return null;
   };
 
   return (
@@ -119,7 +158,6 @@ export default function InsightsScreen() {
             <View style={styles.kpiGridRow}>
               <View style={styles.finaiKpiCard}>
                 <Text style={styles.kpiMetaText}>Budget Adherence</Text>
-                {/* Dynamically showing adherence % */}
                 <Text style={[styles.kpiMainValue, { color: getAlertColor(stats.usage) }]}>
                   {stats.totalBudget > 0 ? Math.max(100 - stats.usage, 0).toFixed(0) : 0}%
                 </Text>
@@ -129,24 +167,23 @@ export default function InsightsScreen() {
               </View>
               <View style={styles.finaiKpiCard}>
                 <Text style={styles.kpiMetaText}>Net Cash Flow</Text>
-                {/* Dynamically showing Net Cash Flow */}
                 <Text style={[styles.kpiMainValue, { color: stats.netCashFlow >= 0 ? FINAI_DEEP_GREEN : CRITICAL_RED }]}>
-                  {stats.netCashFlow >= 0 ? '+' : ''}₱{stats.netCashFlow.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                  {stats.netCashFlow >= 0 ? '+' : ''}{formatCurrency(stats.netCashFlow)}
                 </Text>
                 <View style={styles.miniBadgeNeutral}><Text style={styles.badgeText}>{stats.netCashFlow >= 0 ? 'Positive' : 'Deficit'}</Text></View>
               </View>
             </View>
 
-            {/* DYNAMIC: Total Savings Progress Card */}
+            {/* Total Savings Progress Card */}
             <View style={styles.finaiFullKpiCard}>
               <View style={styles.fullCardHeader}>
                 <View>
                   <Text style={styles.kpiMetaText}>Total Savings Progress (All Goals)</Text>
-                  <Text style={[styles.kpiMainValue, { color: FINAI_DEEP_GREEN }]}>₱{stats.totalSavings.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</Text>
+                  <Text style={[styles.kpiMainValue, { color: FINAI_DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
                 </View>
                 <View style={styles.fullCardRightSide}>
                   <Text style={styles.goalPercentageText}>{stats.overallGoalProgress.toFixed(0)}% Total Saved</Text>
-                  <Text style={styles.miniGoalTarget}>Combined Target: ₱{(stats.totalTarget >= 1000 ? (stats.totalTarget / 1000).toFixed(0) + 'k' : stats.totalTarget.toLocaleString())}</Text>
+                  <Text style={styles.miniGoalTarget}>Combined Target: {formatCurrency(stats.totalTarget)}</Text>
                 </View>
               </View>
               <View style={styles.analyticsProgressBarWrapper}><View style={[styles.analyticsProgressBarFill, { width: `${Math.min(stats.overallGoalProgress, 100)}%` }]} /></View>
@@ -165,13 +202,13 @@ export default function InsightsScreen() {
           </View>
         ) : (
           <View style={styles.viewContainer}>
-            {/* HERO BUDGET CARD - DYNAMIC NA */}
+            {/* HERO BUDGET CARD */}
             <View style={styles.finaiBudgetHeroCard}>
               <View style={styles.heroHeader}>
                 <View>
                   <Text style={styles.heroMetaText}>Remaining Total Allowance</Text>
                   <Text style={styles.heroAmountValue}>
-                    ₱{Math.max(stats.totalBudget - stats.totalSpent, 0).toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}
+                    {formatCurrency(Math.max(stats.totalBudget - stats.totalSpent, 0))}
                   </Text>
                 </View>
                 <TouchableOpacity style={styles.finaiGearBtn}><Ionicons name="options-outline" size={16} color="#FFF" /><Text style={styles.gearBtnText}>Pool Setup</Text></TouchableOpacity>
@@ -182,7 +219,7 @@ export default function InsightsScreen() {
               </View>
               
               <View style={styles.heroFooter}>
-                <Text style={styles.heroFooterText}>Total Pool: ₱{stats.totalBudget.toLocaleString('en-PH', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</Text>
+                <Text style={styles.heroFooterText}>Total Pool: {formatCurrency(stats.totalBudget)}</Text>
                 <Text style={[styles.alertBadgeText, { color: getAlertColor(stats.usage) }]}>
                   {getAlertIcon(stats.usage)} {stats.usage.toFixed(0)}% Used
                 </Text>
@@ -197,7 +234,6 @@ export default function InsightsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* DYNAMIC DATABASE LIST RENDERING */}
             {isLoading ? (
               <ActivityIndicator size="small" color={FINAI_DEEP_GREEN} style={{ marginVertical: 20 }} />
             ) : budgets.length === 0 ? (
@@ -208,70 +244,68 @@ export default function InsightsScreen() {
               </View>
             ) : (
               budgets.map((item, index) => {
-  const categoryInfo = categories.find(c => c.id === item.category_id);
-  const categoryName = categoryInfo ? categoryInfo.name : 'Unknown';
+                const categoryInfo = categories.find(c => c.id === item.category_id);
+                const categoryName = categoryInfo ? categoryInfo.name : 'Unknown';
 
-  const spent = transactions
-    .filter(t => t.type === 'Expense' && t.category === categoryName)
-    .reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0);
-  
-  const limitAmount = item.amount || 0;
-  const percentageUsed = limitAmount > 0 ? (spent / limitAmount) * 100 : 0;
+                const spent = transactions
+                  .filter(t => t.type === 'Expense' && t.category === categoryName)
+                  .reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0);
+                
+                const limitAmount = item.amount || 0;
+                const percentageUsed = limitAmount > 0 ? (spent / limitAmount) * 100 : 0;
 
-  // LIGTAS NA FALLBACK LOGIC: Kung ang month_year ay walang value o magkaiba ang format, nililinis natin ang view para sa UI string parser niyo
-  const rawMonthYear = item.month_year || '07-2026';
-  const cleanMonthYear = rawMonthYear.includes('-') && rawMonthYear.split('-')[0].length === 4 
-    ? `${rawMonthYear.split('-')[1]}-${rawMonthYear.split('-')[0]}` // Kung YYYY-MM, ginagawang MM-YYYY
-    : rawMonthYear;
+                const rawMonthYear = item.month_year || '07-2026';
+                const cleanMonthYear = rawMonthYear.includes('-') && rawMonthYear.split('-')[0].length === 4 
+                  ? `${rawMonthYear.split('-')[1]}-${rawMonthYear.split('-')[0]}` 
+                  : rawMonthYear;
 
-  return (
-    <TouchableOpacity 
-      key={item.id || index} 
-      style={styles.categoryBudgetCard}
-      onPress={() => router.push({
-        pathname: '/setbudget',
-        params: { id: item.id, category_id: item.category_id, amount: item.amount }
-      })}
-      onLongPress={() => {
-        Alert.alert("Burahin ang budget?", `Sigurado ka bang buburahin ang budget limit para sa ${categoryName}?`, [
-          { text: "Cancel", style: "cancel" },
-          { text: "Delete", style: "destructive", onPress: () => deleteBudget(item.id) }
-        ]);
-      }}
-    >
-      <View style={styles.categoryMainRow}>
-        <View style={styles.categoryLeftPart}>
-          <View style={[styles.categoryIconCircle, { backgroundColor: 'rgba(20, 74, 61, 0.08)' }]}>
-            <Ionicons name={getCategoryIcon(categoryName)} size={18} color={FINAI_DEEP_GREEN} />
-          </View>
-          <View style={{ marginLeft: 12 }}>
-            <Text style={styles.categoryTitle}>{categoryName}</Text>
-            {/* Gamitin na natin ang nilinis na date format framework */}
-            <Text style={styles.categoryPeriodText}>{cleanMonthYear} Limit</Text>
-          </View>
-        </View>
-        <View style={styles.categoryRightPart}>
-          <Text style={styles.categoryUsageStats}>₱{spent.toLocaleString()} / ₱{limitAmount.toLocaleString()}</Text>
-          <Text style={[styles.categoryRemainingText, { color: getAlertColor(percentageUsed) }]}>
-            {Math.max(limitAmount - spent, 0).toLocaleString()} left
-          </Text>
-        </View>
-      </View>
-      <View style={styles.catProgressBarWrapper}>
-        <View style={[styles.catProgressBarFill, { 
-          width: `${Math.min(percentageUsed, 100)}%`, 
-          backgroundColor: getAlertColor(percentageUsed) 
-        }]} />
-      </View>
-    </TouchableOpacity>
-  );
-})
+                return (
+                  <TouchableOpacity 
+                    key={item.id || index} 
+                    style={styles.categoryBudgetCard}
+                    onPress={() => router.push({
+                      pathname: '/setbudget',
+                      params: { id: item.id, category_id: item.category_id, amount: item.amount }
+                    })}
+                    onLongPress={() => {
+                      Alert.alert("Burahin ang budget?", `Sigurado ka bang buburahin ang budget limit para sa ${categoryName}?`, [
+                        { text: "Cancel", style: "cancel" },
+                        { text: "Delete", style: "destructive", onPress: () => deleteBudget(item.id) }
+                      ]);
+                    }}
+                  >
+                    <View style={styles.categoryMainRow}>
+                      <View style={styles.categoryLeftPart}>
+                        <View style={[styles.categoryIconCircle, { backgroundColor: 'rgba(20, 74, 61, 0.08)' }]}>
+                          <Ionicons name={getCategoryIcon(categoryName)} size={18} color={FINAI_DEEP_GREEN} />
+                        </View>
+                        <View style={{ marginLeft: 12 }}>
+                          <Text style={styles.categoryTitle}>{categoryName}</Text>
+                          <Text style={styles.categoryPeriodText}>{cleanMonthYear} Limit</Text>
+                        </View>
+                      </View>
+                      <View style={styles.categoryRightPart}>
+                        <Text style={styles.categoryUsageStats}>{formatCurrency(spent)} / {formatCurrency(limitAmount)}</Text>
+                        <Text style={[styles.categoryRemainingText, { color: getAlertColor(percentageUsed) }]}>
+                          {formatCurrency(Math.max(limitAmount - spent, 0))} left
+                        </Text>
+                      </View>
+                    </View>
+                    <View style={styles.catProgressBarWrapper}>
+                      <View style={[styles.catProgressBarFill, { 
+                        width: `${Math.min(percentageUsed, 100)}%`, 
+                        backgroundColor: getAlertColor(percentageUsed) 
+                      }]} />
+                    </View>
+                  </TouchableOpacity>
+                );
+              })
             )}
             
             {/* DYNAMIC: ACTIVE FINANCIAL GOALS */}
             <View style={[styles.sectionHeaderRow, { marginTop: 12 }]}>
               <Text style={styles.sectionLabel}>Active Financial Goals</Text>
-              <TouchableOpacity style={styles.finaiAddBtn}onPress={() => router.push('/create-goal')}>
+              <TouchableOpacity style={styles.finaiAddBtn} onPress={() => router.push('/create-goal')}>
                 <Ionicons name="add-circle" size={20} color={FINAI_DEEP_GREEN} />
                 <Text style={styles.finaiAddBtnText}>Create Goal</Text>
               </TouchableOpacity>
@@ -289,31 +323,85 @@ export default function InsightsScreen() {
                 const saved = Number(goal.current_savings) || 0;
                 const progress = target > 0 ? (saved / target) * 100 : 0;
 
-                // Simple formatting para sa k or direct value kung maliit
-                const displaySaved = saved >= 1000 ? `${(saved / 1000).toFixed(0)}k` : saved;
-                const displayTarget = target >= 1000 ? `${(target / 1000).toFixed(0)}k` : target;
+                // 👉 SMART PRESET / GOAL TYPE BADGE RESOLUTION
+                const presetName = resolvePresetName(goal);
 
-               return (
-               <TouchableOpacity 
-                key={goal.id || index} 
-                style={[styles.finaiGoalCard, { marginBottom: 12 }]} 
-                onPress={() => {
-                setSelectedGoal(goal);
-                setIsDepositModalVisible(true);
-               }} >
+                return (
+                  <TouchableOpacity 
+                    key={goal.id || index} 
+                    style={[styles.finaiGoalCard, { marginBottom: 12 }]} 
+                    activeOpacity={0.8}
+                    onPress={() => {
+                      setSelectedGoal(goal);
+                      setIsDepositModalVisible(true);
+                    }}
+                  >
                     <View style={styles.goalMainLayout}>
                       <View style={styles.goalLeftColumn}>
                         <View style={styles.targetIconCircle}><Text style={{fontSize: 18}}>🎯</Text></View>
-                        <View style={{marginLeft: 12}}>
+                        <View style={{marginLeft: 10}}>
                           <Text style={styles.finaiGoalTitle}>{goal.target_name}</Text>
+                          
+                          {/* PRESET BADGE: Pinapakita ang "Travel", "Gadgets", etc. */}
+                          {presetName ? (
+                            <View style={styles.presetBadge}>
+                              <Text style={styles.presetBadgeText}>{presetName}</Text>
+                            </View>
+                          ) : null}
+
                           <Text style={styles.finaiGoalDate}>Target: {goal.target_date || 'N/A'}</Text>
                         </View>
                       </View>
-                      <View style={styles.goalRightColumn}>
-                        <Text style={styles.goalProgressStats}>₱{displaySaved} / ₱{displayTarget}</Text>
-                        <Text style={styles.goalPercentageText}>{progress.toFixed(0)}% Saved</Text>
+
+                      {/* EDIT & DELETE ACTION BUTTONS */}
+                      <View style={styles.goalActionsRow}>
+                        <TouchableOpacity 
+                          style={styles.actionIconButton}
+                          onPress={() => router.push({
+                            pathname: '/create-goal',
+                            params: { 
+                              id: goal.id, 
+                              target_name: goal.target_name, 
+                              target_amount: goal.target_amount, 
+                              target_date: goal.target_date, 
+                              current_savings: goal.current_savings,
+                              goal_type_id: (goal as any).goal_type_id || (goal as any).preset_id || (goal as any).goal_type,
+                            }
+                          })}
+                        >
+                          <Ionicons name="pencil" size={14} color={FINAI_DEEP_GREEN} />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity 
+                          style={[styles.actionIconButton, { backgroundColor: '#FEE2E2', marginLeft: 6 }]}
+                          onPress={() => {
+                            Alert.alert(
+                              "Burahin ang Goal?",
+                              `Sigurado ka bang buburahin ang target na "${goal.target_name}"?`,
+                              [
+                                { text: "Cancel", style: "cancel" },
+                                { 
+                                  text: "Delete", 
+                                  style: "destructive", 
+                                  onPress: () => deleteGoal ? deleteGoal(goal.id) : null 
+                                }
+                              ]
+                            );
+                          }}
+                        >
+                          <Ionicons name="trash-outline" size={14} color={CRITICAL_RED} />
+                        </TouchableOpacity>
                       </View>
                     </View>
+
+                    {/* STATS & PROGRESS BAR */}
+                    <View style={styles.goalProgressInfoRow}>
+                      <Text style={styles.goalProgressStats}>
+                        {formatCurrency(saved)} / {formatCurrency(target)}
+                      </Text>
+                      <Text style={styles.goalPercentageText}>{progress.toFixed(0)}% Saved</Text>
+                    </View>
+
                     <View style={styles.goalProgressBarWrapper}>
                       <View style={[styles.goalProgressBarFill, { width: `${Math.min(progress, 100)}%` }]} />
                     </View>
@@ -325,7 +413,7 @@ export default function InsightsScreen() {
           </View>
         )}
       </ScrollView>
-      {/* DITO MO ILAGAY PAPS PARANG GANITO: */}
+
       <DepositModal 
         visible={isDepositModalVisible} 
         onClose={() => setIsDepositModalVisible(false)} 
@@ -405,16 +493,20 @@ const styles = StyleSheet.create({
   categoryRemainingText: { fontSize: 11, color: '#10B981', fontWeight: '600', marginTop: 1 },
   catProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
   catProgressBarFill: { height: '100%', borderRadius: 3 },
-  finaiGoalCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', flexDirection: 'column' },
+  finaiGoalCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: '#EBF0EE', flexDirection: 'column' },
   goalMainLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
-  goalLeftColumn: { flexDirection: 'row', alignItems: 'center' },
-  targetIconCircle: { width: 40, height: 40, borderRadius: 20, backgroundColor: '#F0F4F2', justifyContent: 'center', alignItems: 'center' },
+  goalLeftColumn: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  targetIconCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F0F4F2', justifyContent: 'center', alignItems: 'center' },
   finaiGoalTitle: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  finaiGoalDate: { fontSize: 11, color: FINAI_SAGE, marginTop: 1 },
-  goalRightColumn: { alignItems: 'flex-end' },
-  goalProgressStats: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN },
+  finaiGoalDate: { fontSize: 10, color: FINAI_SAGE, marginTop: 2 },
+  presetBadge: { backgroundColor: '#EAF5F0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginVertical: 3 },
+  presetBadgeText: { fontSize: 10, fontWeight: '700', color: FINAI_DEEP_GREEN },
+  goalActionsRow: { flexDirection: 'row', alignItems: 'center' },
+  actionIconButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(20, 74, 61, 0.08)', justifyContent: 'center', alignItems: 'center' },
+  goalProgressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
+  goalProgressStats: { fontSize: 12, fontWeight: '700', color: FINAI_DEEP_GREEN },
   goalPercentageText: { fontSize: 11, color: '#10B981', fontWeight: '600' },
-  goalProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 14, width: '100%' },
+  goalProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 8, width: '100%' },
   goalProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
   analyticsProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
   analyticsProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
