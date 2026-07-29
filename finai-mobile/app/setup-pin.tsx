@@ -1,25 +1,24 @@
 import React, { useState, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TouchableOpacity, TextInput, 
-  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable 
+  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator 
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_URL } from '../config'; // Tiyaking tama ang import path ng config mo paps
+import { API_URL } from '../config';
 
 export default function SetupPinScreen() {
-  // --- EXISTING STATES ---
   const [pin, setPin] = useState('');
-  const inputRef = useRef<TextInput>(null); 
-  const router = useRouter();
-
-  // --- NEW ONBOARDING STATES (Aaralin para sa scope paps!) ---
   const [income, setIncome] = useState('');
   const [goalName, setGoalName] = useState('');
   const [goalAmount, setGoalAmount] = useState('');
   const [goalDate, setGoalDate] = useState(''); // Format: YYYY-MM-DD
+  const [loading, setLoading] = useState(false);
+
+  const inputRef = useRef<TextInput>(null); 
+  const router = useRouter();
 
   const handleConfirmPinAndSetup = async () => {
     // 1. Validation para sa PIN length
@@ -28,31 +27,54 @@ export default function SetupPinScreen() {
       return;
     }
 
-    // 2. Validation para sa mga bagong Onboarding Fields
-    if (!income || !goalName || !goalAmount || !goalDate) {
-      Alert.alert("Kulang paps!", "Paki-sagutan ang Monthly Income at Goal details para may baseline baseline si FinAi.");
+    // 2. Validation para sa mga Onboarding Fields
+    if (!income.trim() || !goalName.trim() || !goalAmount.trim() || !goalDate.trim()) {
+      Alert.alert("Kulang paps!", "Paki-sagutan ang Monthly Income at Goal details para may baseline si FinAi.");
       return;
     }
 
+    // 3. Validation sa Date Format (YYYY-MM-DD)
+    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+    if (!dateRegex.test(goalDate.trim())) {
+      Alert.alert("Invalid Date", "Paki-sulat ang Target Date sa format na YYYY-MM-DD (Halimbawa: 2026-12-31).");
+      return;
+    }
+
+    const parsedIncome = parseFloat(income);
+    const parsedGoalAmount = parseFloat(goalAmount);
+
+    if (isNaN(parsedIncome) || parsedIncome <= 0) {
+      Alert.alert("Invalid Amount", "Paki-check ang Monthly Income mo paps.");
+      return;
+    }
+
+    if (isNaN(parsedGoalAmount) || parsedGoalAmount <= 0) {
+      Alert.alert("Invalid Amount", "Paki-check ang Target Savings Amount mo paps.");
+      return;
+    }
+
+    setLoading(true);
+
     try {
-      // 3. Hugutin ang user_id na naitabi nung nakaraang registration step
+      // 4. Hugutin ang user_id na naitabi nung nakaraang step
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) {
         Alert.alert("Session Error", "Hindi mahanap ang user session. Subukang mag-register ulit paps.");
+        router.replace('/signup');
         return;
       }
 
-      // 4. Ihanda ang Solidified Payload para sa backend
+      // 5. Ihanda ang Payload para sa backend
       const payload = {
         user_id: userId,
         pin: pin,
-        monthly_income: parseFloat(income),
-        target_name: goalName,
-        target_amount: parseFloat(goalAmount),
-        target_date: goalDate
+        monthly_income: parsedIncome,
+        target_name: goalName.trim(),
+        target_amount: parsedGoalAmount,
+        target_date: goalDate.trim()
       };
 
-      // 5. Fire the network request sa FastAPI natin
+      // 6. Fire the network request sa FastAPI natin
       const response = await fetch(`${API_URL}/initial-setup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -62,7 +84,7 @@ export default function SetupPinScreen() {
       const res = await response.json();
 
       if (response.ok) {
-        // I-save ang PIN locally sa phone para sa device-lock requirements ng scope
+        // I-save ang PIN locally sa phone
         await AsyncStorage.setItem('user_pin', pin);
 
         Alert.alert(
@@ -82,6 +104,8 @@ export default function SetupPinScreen() {
     } catch (error) {
       console.error(error);
       Alert.alert("Connection Error", "Hindi maabot ang server. Siguraduhing tumatakbo ang backend paps.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -89,7 +113,6 @@ export default function SetupPinScreen() {
     inputRef.current?.focus();
   };
 
-  // Tinitingnan natin kung kumpleto lahat ng forms para ma-determine kung active ang submit button
   const isFormComplete = pin.length === 4 && income && goalName && goalAmount && goalDate;
 
   return (
@@ -100,10 +123,9 @@ export default function SetupPinScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      {/* Ginawa nating true ang scroll para magkasya ang cards natin nang swabe */}
       <ScrollView contentContainerStyle={{ flexGrow: 1 }} bounces={true} showsVerticalScrollIndicator={false}>
         
-        {/* Header with your specific Green Gradients */}
+        {/* Header with Green Gradients */}
         <LinearGradient
           colors={['#4c8479', '#2b5f56']}
           style={styles.header}
@@ -129,7 +151,6 @@ export default function SetupPinScreen() {
               </View>
             </Pressable>
 
-            {/* Hidden Input for actual typing logic */}
             <TextInput
               ref={inputRef}
               style={styles.hiddenInput}
@@ -191,13 +212,17 @@ export default function SetupPinScreen() {
           {/* SYSTEM SETUP SUBMIT BUTTON */}
           <View style={styles.buttonWrapper}>
             <TouchableOpacity 
-              style={[styles.button, !isFormComplete && { opacity: 0.5 }]}
+              style={[styles.button, (!isFormComplete || loading) && { opacity: 0.5 }]}
               onPress={handleConfirmPinAndSetup}
-              disabled={!isFormComplete}
+              disabled={!isFormComplete || loading}
             >
-              <Text style={styles.buttonText}>SAVE PROFILE SETUP</Text>
+              {loading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <Text style={styles.buttonText}>SAVE PROFILE SETUP</Text>
+              )}
             </TouchableOpacity>
-            <Text style={styles.footerNote}>PIN AI, Income baseline, at initial Goal ay pasok sa scope paps.</Text>
+            <Text style={styles.footerNote}>PIN, Income baseline, at initial Goal ay pasok sa FinAi scope paps.</Text>
           </View>
         </View>
       </ScrollView>
@@ -206,7 +231,7 @@ export default function SetupPinScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F4F7F6' }, // Ginawa nating maputi ang background para lumitaw ang Cards
+  container: { flex: 1, backgroundColor: '#F4F7F6' },
   header: {
     height: 220,
     borderBottomRightRadius: 80,

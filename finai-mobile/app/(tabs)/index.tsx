@@ -2,11 +2,12 @@ import React, { useMemo, useState, useCallback } from 'react';
 import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
+import { useAuth } from '../../context/AuthContext'; // 👈 1. Import Auth Context
 import { useRouter, useFocusEffect } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable'; 
 
-
 export default function Dashboard() {
+  const { user } = useAuth(); // 👈 2. Kunin ang user data
   const { 
     transactions, 
     totalIncome, 
@@ -36,6 +37,13 @@ export default function Dashboard() {
     "January", "February", "March", "April", "May", "June", 
     "July", "August", "September", "October", "November", "December"
   ];
+
+  const greetingMessage = useMemo(() => {
+    const hour = new Date().getHours();
+    if (hour < 12) return "Good Morning 👋";
+    if (hour < 18) return "Good Afternoon 👋";
+    return "Good Evening 👋";
+  }, []);
 
   const handlePrevMonth = useCallback(() => {
     if (selectedMonth === 0) {
@@ -155,7 +163,6 @@ export default function Dashboard() {
     </View>
   ), []);
 
-  // [LOADING CHECK]: Dito na siya, pagkatapos ng lahat ng hooks
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
@@ -167,12 +174,20 @@ export default function Dashboard() {
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#F9FAFB" />
+      
       <View style={styles.topNav}>
         {['Daily', 'Monthly'].map((tab) => (
           <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)} style={[styles.navTab, activeTab === tab && styles.activeNavTab]}>
             <Text style={[styles.navTabText, activeTab === tab && styles.activeNavTabText]}>{tab === 'Daily' ? 'Daily History' : 'Monthly Overview'}</Text>
           </TouchableOpacity>
         ))}
+      </View>
+
+      {/* Greeting Header (Fixed Single Line) */}
+      <View style={styles.greetingContainer}>
+        <Text style={styles.greetingText}>
+          {greetingMessage}, <Text style={styles.greetingName}>{user?.name || 'User'}!</Text>
+        </Text>
       </View>
 
       <View style={styles.headerCard}>
@@ -275,7 +290,6 @@ export default function Dashboard() {
   );
 }
 
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
   topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, justifyContent: 'space-around', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
@@ -283,7 +297,10 @@ const styles = StyleSheet.create({
   activeNavTab: { backgroundColor: '#2b5f56', elevation: 2 }, 
   navTabText: { color: '#56736E', fontSize: 13, fontWeight: '700' },
   activeNavTabText: { color: '#FFFFFF' }, 
-  headerCard: { backgroundColor: '#FFFFFF', margin: 15, padding: 20, borderRadius: 25, borderWidth: 1, borderColor: '#2b5f56', elevation: 4, marginBottom: 5 },
+  greetingContainer: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 2 },
+  greetingText: { fontSize: 18, color: '#7C9A95', fontWeight: '600' },
+  greetingName: { color: '#142D2A', fontWeight: '800' },
+  headerCard: { backgroundColor: '#FFFFFF', marginHorizontal: 15, marginTop: 12, padding: 20, borderRadius: 25, borderWidth: 1, borderColor: '#2b5f56', elevation: 4, marginBottom: 5 },
   balanceLabel: { color: '#56736E', fontSize: 13, textAlign: 'center', fontWeight: '600' },
   balanceValue: { fontSize: 34, fontWeight: '800', textAlign: 'center', marginVertical: 8, color: '#142D2A' },
   statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 15, alignItems: 'center' },

@@ -5,8 +5,8 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
-import AsyncStorage from '@react-native-async-storage/async-storage'; // 👈 1. Inimport natin ito paps!
-import { API_URL } from '../config'; // 👈 2. Ginamit na natin yung central config mo para malinis!
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '../config';
 
 export default function OtpVerifyScreen() {
   const [otp, setOtp] = useState('');
@@ -15,6 +15,7 @@ export default function OtpVerifyScreen() {
   const router = useRouter();
   
   const { email } = useLocalSearchParams(); 
+  const targetEmail = Array.isArray(email) ? email[0] : (email || '');
 
   const handleVerify = async () => {
     Keyboard.dismiss();
@@ -24,27 +25,32 @@ export default function OtpVerifyScreen() {
       return;
     }
 
+    if (!targetEmail) {
+      Alert.alert("Error", "Missing email address. Balik ka muna sa Signup paps.");
+      router.replace('/signup');
+      return;
+    }
+
+    const cleanEmail = targetEmail.trim().toLowerCase();
+
     setLoading(true);
     try {
-      const targetEmail = Array.isArray(email) ? email[0] : email;
-
       const response = await fetch(`${API_URL}/verify-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: targetEmail, otp: otp }),
+        body: JSON.stringify({ email: cleanEmail, otp: otp.trim() }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        // 👈 3. DITO ANG SELYADO NA LUNAS PAPS! 
-        // Isinesave natin yung user_id na galing sa backend response mo (hal. data.user_id)
-        if (data.user_id) {
-          await AsyncStorage.setItem('user_id', data.user_id);
-        } else if (data.id) {
-          // Fallback kung sakaling "id" o "_id" ang pangalan ng field sa backend response mo
-          await AsyncStorage.setItem('user_id', data.id);
+        const userId = data.user_id || data.id;
+        
+        // Fix: Always ensure userId & email are saved as Strings
+        if (userId) {
+          await AsyncStorage.setItem('user_id', String(userId));
         }
+        await AsyncStorage.setItem('user_email', cleanEmail);
 
         Alert.alert("Success! ✅", "Verified na ang account mo.", [
           { text: "G", onPress: () => router.replace('/setup-pin') }
@@ -53,7 +59,7 @@ export default function OtpVerifyScreen() {
         Alert.alert("Mali paps!", data.detail || "Check mo ulit yung code sa email.");
       }
     } catch (e) {
-      Alert.alert("Connection Error", "Hindi maka-connect sa server. Check your IP!");
+      Alert.alert("Connection Error", "Hindi maka-connect sa server. Check your connection!");
     } finally {
       setLoading(false);
     }
@@ -67,7 +73,7 @@ export default function OtpVerifyScreen() {
       <KeyboardAvoidingView behavior="padding" style={styles.content}>
         <Text style={styles.title}>OTP Verification</Text>
         <Text style={styles.subtitle}>Pakisulat yung 6-digit code na sinend namin sa:{"\n"}
-          <Text style={{fontWeight: 'bold', color: '#edb232'}}>{email}</Text>
+          <Text style={{fontWeight: 'bold', color: '#edb232'}}>{targetEmail}</Text>
         </Text>
 
         <Pressable style={styles.otpContainer} onPress={() => inputRef.current?.focus()}>
@@ -81,24 +87,23 @@ export default function OtpVerifyScreen() {
         <TextInput
           ref={inputRef}
           style={{ position: 'absolute', opacity: 0 }}
-          keyboardType="default"
-          autoCapitalize="characters"
+          keyboardType="number-pad"
           maxLength={6}
           value={otp}
-          onChangeText={(text) => setOtp(text.toUpperCase())}
+          onChangeText={(text) => setOtp(text.replace(/[^0-9]/g, ''))}
           autoFocus={true}
         />
 
         <TouchableOpacity 
-            style={[styles.btn, { opacity: otp.length === 6 ? 1 : 0.6 }]} 
+            style={[styles.btn, { opacity: (otp.length === 6 && !loading) ? 1 : 0.6 }]} 
             onPress={handleVerify}
             disabled={loading || otp.length < 6}
         >
           {loading ? <ActivityIndicator color="#1c3c36" /> : <Text style={styles.btnText}>VERIFY CODE</Text>}
         </TouchableOpacity>
         
-        <TouchableOpacity onPress={() => router.replace('/signup')} style={{marginTop: 20}}>
-          <Text style={{color: '#fff', opacity: 0.7}}>Wrong email? <Text style={{fontWeight: 'bold'}}>Back to Signup</Text></Text>
+        <TouchableOpacity onPress={() => router.replace('/signup')} style={{marginTop: 25}}>
+          <Text style={{color: '#fff', opacity: 0.8}}>Wrong email? <Text style={{fontWeight: 'bold', color: '#edb232'}}>Back to Signup</Text></Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </LinearGradient>

@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Alert, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, Alert, StatusBar, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -8,9 +8,10 @@ import { API_URL } from '../config';
 
 export default function VerifyPinScreen() {
   const [pin, setPin] = useState('');
+  const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  // [INTEGRATED]: Traffic Cop - Check role agad pagka-load
+  // Traffic Cop - Check role agad pagka-load
   useEffect(() => {
     const checkRoleBypass = async () => {
       const role = await AsyncStorage.getItem('user_role');
@@ -22,11 +23,11 @@ export default function VerifyPinScreen() {
   }, []);
 
   const handlePress = (num: string) => {
-    if (pin.length < 4) setPin(prev => prev + num);
+    if (pin.length < 4 && !loading) setPin(prev => prev + num);
   };
 
   const handleDelete = () => {
-    setPin(prev => prev.slice(0, -1));
+    if (!loading) setPin(prev => prev.slice(0, -1));
   };
 
   useEffect(() => {
@@ -36,15 +37,21 @@ export default function VerifyPinScreen() {
   }, [pin]);
 
   const checkPin = async () => {
+    if (loading) return;
+    setLoading(true);
+
     try {
       const email = await AsyncStorage.getItem('user_email');
       if (!email) {
-          Alert.alert("Error", "No user session found. Please login again.");
-          router.replace('/login');
-          return;
+        Alert.alert("Error", "No user session found. Please login again.");
+        router.replace('/login');
+        return;
       }
       
-      const payload = { email: email, pin: pin };
+      const payload = { 
+        email: email.trim().toLowerCase(), 
+        pin: pin 
+      };
       
       const response = await fetch(`${API_URL}/verify-pin`, {
         method: 'POST',
@@ -55,7 +62,6 @@ export default function VerifyPinScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        // [INTEGRATED]: Redirect base sa role pagkatapos mag-PIN
         const role = await AsyncStorage.getItem('user_role');
         if (role === 'admin') {
           router.replace('/(admin)/admin-dashboard');
@@ -69,6 +75,8 @@ export default function VerifyPinScreen() {
     } catch (e) {
       Alert.alert("Error", "Hindi maka-connect sa server.");
       setPin('');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -89,34 +97,53 @@ export default function VerifyPinScreen() {
         ))}
       </View>
 
-      <View style={styles.keypad}>
-        {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0'].map((item, index) => (
-          <TouchableOpacity 
-            key={index} 
-            style={[styles.key, item === '' && { opacity: 0 }]}
-            onPress={() => item !== '' && handlePress(item)}
-            disabled={item === ''}
-          >
-            <Text style={styles.keyText}>{item}</Text>
+      {loading ? (
+        <View style={styles.loadingWrapper}>
+          <ActivityIndicator size="large" color="#edb232" />
+          <Text style={styles.loadingText}>Verifying PIN...</Text>
+        </View>
+      ) : (
+        <View style={styles.keypad}>
+          {['1', '2', '3', '4', '5', '6', '7', '8', '9', '', '0'].map((item, index) => (
+            <TouchableOpacity 
+              key={index} 
+              style={[styles.key, item === '' && { opacity: 0 }]}
+              onPress={() => item !== '' && handlePress(item)}
+              disabled={item === '' || loading}
+            >
+              <Text style={styles.keyText}>{item}</Text>
+            </TouchableOpacity>
+          ))}
+          <TouchableOpacity style={styles.key} onPress={handleDelete} disabled={loading}>
+            <Ionicons name="backspace-outline" size={28} color="white" />
           </TouchableOpacity>
-        ))}
-        <TouchableOpacity style={styles.key} onPress={handleDelete}>
-          <Ionicons name="backspace-outline" size={28} color="white" />
-        </TouchableOpacity>
-      </View>
+        </View>
+      )}
+
+      {/* Button para pantay sa pin-login at walang nawawalang element */}
+      <TouchableOpacity 
+        style={styles.switchAccountBtn}
+        onPress={() => router.replace('/login')}
+      >
+        <Text style={styles.switchAccountText}>Switch Account or Login via Password</Text>
+      </TouchableOpacity>
     </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  header: { alignItems: 'center', marginBottom: 40 },
+  header: { alignItems: 'center', marginBottom: 30 },
   title: { color: 'white', fontSize: 28, fontWeight: 'bold', marginTop: 10 },
   subtitle: { color: 'rgba(255,255,255,0.6)', fontSize: 14 },
-  dotContainer: { flexDirection: 'row', gap: 20, marginBottom: 50 },
+  dotContainer: { flexDirection: 'row', gap: 20, marginBottom: 40 },
   dot: { width: 15, height: 15, borderRadius: 10, borderWidth: 2, borderColor: '#edb232' },
   dotActive: { backgroundColor: '#edb232' },
+  loadingWrapper: { height: 240, justifyContent: 'center', alignItems: 'center' },
+  loadingText: { color: 'white', marginTop: 10, opacity: 0.8 },
   keypad: { width: '80%', flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center' },
-  key: { width: '30%', height: 80, justifyContent: 'center', alignItems: 'center' },
-  keyText: { color: 'white', fontSize: 28, fontWeight: '600' }
+  key: { width: '30%', height: 75, justifyContent: 'center', alignItems: 'center' },
+  keyText: { color: 'white', fontSize: 28, fontWeight: '600' },
+  switchAccountBtn: { marginTop: 20, padding: 10 },
+  switchAccountText: { color: '#edb232', fontSize: 13, textDecorationLine: 'underline' }
 });

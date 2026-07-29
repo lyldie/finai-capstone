@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime
+from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional
@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 import smtplib
 import random
 import string
+import os
 from email.message import EmailMessage
 import uvicorn
 
@@ -43,15 +44,15 @@ app.add_middleware(
 
 # 3. Security & Email Config
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-EMAIL_SENDER = "sobrangfinefinai@gmail.com"
-EMAIL_PASSWORD = "natvzmqhkmkquafu" 
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "sobrangfinefinai@gmail.com")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu") 
 otp_storage = {}
 
 # --- 4. MODELS ---
 class UserSignup(BaseModel):
-    name: str
+    name: str = Field(..., min_length=2, description="Pangalan ng user")
     email: EmailStr
-    password: str
+    password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -72,20 +73,20 @@ class TransactionSchema(BaseModel):
 
 class InitialSetupSchema(BaseModel):
     user_id: str
-    pin: str = Field(..., description="Dapat 4-digit PIN string")
+    pin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$", description="Dapat exact 4-digit numeric PIN")
     monthly_income: float = Field(..., gt=0, description="Dapat mas mataas sa 0 ang initial income")
     target_name: str
     target_amount: float = Field(..., gt=0, description="Target savings amount")
     target_date: str = Field(..., description="Format: YYYY-MM-DD")
 
 # --- 5. HELPER FUNCTIONS ---
-def send_otp_email(target_email, otp_code):
+def send_otp_email(target_email: str, otp_code: str):
     try:
         msg = EmailMessage()
         msg['Subject'] = "FinAi - Verify Your Account 🐿️"
         msg['From'] = EMAIL_SENDER
         msg['To'] = target_email
-        msg.set_content(f"Mabuhay paps!\n\nHeto ang iyong OTP Verification Code: {otp_code}\n\n- FinAi Team")
+        msg.set_content(f"Mabuhay paps!\n\nHeto ang iyong OTP Verification Code: {otp_code}\n\nValid ito sa loob ng 10 minuto.\n\n- FinAi Team")
         with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.send_message(msg)
@@ -97,41 +98,67 @@ def send_otp_email(target_email, otp_code):
 # --- 6. AUTH ENDPOINTS ---
 @app.post("/register")
 async def register(user: UserSignup):
-    existing_user = await db.users.find_one({"email": user.email})
+    clean_email = user.email.lower().strip()
+    
+    existing_user = await db.users.find_one({"email": clean_email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email na gamit na paps!")
-    otp_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    if send_otp_email(user.email, otp_code):
-        otp_storage[user.email] = {
-            "name": user.name, "password": pwd_context.hash(user.password),
-            "otp": otp_code, "timestamp": datetime.utcnow()
+    
+    # 6-digit pure numeric OTP para sa mas madaling input sa mobile keyboard
+    otp_code = ''.join(random.choices(string.digits, k=6))
+    
+    if send_otp_email(clean_email, otp_code):
+        # Truncate to 72 bytes to adhere to bcrypt specs safely
+        hashed_password = pwd_context.hash(user.password[:72])
+        
+        otp_storage[clean_email] = {
+            "name": user.name.strip(), 
+            "password": hashed_password,
+            "otp": otp_code, 
+            "timestamp": datetime.utcnow()
         }
         return {"status": "Success", "message": "OTP sent successfully!"}
-    raise HTTPException(status_code=500, detail="Failed to send email.")
+    raise HTTPException(status_code=500, detail="Failed to send OTP email. Subukan uli paps.")
 
 @app.post("/verify-otp")
 async def verify_otp(data: dict):
-    email = data.get("email")
-    user_otp = data.get("otp")
-    if not email or email not in otp_storage:
-        raise HTTPException(status_code=400, detail="Walang pending registration paps.")
-    stored_data = otp_storage[email]
+    raw_email = data.get("email", "")
+    user_otp = str(data.get("otp", "")).strip()
+    clean_email = raw_email.lower().strip()
+    
+    if not clean_email or clean_email not in otp_storage:
+        raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
+    
+    stored_data = otp_storage[clean_email]
+    
+    # 10 Minutes Expiration Check
+    if datetime.utcnow() - stored_data["timestamp"] > timedelta(minutes=10):
+        del otp_storage[clean_email]
+        raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
+        
     if stored_data["otp"] == user_otp:
         new_user = {
-            "name": stored_data["name"], "email": email,
-            "password": stored_data["password"], "role": "user",
+            "name": stored_data["name"], 
+            "email": clean_email,
+            "password": stored_data["password"], 
+            "role": "user",
+            "onboarding_completed": False,
             "created_at": datetime.utcnow()
         }
         result = await db.users.insert_one(new_user)
-        del otp_storage[email]
+        del otp_storage[clean_email]
         return {"status": "Success", "user_id": str(result.inserted_id)}
+        
     raise HTTPException(status_code=400, detail="Mali ang OTP code paps.")
 
 @app.post("/login")
 async def login(user: UserLogin):
-    db_user = await db.users.find_one({"email": user.email})
+    clean_email = user.email.lower().strip()
+    db_user = await db.users.find_one({"email": clean_email})
+    
     if not db_user:
         raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
+    
     password_to_verify = user.password[:72]
     try:
         if not pwd_context.verify(password_to_verify, db_user["password"]):
@@ -139,19 +166,26 @@ async def login(user: UserLogin):
     except Exception as e:
         print(f"Bcrypt verification error: {e}")
         raise HTTPException(status_code=500, detail="Error sa pag-verify ng password.")
+        
     return {
-        "status": "Success", "user_id": str(db_user["_id"]), 
-        "name": db_user["name"], "email": db_user["email"], "role": db_user.get("role", "user")
+        "status": "Success", 
+        "user_id": str(db_user["_id"]), 
+        "name": db_user["name"], 
+        "email": db_user["email"], 
+        "role": db_user.get("role", "user"),
+        "onboarding_completed": db_user.get("onboarding_completed", False)
     }
 
 @app.post("/verify-pin")
 async def verify_pin(data: dict):
-    email = data.get("email")
-    input_pin = str(data.get("pin"))
-    print(f"DEBUG: Backend received email: {email}, pin: {input_pin}")
-    user = await db.users.find_one({"email": email})
+    raw_email = data.get("email", "")
+    clean_email = raw_email.lower().strip()
+    input_pin = str(data.get("pin", "")).strip()
+    
+    user = await db.users.find_one({"email": clean_email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+        
     if str(user.get("pin", "")) == input_pin:
         return {"status": "Success"}
     raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
@@ -215,7 +249,7 @@ async def delete_expense(expense_id: str):
     except:
         raise HTTPException(status_code=400, detail="Maling format ng Expense ID")
 
-    # 1. Kunin muna ang buong detalye ng expense bago tuluyang burahin para sa integrity checks
+    # 1. Kunin muna ang buong detalye ng expense bago tuluyan burahin para sa integrity checks
     expense = await db.expenses.find_one({"_id": exp_oid})
     if not expense:
         raise HTTPException(status_code=404, detail="Transaction not found")

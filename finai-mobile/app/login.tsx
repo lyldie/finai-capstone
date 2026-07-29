@@ -18,7 +18,9 @@ export default function LoginScreen() {
   const router = useRouter();
 
   const handleLogin = async () => {
-    if (!email || !password) {
+    const cleanedEmail = email.trim().toLowerCase();
+
+    if (!cleanedEmail || !password) {
       Alert.alert("Error", "Input mo email at password paps!");
       return;
     }
@@ -29,7 +31,7 @@ export default function LoginScreen() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          email: email.trim().toLowerCase(), 
+          email: cleanedEmail, 
           password: password 
         }),
       });
@@ -37,21 +39,30 @@ export default function LoginScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        // Save user info and role
-        await AsyncStorage.setItem('user_id', data.user_id.toString());
-        await AsyncStorage.setItem('user_name', data.name);
-        await AsyncStorage.setItem('user_email', email.trim().toLowerCase()); 
+        // Safe storage ng user session details
+        if (data.user_id) {
+          await AsyncStorage.setItem('user_id', String(data.user_id));
+        }
+        if (data.name) {
+          await AsyncStorage.setItem('user_name', data.name);
+        }
+        await AsyncStorage.setItem('user_email', cleanedEmail); 
         
         if (data.role) {
           await AsyncStorage.setItem('user_role', data.role);
         }
-        
-        // [INTEGRATED LOGIC]: Dito tayo nag-dedecide agad para walang flash
-        // Kung admin, deretso sa dashboard. Kung user, sa PIN.
+
+        // [INTEGRATED LOGIC]: Smart Redirection
         if (data.role === 'admin') {
           router.replace('/(admin)/admin-dashboard'); 
         } else {
-          router.replace('/verify-pin');
+          // Kung walang naisave na local PIN o sinabi ng backend na wala pang setup
+          const savedPin = await AsyncStorage.getItem('user_pin');
+          if (data.has_pin === false || (!savedPin && data.is_setup_complete === false)) {
+            router.replace('/setup-pin');
+          } else {
+            router.replace('/verify-pin');
+          }
         }
         
       } else {
@@ -96,6 +107,8 @@ export default function LoginScreen() {
                   value={email}
                   onChangeText={setEmail}
                   autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
                 />
               </View>
 

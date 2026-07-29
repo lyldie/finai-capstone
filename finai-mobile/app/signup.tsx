@@ -11,19 +11,42 @@ export default function SignupScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [retypePassword, setRetypePassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showRetypePassword, setShowRetypePassword] = useState(false);
   const [isAgree, setAgree] = useState(false);
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
   const handleSignup = async () => {
-    if (!name || !email || !password || !retypePassword) {
+    const cleanName = name.trim();
+    const cleanEmail = email.trim().toLowerCase();
+
+    // 1. Basic Empty Validation
+    if (!cleanName || !cleanEmail || !password || !retypePassword) {
       Alert.alert("Missing Info", "Fill up mo lahat paps para swabe!");
       return;
     }
+
+    // 2. Email Format Validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      Alert.alert("Invalid Email", "Paki-check ang email format mo paps!");
+      return;
+    }
+
+    // 3. Password Length Validation
+    if (password.length < 6) {
+      Alert.alert("Weak Password", "Dapat at least 6 characters ang password paps.");
+      return;
+    }
+
+    // 4. Password Match Validation
     if (password !== retypePassword) {
       Alert.alert("Wait lang!", "Hindi match yung password mo paps.");
       return;
     }
+
+    // 5. Terms Agreement Check
     if (!isAgree) {
       Alert.alert("Privacy Policy", "Paki-check yung agreement paps.");
       return;
@@ -35,8 +58,8 @@ export default function SignupScreen() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          name: name, 
-          email: email.trim().toLowerCase(), 
+          name: cleanName, 
+          email: cleanEmail, 
           password: password 
         }),
       });
@@ -51,7 +74,7 @@ export default function SignupScreen() {
             text: "Input Code", 
             onPress: () => router.replace({
               pathname: '/otpverify',
-              params: { email: email.trim().toLowerCase() }
+              params: { email: cleanEmail }
             }) 
           }]
         );
@@ -84,35 +107,76 @@ export default function SignupScreen() {
       </LinearGradient>
 
       <ScrollView contentContainerStyle={styles.formContainer} showsVerticalScrollIndicator={false}>
+        {/* Full Name */}
         <View style={styles.inputWrapper}>
           <Ionicons name="person" size={20} color="#999" style={styles.icon} />
-          <TextInput placeholder="Full Name" placeholderTextColor="#999" style={styles.input} value={name} onChangeText={setName} />
+          <TextInput 
+            placeholder="Full Name" 
+            placeholderTextColor="#999" 
+            style={styles.input} 
+            value={name} 
+            onChangeText={setName} 
+          />
         </View>
 
+        {/* Email Address */}
         <View style={styles.inputWrapper}>
           <Ionicons name="mail" size={20} color="#999" style={styles.icon} />
-          <TextInput placeholder="Email Address" placeholderTextColor="#999" style={styles.input} value={email} onChangeText={setEmail} keyboardType="email-address" autoCapitalize="none" />
+          <TextInput 
+            placeholder="Email Address" 
+            placeholderTextColor="#999" 
+            style={styles.input} 
+            value={email} 
+            onChangeText={setEmail} 
+            keyboardType="email-address" 
+            autoCapitalize="none" 
+          />
         </View>
 
+        {/* Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
           <Ionicons name="lock-closed" size={20} color="#999" style={styles.icon} />
-          <TextInput placeholder="Password" placeholderTextColor="#999" style={styles.input} value={password} onChangeText={setPassword} secureTextEntry />
+          <TextInput 
+            placeholder="Password" 
+            placeholderTextColor="#999" 
+            style={styles.input} 
+            value={password} 
+            onChangeText={setPassword} 
+            secureTextEntry={!showPassword} 
+          />
+          <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
+            <Ionicons name={showPassword ? "eye-off" : "eye"} size={20} color="#999" />
+          </TouchableOpacity>
         </View>
 
+        {/* Retype Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
           <Ionicons name="lock-closed" size={20} color="#999" style={styles.icon} />
-          <TextInput placeholder="Retype Password" placeholderTextColor="#999" style={styles.input} value={retypePassword} onChangeText={setRetypePassword} secureTextEntry />
+          <TextInput 
+            placeholder="Retype Password" 
+            placeholderTextColor="#999" 
+            style={styles.input} 
+            value={retypePassword} 
+            onChangeText={setRetypePassword} 
+            secureTextEntry={!showRetypePassword} 
+          />
+          <TouchableOpacity onPress={() => setShowRetypePassword(!showRetypePassword)}>
+            <Ionicons name={showRetypePassword ? "eye-off" : "eye"} size={20} color="#999" />
+          </TouchableOpacity>
         </View>
 
+        {/* Terms Checkbox */}
         <View style={styles.checkboxContainer}>
           <Checkbox value={isAgree} onValueChange={setAgree} color={isAgree ? '#2b5f56' : undefined} />
           <Text style={styles.checkboxLabel}> I agree to <Text style={styles.boldText} onPress={showPrivacyPolicy}>Terms & Privacy</Text></Text>
         </View>
 
+        {/* Sign Up Button */}
         <TouchableOpacity style={styles.signupButton} onPress={handleSignup} disabled={loading}>
           {loading ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Sign Up</Text>}
         </TouchableOpacity>
 
+        {/* Footer Link */}
         <TouchableOpacity onPress={() => router.replace('/login')}>
           <Text style={styles.footerText}>Have an account? <Text style={styles.boldLink}>Sign In</Text></Text>
         </TouchableOpacity>
