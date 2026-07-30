@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime, timedelta
 from bson import ObjectId
@@ -11,6 +11,10 @@ import smtplib
 import random
 import string
 import os
+import cv2
+import numpy as np
+import re
+import easyocr
 from email.message import EmailMessage
 import uvicorn
 
@@ -19,7 +23,7 @@ from database import db
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals
 
-app = FastAPI()
+app = FastAPI(title="FinAi Backend", version="1.0")
 
 # 1. Terminal Truth - Error Debugger
 @app.exception_handler(RequestValidationError)
@@ -48,7 +52,67 @@ EMAIL_SENDER = os.getenv("EMAIL_SENDER", "sobrangfinefinai@gmail.com")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu") 
 otp_storage = {}
 
-# --- 4. MODELS ---
+# --- 4. EASYOCR INITIALIZATION ---
+print("Initializing EasyOCR Reader for FinAi...")
+reader = easyocr.Reader(['en'], gpu=False) # Palitan ng gpu=True kung may Nvidia graphics card kayo
+print("EasyOCR Initialized successfully!")
+
+# --- 5. MERCHANT MATCHING DICTIONARY & GUARDRAILS ---
+MERCHANT_CATEGORY_MAP = {
+    "Food & Dining": [
+        "jollibee", "mcdonalds", "mcdo", "chowking", "mang inasal", "kfc", 
+        "starbucks", "greenwich", "tokyo tokyo", "shakeys", "pizza hut", 
+        "bonchon", "burger king", "popeyes", "7-eleven", "uncle johns"
+    ],
+    "Groceries": [
+        "puregold", "sm supermarket", "savemore", "robinsons supermarket", 
+        "waltermart", "dali", "alfamart", "landers", "snr", "super8", "hypermarket"
+    ],
+    "Shopping & Personal Care": [
+        "watsons", "unql", "uniqlo", "bench", "penser", "cetaphil", 
+        "miniso", "mr.diy", "mr diy", "h&m"
+    ],
+    "Utilities & Bills": [
+        "meralco", "maynilad", "manila water", "pldt", "globe", "smart", "dito"
+    ],
+    "Transportation & Fuel": [
+        "shell", "petron", "caltex", "seaoil", "cleanfuel", "grab", "angkas", "joyride"
+    ]
+}
+
+# 🛡️ STRICT RECEIPT ANCHORS
+RECEIPT_KEYWORDS = [
+    "total", "subtotal", "official receipt", "sales invoice", "or#", "tin#",
+    "cash tender", "amount due", "vatable", "vat-exempt", "change due",
+    "cashier", "receipt", "table #", "transaction #"
+]
+
+# ⛔ CODE & NON-RECEIPT PATTERNS TO REJECT IMMEDIATELY
+CODE_REJECTION_PATTERNS = [
+    "git pull", "git push", "git commit", "uvicorn", "http://", "https://", 
+    "port 8000", "npm start", "expo start", "#backend", "#frontend", 
+    "import react", "const ", "function()", "localhost", "def ", "class "
+]
+
+def match_merchant_and_category(full_text: str, default_merchant: str):
+    """Rule-based keyword matching algorithm para sa merchant at category."""
+    text_lower = full_text.lower()
+    
+    # Check each category array
+    for category_name, keywords in MERCHANT_CATEGORY_MAP.items():
+        for kw in keywords:
+            if kw in text_lower:
+                matched_store = kw.title()
+                if kw in ["mcdo", "mcdonalds"]: matched_store = "McDonald's"
+                elif kw == "7-eleven": matched_store = "7-Eleven"
+                elif kw in ["mr.diy", "mr diy"]: matched_store = "MR.DIY"
+                elif kw == "snr": matched_store = "S&R Membership Shopping"
+                
+                return matched_store, category_name
+                
+    return default_merchant, "General"
+
+# --- 6. MODELS ---
 class UserSignup(BaseModel):
     name: str = Field(..., min_length=2, description="Pangalan ng user")
     email: EmailStr
@@ -69,7 +133,7 @@ class TransactionSchema(BaseModel):
     account: str
     to_account: Optional[str] = None
     date: Optional[str] = None
-    goal_id: Optional[str] = None  # INTEGRATED: Dito kakapit ang link papunta sa collection ng goals
+    goal_id: Optional[str] = None
 
 class InitialSetupSchema(BaseModel):
     user_id: str
@@ -79,7 +143,7 @@ class InitialSetupSchema(BaseModel):
     target_amount: float = Field(..., gt=0, description="Target savings amount")
     target_date: str = Field(..., description="Format: YYYY-MM-DD")
 
-# --- 5. HELPER FUNCTIONS ---
+# --- 7. HELPER FUNCTIONS ---
 def send_otp_email(target_email: str, otp_code: str):
     try:
         msg = EmailMessage()
@@ -95,7 +159,7 @@ def send_otp_email(target_email: str, otp_code: str):
         print(f"SMTP Error: {e}")
         return False
 
-# --- 6. AUTH ENDPOINTS ---
+# --- 8. AUTH ENDPOINTS ---
 @app.post("/register")
 async def register(user: UserSignup):
     clean_email = user.email.lower().strip()
@@ -104,11 +168,9 @@ async def register(user: UserSignup):
     if existing_user:
         raise HTTPException(status_code=400, detail="Email na gamit na paps!")
     
-    # 6-digit pure numeric OTP para sa mas madaling input sa mobile keyboard
     otp_code = ''.join(random.choices(string.digits, k=6))
     
     if send_otp_email(clean_email, otp_code):
-        # Truncate to 72 bytes to adhere to bcrypt specs safely
         hashed_password = pwd_context.hash(user.password[:72])
         
         otp_storage[clean_email] = {
@@ -131,7 +193,6 @@ async def verify_otp(data: dict):
     
     stored_data = otp_storage[clean_email]
     
-    # 10 Minutes Expiration Check
     if datetime.utcnow() - stored_data["timestamp"] > timedelta(minutes=10):
         del otp_storage[clean_email]
         raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
@@ -190,20 +251,96 @@ async def verify_pin(data: dict):
         return {"status": "Success"}
     raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
 
-# --- 7. TRANSACTION ENDPOINTS ---
+# --- 9. EASYOCR RECEIPT SCANNER ENDPOINT (STRICT GUARDRAILS) ---
+@app.post("/ocr-scan")
+async def ocr_scan(file: UploadFile = File(...)):
+    try:
+        contents = await file.read()
+        nparr = np.frombuffer(contents, np.uint8)
+        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+        if img is None:
+            raise HTTPException(status_code=400, detail="Invalid image file.")
+
+        results = reader.readtext(img)
+        extracted_texts = [res[1] for res in results]
+        full_text_block = " ".join(extracted_texts).lower()
+
+        # 🛑 GUARDRAIL 1: REJECT CODE & NON-RECEIPT SCREENSHOTS IMMEDIATELY
+        is_code = any(pattern in full_text_block for pattern in CODE_REJECTION_PATTERNS)
+        if is_code:
+            raise HTTPException(
+                status_code=400,
+                detail="Hindi valid na resibo ang iniscan paps! Nakadetect ng source code o system log."
+            )
+
+        # 🛑 GUARDRAIL 2: STRICT RECEIPT KEYWORD MATCHING
+        keyword_matches = [kw for kw in RECEIPT_KEYWORDS if kw in full_text_block]
+        if len(keyword_matches) < 1:
+            raise HTTPException(
+                status_code=400, 
+                detail="Hindi valid na resibo ang iniscan paps! Siguraduhing malinaw ang resibo at nakakunan ang total."
+            )
+
+        # 🔍 STEP 3: EXTRACT AMOUNTS
+        amounts = []
+        for text in extracted_texts:
+            cleaned_money = re.findall(r'\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}', text)
+            for m in cleaned_money:
+                val = float(m.replace(',', ''))
+                # Filter out obvious port numbers like 8000.00 if parsed weirdly
+                if val != 8000.0 and val != 8080.0:
+                    amounts.append(val)
+
+        detected_amount = f"{max(amounts):.2f}" if amounts else "0.00"
+
+        # Safe Check: If amount is 0.00, treat it as invalid scan
+        if float(detected_amount) == 0.0:
+            raise HTTPException(
+                status_code=400,
+                detail="Walang nahanap na halaga/total sa iniscan na resibo. Subukan ulit paps."
+            )
+
+        # 🏢 STEP 4: MERCHANT & CATEGORY MATCHING ALGORITHM
+        raw_first_line = extracted_texts[0] if len(extracted_texts) > 0 else "Store Receipt"
+        detected_merchant, matched_category = match_merchant_and_category(full_text_block, raw_first_line)
+
+        # 📅 STEP 5: EXTRACT DATE
+        detected_date = datetime.now().strftime("%Y-%m-%d")
+        date_pattern = r'\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{2,4}'
+        for text in extracted_texts:
+            date_match = re.search(date_pattern, text)
+            if date_match:
+                detected_date = date_match.group(0)
+                break
+
+        return {
+            "status": "Success",
+            "data": {
+                "amount": detected_amount,
+                "merchant": detected_merchant,
+                "category": matched_category,
+                "date": detected_date,
+                "raw_text": full_text_block
+            }
+        }
+    except HTTPException as http_ex:
+        raise http_ex
+    except Exception as e:
+        print(f"OCR Scan Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- 10. TRANSACTION ENDPOINTS ---
 @app.post("/add-expense")
 async def add_expense(transaction: TransactionSchema):
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
     
-    # Siguraduhing naka-save ang goal_id bilang plain string field para madaling hanapin
     if transaction_dict.get("goal_id"):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
         
-    # 1. Save the expense
     result = await db.expenses.insert_one(transaction_dict)
     
-    # 2. Logic to update Budget
     if transaction.type.lower() == "expense":
         category_doc = await db.categories.find_one({"name": transaction.category})
 
@@ -211,7 +348,6 @@ async def add_expense(transaction: TransactionSchema):
             cat_id = str(category_doc["_id"])
             current_month = datetime.utcnow().strftime("%m-%Y")
             
-            # I-check kung may existing budget record
             budget_exists = await db.budgets.find_one({
                 "user_id": transaction.user_id,
                 "category_id": cat_id,
@@ -219,7 +355,6 @@ async def add_expense(transaction: TransactionSchema):
             })
 
             if budget_exists:
-                # Kung may budget, i-update ang spent
                 await db.budgets.update_one(
                     {"_id": budget_exists["_id"]}, 
                     {"$inc": {"spent": transaction.amount}}
@@ -249,12 +384,10 @@ async def delete_expense(expense_id: str):
     except:
         raise HTTPException(status_code=400, detail="Maling format ng Expense ID")
 
-    # 1. Kunin muna ang buong detalye ng expense bago tuluyan burahin para sa integrity checks
     expense = await db.expenses.find_one({"_id": exp_oid})
     if not expense:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
-    # 2. INTEGRATED SYNC CASCADE: Kung may kaakibat na goal_id ang transaction, ibabawas ang safe value sa goal
     goal_id = expense.get("goal_id")
     if goal_id:
         try:
@@ -263,18 +396,16 @@ async def delete_expense(expense_id: str):
                 {"_id": ObjectId(goal_id)},
                 {"$inc": {"current_savings": -amount_to_deduct}}
             )
-            print(f"INTEGRITY SUCCESS: {amount_to_deduct} successfully deducted from Goal {goal_id}")
         except Exception as e:
             print(f"INTEGRITY WARNING: Failed to update linked savings balance -> {e}")
 
-    # 3. Tuluyan nang burahin ang expense sa database logs
     result = await db.expenses.delete_one({"_id": exp_oid})
     if result.deleted_count == 1: 
         return {"status": "Success", "message": "Transaction deleted and goals synchronized!"}
         
     raise HTTPException(status_code=500, detail="Failed to delete from server storage")
 
-# --- 8. ONBOARDING ---
+# --- 11. ONBOARDING ---
 @app.post("/initial-setup")
 async def initial_setup(data: InitialSetupSchema):
     await db.users.update_one({"_id": ObjectId(data.user_id)}, {"$set": {"pin": data.pin, "monthly_income": data.monthly_income, "onboarding_completed": True}})

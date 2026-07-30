@@ -7,7 +7,7 @@ import { useEffect, useState } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import 'react-native-reanimated';
 import { TransactionProvider } from '../context/TransactionContext';
-import { AuthProvider } from '../context/AuthContext'; // 👈 1. Import AuthProvider
+import { AuthProvider } from '../context/AuthContext';
 
 export { ErrorBoundary } from 'expo-router';
 
@@ -61,7 +61,7 @@ function RootLayoutNav() {
   if (!isReady) return null;
 
   return (
-    <AuthProvider> {/* 👈 2. I-wrap si AuthProvider sa pinakataas */}
+    <AuthProvider>
       <TransactionProvider>
         <ThemeProvider value={DefaultTheme}>
           <Stack screenOptions={{ headerShown: false }}>

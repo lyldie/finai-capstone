@@ -9,10 +9,9 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<{ name: string } | null>({ name: 'Lyd' }); // Default muna
+  const [user, setUser] = useState<{ name: string } | null>({ name: 'Lyd' });
 
   useEffect(() => {
-    // Pwede mong kunin dito ang real user name mula sa AsyncStorage kung sinave mo roon during login
     const loadUserData = async () => {
       try {
         const storedName = await AsyncStorage.getItem('user_name');

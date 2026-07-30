@@ -1,15 +1,14 @@
-import React, {useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-// 1. Dito natin kinuha ang global state (categories at accounts)
 import { useTransactions, TransactionType } from '../../context/TransactionContext'; 
 import DateTimePicker from '@react-native-community/datetimepicker'; 
+import ReceiptScannerModal from '../../components/ReceiptScannerModal'; 
 
 export default function TabTwoScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  // 2. Dinagdag ang 'categories' at 'accounts' mula sa Context
   const { addTransaction, updateTransaction, fetchTransactions, categories, accounts } = useTransactions(); 
 
   const [type, setType] = useState<TransactionType>('Expense');
@@ -22,12 +21,22 @@ export default function TabTwoScreen() {
   
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
+  const [isScannerVisible, setIsScannerVisible] = useState(false); 
   const [selectingTarget, setSelectingTarget] = useState<'from' | 'to'>('from');
   const [showDatePicker, setShowDatePicker] = useState(false); 
   const [tempDate, setTempDate] = useState(new Date()); 
 
-  // 3. Dynamic Filtering: Gagamitin na natin ang 'categories' mula sa Context
   const displayedCategories = categories.filter((c: any) => c.type === type.toLowerCase());
+
+  const resetForm = () => {
+    setAmount('');
+    setNote('');
+    setCategory('Select Category');
+    setAccount('Cash');
+    setToAccount('GCash');
+    setDate(new Date().toISOString().split('T')[0]);
+    setType('Expense');
+  };
 
   useEffect(() => {
     if (params && params.id) {
@@ -49,20 +58,24 @@ export default function TabTwoScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!params || !params.id) {
-        setAmount('');
-        setNote('');
-        setCategory('Select Category');
-        setAccount('Cash');
-        setToAccount('GCash');
-        setDate(new Date().toISOString().split('T')[0]);
+        resetForm();
       }
-    }, [params.id]) 
+    }, [params?.id]) 
   );
 
   const getActiveColor = () => {
     if (type === 'Income') return '#10B981';
     if (type === 'Expense') return '#EF4444';
     return '#3B82F6';
+  };
+
+  const handleAmountChange = (text: string) => {
+    const cleaned = text.replace(/[^0-9.]/g, '');
+    const parts = cleaned.split('.');
+    if (parts.length > 2) {
+      return; 
+    }
+    setAmount(cleaned);
   };
 
   const handleSave = async () => {
@@ -96,11 +109,17 @@ export default function TabTwoScreen() {
 
   return (
     <View style={styles.container}>
-      {/* UI Remains same... */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => router.back()}><Ionicons name="close" size={28} color="#142D2A" /></TouchableOpacity>
         <Text style={styles.headerTitle}>{params && params.id ? 'Edit Transaction' : 'New Transaction'}</Text>
-        <TouchableOpacity onPress={handleSave}><Ionicons name="checkmark" size={28} color={getActiveColor()} /></TouchableOpacity>
+        <View style={styles.headerRightActions}>
+          {!params?.id && (
+            <TouchableOpacity onPress={() => setIsScannerVisible(true)} style={styles.scanHeaderButton} activeOpacity={0.7}>
+              <Ionicons name="scan-outline" size={22} color={getActiveColor()} />
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity onPress={handleSave} style={{ marginLeft: 15 }}><Ionicons name="checkmark" size={28} color={getActiveColor()} /></TouchableOpacity>
+        </View>
       </View>
 
       <View style={styles.selectorContainer}>
@@ -115,7 +134,15 @@ export default function TabTwoScreen() {
         <ScrollView style={styles.form} showsVerticalScrollIndicator={false}>
           <View style={styles.amountSection}>
             <Text style={styles.currencyLabel}>PHP</Text>
-            <TextInput style={[styles.amountInput, { color: getActiveColor() }]} placeholder="0.00" placeholderTextColor="#A2B5B0" keyboardType="decimal-pad" autoFocus={!params?.id} value={amount} onChangeText={(text) => setAmount(text)} />
+            <TextInput 
+              style={[styles.amountInput, { color: getActiveColor() }]} 
+              placeholder="0.00" 
+              placeholderTextColor="#A2B5B0" 
+              keyboardType="decimal-pad" 
+              autoFocus={!params?.id} 
+              value={amount} 
+              onChangeText={handleAmountChange} 
+            />
           </View>
 
           <View style={styles.card}>
@@ -124,7 +151,11 @@ export default function TabTwoScreen() {
               <Modal visible={showDatePicker} animationType="slide" transparent={true}>
                 <View style={styles.pickerModalOverlay}>
                   <View style={styles.pickerModalContainer}>
-                    <View style={styles.pickerHeader}><TouchableOpacity onPress={() => setShowDatePicker(false)}><Text style={styles.pickerCancelText}>Cancel</Text></TouchableOpacity><Text style={styles.pickerHeaderTitle}>Select Date</Text><TouchableOpacity onPress={() => { setDate(tempDate.toISOString().split('T')[0]); setShowDatePicker(false); }}><Text style={styles.pickerDoneText}>Done</Text></TouchableOpacity></View>
+                    <View style={styles.pickerHeader}>
+                      <TouchableOpacity onPress={() => setShowDatePicker(false)}><Text style={styles.pickerCancelText}>Cancel</Text></TouchableOpacity>
+                      <Text style={styles.pickerHeaderTitle}>Select Date</Text>
+                      <TouchableOpacity onPress={() => { setDate(tempDate.toISOString().split('T')[0]); setShowDatePicker(false); }}><Text style={styles.pickerDoneText}>Done</Text></TouchableOpacity>
+                    </View>
                     <DateTimePicker value={tempDate} mode="date" display="spinner" themeVariant="light" maximumDate={new Date()} onChange={(e, d) => { if (d) setTempDate(d); }} />
                   </View>
                 </View>
@@ -148,45 +179,64 @@ export default function TabTwoScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* Category Selection Modal */}
       <Modal visible={isCatModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Category</Text>
-            {/* 4. Dito ginamit ang dynamic 'displayedCategories' */}
             <FlatList data={displayedCategories} keyExtractor={(item: any) => item.id || item.name} numColumns={3} renderItem={({ item }: any) => (
               <TouchableOpacity style={styles.categoryGridItem} onPress={() => { setCategory(item.name); setIsCatModalVisible(false); }}>
                 <View style={styles.iconCircle}><Ionicons name={item.icon as any} size={24} color={getActiveColor()} /></View>
                 <Text style={styles.categoryText}>{item.name}</Text>
               </TouchableOpacity>
             )} />
-            <TouchableOpacity onPress={() => setIsCatModalVisible(false)} style={styles.closeModalButton}><Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setIsCatModalVisible(false)} style={styles.closeModalButton}>
+              <Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
+      {/* Account Selection Modal */}
       <Modal visible={isAccModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Account</Text>
-            {/* 5. Dito ginamit ang dynamic 'accounts' mula sa Context */}
             {accounts.map((acc) => (
               <TouchableOpacity key={acc.id} style={styles.accOption} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
                 <Ionicons name="wallet-outline" size={20} color={getActiveColor()} />
                 <Text style={styles.accOptionText}>{acc.name}</Text>
               </TouchableOpacity>
             ))}
-            <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}><Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}>
+              <Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
+
+      {/* EasyOCR Receipt Scanner Modal Integration */}
+      <ReceiptScannerModal 
+        visible={isScannerVisible}
+        onClose={() => setIsScannerVisible(false)}
+        categories={categories}
+        onScanComplete={(data) => {
+          setAmount(data.amount);
+          setCategory(data.category);
+          setDate(data.date);
+          setNote(data.note);
+          setType('Expense'); 
+        }}
+      />
     </View>
   );
 }
 
-
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F4F7F6', paddingHorizontal: 20 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 50, marginBottom: 20 },
+  headerRightActions: { flexDirection: 'row', alignItems: 'center' },
+  scanHeaderButton: { padding: 4 },
   headerTitle: { color: '#142D2A', fontSize: 16, fontWeight: '700', letterSpacing: 0.5 },
   selectorContainer: { flexDirection: 'row', backgroundColor: '#E2EAF4', borderRadius: 25, padding: 4, marginBottom: 30 },
   selectorItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 20 },
