@@ -11,9 +11,16 @@ interface ReceiptScannerModalProps {
   onClose: () => void;
   onScanComplete: (data: { amount: string; category: string; date: string; note: string }) => void;
   categories: any[];
+  userId?: string; // Dagdag na prop para maipasa ang kasalukuyang user ID
 }
 
-export default function ReceiptScannerModal({ visible, onClose, onScanComplete, categories }: ReceiptScannerModalProps) {
+export default function ReceiptScannerModal({ 
+  visible, 
+  onClose, 
+  onScanComplete, 
+  categories,
+  userId 
+}: ReceiptScannerModalProps) {
   const [permission, requestPermission] = useCameraPermissions();
   const [isProcessing, setIsProcessing] = useState(false);
   const cameraRef = useRef<any>(null);
@@ -41,6 +48,11 @@ export default function ReceiptScannerModal({ visible, onClose, onScanComplete, 
         name: 'receipt.jpg',
         type: 'image/jpeg',
       } as any);
+
+      // IPINAPASA ANG USER_ID SA BACKEND PARA SA DYNAMIC CATEGORY MATCHING
+      if (userId) {
+        formData.append('user_id', userId);
+      }
 
       // PALITAN ANG IP ADDRESS NG LOCAL IP MO KUNG KAILANGAN
       const response = await fetch('http://192.168.1.74:8000/ocr-scan', {
@@ -88,7 +100,6 @@ export default function ReceiptScannerModal({ visible, onClose, onScanComplete, 
       onClose();
 
     } catch (error: any) {
-      // ✅ pinalitan mula console.error pabalik sa console.log para HINDI mag-pop up ang Red Box sa Expo
       console.log("OCR Handled Error:", error?.message || error);
       
       Alert.alert(
@@ -146,7 +157,7 @@ export default function ReceiptScannerModal({ visible, onClose, onScanComplete, 
             {isProcessing ? (
               <View style={styles.processingContainer}>
                 <ActivityIndicator size="large" color="#FFFFFF" />
-                <Text style={styles.processingText}>Processing via EasyOCR...</Text>
+                <Text style={styles.processingText}>Analyzing receipt context...</Text>
               </View>
             ) : (
               <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>

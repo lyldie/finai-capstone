@@ -1,9 +1,9 @@
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime, timedelta
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional
+from typing import Optional, List
 from passlib.context import CryptContext
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -15,6 +15,8 @@ import cv2
 import numpy as np
 import re
 import easyocr
+import json
+import google.generativeai as genai
 from email.message import EmailMessage
 import uvicorn
 
@@ -46,59 +48,74 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 3. Security & Email Config
+# 3. Security, Gemini & Email Config
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER", "sobrangfinefinai@gmail.com")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu") 
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "GEMINI_API_KEY_NOT_SET")
+
+if GEMINI_API_KEY:
+    genai.configure(api_key=GEMINI_API_KEY)
+
 otp_storage = {}
 
 # --- 4. EASYOCR INITIALIZATION ---
 print("Initializing EasyOCR Reader for FinAi...")
-reader = easyocr.Reader(['en'], gpu=False) # Palitan ng gpu=True kung may Nvidia graphics card kayo
+reader = easyocr.Reader(['en'], gpu=False)
 print("EasyOCR Initialized successfully!")
 
-# --- 5. MERCHANT MATCHING DICTIONARY & GUARDRAILS ---
+# --- 5. EXPANDED LOCAL MERCHANT & ITEM MATCHING DICTIONARY ---
 MERCHANT_CATEGORY_MAP = {
     "Food & Dining": [
+        # Major Fast Food & Chains
         "jollibee", "mcdonalds", "mcdo", "chowking", "mang inasal", "kfc", 
         "starbucks", "greenwich", "tokyo tokyo", "shakeys", "pizza hut", 
-        "bonchon", "burger king", "popeyes", "7-eleven", "uncle johns"
+        "bonchon", "burger king", "popeyes", "7-eleven", "uncle johns",
+        # Local Eateries, Canteens & Common Menu Terms
+        "lugawan", "lugaw", "silog", "porksilog", "tapsilog", "chicksilog", "bangsilog",
+        "karinderya", "eatery", "canteen", "bistro", "grill", "samgyupsal", 
+        "milktea", "coffee", "cafe", "bakery", "bakeshop", "kitchen", "diner", "resto", "eats"
     ],
     "Groceries": [
         "puregold", "sm supermarket", "savemore", "robinsons supermarket", 
-        "waltermart", "dali", "alfamart", "landers", "snr", "super8", "hypermarket"
+        "waltermart", "dali", "alfamart", "landers", "snr", "super8", "hypermarket",
+        "mart", "grocery", "supermarket", "wholesaler", "convenience"
     ],
     "Shopping & Personal Care": [
         "watsons", "unql", "uniqlo", "bench", "penser", "cetaphil", 
-        "miniso", "mr.diy", "mr diy", "h&m"
+        "miniso", "mr.diy", "mr diy", "h&m", "department store", "boutique", "apparel"
     ],
     "Utilities & Bills": [
-        "meralco", "maynilad", "manila water", "pldt", "globe", "smart", "dito"
+        "meralco", "maynilad", "manila water", "pldt", "globe", "smart", "dito", "electric", "water"
     ],
     "Transportation & Fuel": [
-        "shell", "petron", "caltex", "seaoil", "cleanfuel", "grab", "angkas", "joyride"
+        "shell", "petron", "caltex", "seaoil", "cleanfuel", "grab", "angkas", "joyride", "gasoline", "expressway", "toll"
     ]
 }
 
-# 🛡️ STRICT RECEIPT ANCHORS
 RECEIPT_KEYWORDS = [
     "total", "subtotal", "official receipt", "sales invoice", "or#", "tin#",
     "cash tender", "amount due", "vatable", "vat-exempt", "change due",
     "cashier", "receipt", "table #", "transaction #"
 ]
 
-# ⛔ CODE & NON-RECEIPT PATTERNS TO REJECT IMMEDIATELY
 CODE_REJECTION_PATTERNS = [
     "git pull", "git push", "git commit", "uvicorn", "http://", "https://", 
     "port 8000", "npm start", "expo start", "#backend", "#frontend", 
     "import react", "const ", "function()", "localhost", "def ", "class "
 ]
 
-def match_merchant_and_category(full_text: str, default_merchant: str):
-    """Rule-based keyword matching algorithm para sa merchant at category."""
+def match_merchant_and_category(full_text: str, default_merchant: str, available_categories: List[str] = None):
+    """Rule-based keyword matching algorithm na may dynamic custom categories support."""
     text_lower = full_text.lower()
     
-    # Check each category array
+    # 1. Custom User Categories Match (Priority kung tugma sa sinet ng user)
+    if available_categories:
+        for user_cat in available_categories:
+            if user_cat.lower() in text_lower:
+                return default_merchant, user_cat
+
+    # 2. Predefined Dictionary Matching
     for category_name, keywords in MERCHANT_CATEGORY_MAP.items():
         for kw in keywords:
             if kw in text_lower:
@@ -108,9 +125,51 @@ def match_merchant_and_category(full_text: str, default_merchant: str):
                 elif kw in ["mr.diy", "mr diy"]: matched_store = "MR.DIY"
                 elif kw == "snr": matched_store = "S&R Membership Shopping"
                 
-                return matched_store, category_name
+                # Check kung active ang category name na 'to sa listahan ng user
+                final_category = category_name
+                if available_categories and category_name not in available_categories:
+                    final_category = available_categories[0] if available_categories else "General"
+
+                return matched_store, final_category
                 
-    return default_merchant, "General"
+    fallback_cat = available_categories[0] if (available_categories and len(available_categories) > 0) else "General"
+    return default_merchant, fallback_cat
+
+
+async def gemini_vision_fallback(image_bytes: bytes, available_categories: List[str]) -> dict:
+    """PLAN B: Fallback OCR Scanner gamit ang Gemini Vision API."""
+    print("Plan A EasyOCR rejected or uncertain. Triggering Plan B (Gemini Vision AI)...")
+    
+    categories_str = ", ".join(available_categories) if available_categories else "Food & Dining, Groceries, Shopping, Transportation, Utilities, Other"
+    
+    prompt = f"""
+    You are an expert financial receipt parser. Analyze the image and extract:
+    1. total_amount (float number only, e.g., 129.00)
+    2. merchant (string, store or seller name)
+    3. category (string - MUST BE EXACTLY ONE FROM THIS LIST: [{categories_str}])
+    4. date (string, YYYY-MM-DD format if found, otherwise today's date)
+
+    If the receipt is handwritten, local, or non-standard, infer the most context-appropriate category from the given list.
+    Return strictly a raw JSON object with keys: "amount", "merchant", "category", "date". No markdown, no prose.
+    """
+    
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    response = model.generate_content([
+        prompt,
+        {"mime_type": "image/jpeg", "data": image_bytes}
+    ])
+    
+    raw_response = response.text.strip().replace("```json", "").replace("```", "")
+    data = json.loads(raw_response)
+    
+    return {
+        "amount": f"{float(data.get('amount', 0.0)):.2f}",
+        "merchant": str(data.get('merchant', 'Store Receipt')),
+        "category": str(data.get('category', 'General')),
+        "date": str(data.get('date', datetime.now().strftime("%Y-%m-%d"))),
+        "raw_text": "Parsed by Gemini Vision Engine (Plan B)"
+    }
+
 
 # --- 6. MODELS ---
 class UserSignup(BaseModel):
@@ -163,16 +222,13 @@ def send_otp_email(target_email: str, otp_code: str):
 @app.post("/register")
 async def register(user: UserSignup):
     clean_email = user.email.lower().strip()
-    
     existing_user = await db.users.find_one({"email": clean_email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email na gamit na paps!")
     
     otp_code = ''.join(random.choices(string.digits, k=6))
-    
     if send_otp_email(clean_email, otp_code):
         hashed_password = pwd_context.hash(user.password[:72])
-        
         otp_storage[clean_email] = {
             "name": user.name.strip(), 
             "password": hashed_password,
@@ -192,7 +248,6 @@ async def verify_otp(data: dict):
         raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
     
     stored_data = otp_storage[clean_email]
-    
     if datetime.utcnow() - stored_data["timestamp"] > timedelta(minutes=10):
         del otp_storage[clean_email]
         raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
@@ -251,11 +306,26 @@ async def verify_pin(data: dict):
         return {"status": "Success"}
     raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
 
-# --- 9. EASYOCR RECEIPT SCANNER ENDPOINT (STRICT GUARDRAILS) ---
+# --- 9. HYBRID OCR RECEIPT SCANNER ENDPOINT ---
 @app.post("/ocr-scan")
-async def ocr_scan(file: UploadFile = File(...)):
+async def ocr_scan(
+    file: UploadFile = File(...),
+    user_id: Optional[str] = Form(None)
+):
+    contents = await file.read()
+    
+    # KUNIN ANG ACTIVE CATEGORIES NG USER MULA SA DATABASE KUNG MAY USER_ID
+    user_categories = []
+    if user_id:
+        try:
+            cursor = db.categories.find({"$or": [{"user_id": user_id}, {"is_default": True}]})
+            cat_docs = await cursor.to_list(length=100)
+            user_categories = [c["name"] for c in cat_docs]
+        except Exception as e:
+            print(f"Could not fetch user categories: {e}")
+
+    # --- PLAN A: EASYOCR LOCAL PROCESSING ---
     try:
-        contents = await file.read()
         nparr = np.frombuffer(contents, np.uint8)
         img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
@@ -266,46 +336,32 @@ async def ocr_scan(file: UploadFile = File(...)):
         extracted_texts = [res[1] for res in results]
         full_text_block = " ".join(extracted_texts).lower()
 
-        # 🛑 GUARDRAIL 1: REJECT CODE & NON-RECEIPT SCREENSHOTS IMMEDIATELY
+        # REJECT CODE SCREENSHOTS
         is_code = any(pattern in full_text_block for pattern in CODE_REJECTION_PATTERNS)
         if is_code:
-            raise HTTPException(
-                status_code=400,
-                detail="Hindi valid na resibo ang iniscan paps! Nakadetect ng source code o system log."
-            )
+            raise HTTPException(status_code=400, detail="Hindi valid na resibo! Nakadetect ng source code/system log.")
 
-        # 🛑 GUARDRAIL 2: STRICT RECEIPT KEYWORD MATCHING
+        # CHECK KEYWORDS
         keyword_matches = [kw for kw in RECEIPT_KEYWORDS if kw in full_text_block]
         if len(keyword_matches) < 1:
-            raise HTTPException(
-                status_code=400, 
-                detail="Hindi valid na resibo ang iniscan paps! Siguraduhing malinaw ang resibo at nakakunan ang total."
-            )
+            raise ValueError("EasyOCR: Standard receipt keywords not found.")
 
-        # 🔍 STEP 3: EXTRACT AMOUNTS
+        # EXTRACT AMOUNT
         amounts = []
         for text in extracted_texts:
             cleaned_money = re.findall(r'\d{1,3}(?:,\d{3})*\.\d{2}|\d+\.\d{2}', text)
             for m in cleaned_money:
                 val = float(m.replace(',', ''))
-                # Filter out obvious port numbers like 8000.00 if parsed weirdly
                 if val != 8000.0 and val != 8080.0:
                     amounts.append(val)
 
         detected_amount = f"{max(amounts):.2f}" if amounts else "0.00"
-
-        # Safe Check: If amount is 0.00, treat it as invalid scan
         if float(detected_amount) == 0.0:
-            raise HTTPException(
-                status_code=400,
-                detail="Walang nahanap na halaga/total sa iniscan na resibo. Subukan ulit paps."
-            )
+            raise ValueError("EasyOCR: Valid amount not extracted.")
 
-        # 🏢 STEP 4: MERCHANT & CATEGORY MATCHING ALGORITHM
         raw_first_line = extracted_texts[0] if len(extracted_texts) > 0 else "Store Receipt"
-        detected_merchant, matched_category = match_merchant_and_category(full_text_block, raw_first_line)
+        detected_merchant, matched_category = match_merchant_and_category(full_text_block, raw_first_line, user_categories)
 
-        # 📅 STEP 5: EXTRACT DATE
         detected_date = datetime.now().strftime("%Y-%m-%d")
         date_pattern = r'\d{4}[-/]\d{2}[-/]\d{2}|\d{2}[-/]\d{2}[-/]\d{2,4}'
         for text in extracted_texts:
@@ -314,8 +370,10 @@ async def ocr_scan(file: UploadFile = File(...)):
                 detected_date = date_match.group(0)
                 break
 
+        print("Plan A (EasyOCR) Successful!")
         return {
             "status": "Success",
+            "engine": "EasyOCR (Plan A)",
             "data": {
                 "amount": detected_amount,
                 "merchant": detected_merchant,
@@ -324,11 +382,20 @@ async def ocr_scan(file: UploadFile = File(...)):
                 "raw_text": full_text_block
             }
         }
-    except HTTPException as http_ex:
-        raise http_ex
-    except Exception as e:
-        print(f"OCR Scan Error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+
+    except Exception as plan_a_error:
+        print(f"Plan A Failed or Triggered Fallback -> Reason: {plan_a_error}")
+        # --- PLAN B: GEMINI VISION FALLBACK ---
+        try:
+            parsed_data = await gemini_vision_fallback(contents, user_categories)
+            return {
+                "status": "Success",
+                "engine": "Gemini Vision AI (Plan B Fallback)",
+                "data": parsed_data
+            }
+        except Exception as plan_b_error:
+            print(f"Plan B Error: {plan_b_error}")
+            raise HTTPException(status_code=400, detail="Hindi mabasa ang resibo paps. Siguraduhing malinaw at hindi masyadong dumi/pudpod.")
 
 # --- 10. TRANSACTION ENDPOINTS ---
 @app.post("/add-expense")
