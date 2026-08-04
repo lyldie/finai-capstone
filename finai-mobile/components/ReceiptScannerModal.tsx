@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 
 // I-ignore ang OCR logs kung sakaling mag-trigger pa sa Expo LogBox
@@ -14,6 +15,12 @@ interface ReceiptScannerModalProps {
   userId?: string;
 }
 
+// Dapat tumugma ito sa visual proportions ng styles.scanFrame sa ibaba
+// (width: '82%', height: '85%', centered) — dito kino-crop ang aktwal na litrato.
+const GUIDE_FRAME_WIDTH_RATIO = 0.82;
+const GUIDE_FRAME_HEIGHT_RATIO = 0.85;
+const MAX_MULTI_PHOTOS = 4;
+
 export default function ReceiptScannerModal({ 
   visible, 
   onClose, 
@@ -22,7 +29,11 @@ export default function ReceiptScannerModal({
   userId 
 }: ReceiptScannerModalProps) {
   const [permission, requestPermission] = useCameraPermissions();
+  
+  // State management
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
+  const [isMultiMode, setIsMultiMode] = useState(false); // Default: Single Photo Scan
+  const [isPreviewing, setIsPreviewing] = useState(false); // Freeze Frame State
   const [isProcessing, setIsProcessing] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
   const cameraRef = useRef<any>(null);
@@ -31,13 +42,56 @@ export default function ReceiptScannerModal({
     if (visible && (!permission || !permission.granted)) {
       requestPermission();
     }
-    // Reset photos queue on open/close
     if (visible) {
-      setCapturedPhotos([]);
+      handleResetAll();
     }
   }, [visible]);
 
-  // Direct Submission Logic to FastAPI Multi-Photo Endpoint
+  const handleResetAll = () => {
+    setCapturedPhotos([]);
+    setIsPreviewing(false);
+    setIsProcessing(false);
+  };
+
+  // Tinatanggal lang yung pinaka-huling kuha, hindi lahat — para sa "Retake"
+  // sa multi-photo flow kung sablay lang yung pinaka-bagong shot.
+  const handleRetakeLast = () => {
+    setCapturedPhotos((prev) => prev.slice(0, -1));
+    setIsPreviewing(false);
+  };
+
+  // Balik sa live camera para kumuha pa ng dagdag na section, pero
+  // panatilihin yung mga nakuha na — para sa mahahabang resibo na
+  // kailangan ng 3+ segments.
+  const handleAddAnother = () => {
+    setIsPreviewing(false);
+  };
+
+  // I-crop papunta sa proportions ng berdeng guide frame bago i-upload,
+  // para hindi masayang ang resolution sa background/paligid ng resibo.
+  const cropToGuideFrame = async (uri: string, photoWidth?: number, photoHeight?: number): Promise<string> => {
+    try {
+      if (!photoWidth || !photoHeight) return uri;
+
+      const cropWidth = Math.round(photoWidth * GUIDE_FRAME_WIDTH_RATIO);
+      const cropHeight = Math.round(photoHeight * GUIDE_FRAME_HEIGHT_RATIO);
+      const originX = Math.round((photoWidth - cropWidth) / 2);
+      const originY = Math.round((photoHeight - cropHeight) / 2);
+
+      const result = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ crop: { originX, originY, width: cropWidth, height: cropHeight } }],
+        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
+      );
+
+      return result.uri;
+    } catch (cropError) {
+      console.log("Crop Error (gagamitin na lang ang orihinal na litrato):", cropError);
+      return uri; // huwag ma-block ang buong flow kung sablay lang ang crop
+    }
+  };
+
+  // Direct Submission Logic to FastAPI Endpoint
   const submitPhotosToBackend = async (photos: string[]) => {
     try {
       setIsProcessing(true);
@@ -58,7 +112,7 @@ export default function ReceiptScannerModal({
       }
 
       // PALITAN ANG IP ADDRESS NG LOCAL IP MO KUNG KAILANGAN
-      const response = await fetch('http://192.168.1.67:8000/ocr-scan', {
+      const response = await fetch('http://192.168.1.74:8000/ocr-scan', {
         method: 'POST',
         body: formData,
         headers: {
@@ -120,33 +174,28 @@ export default function ReceiptScannerModal({
       setIsFlashing(true);
       setTimeout(() => setIsFlashing(false), 150);
 
-      // 2. High Quality Image Capture (0.7 quality for sharp text)
+      // 2. High Quality Image Capture
       const photo = await cameraRef.current.takePictureAsync({
-        quality: 0.7,
+        quality: 0.9,
         skipProcessing: false,
+        exif: false,
       });
 
-      const newPhotosList = [...capturedPhotos, photo.uri];
-      setCapturedPhotos(newPhotosList);
+      // 3. I-crop papunta sa guide frame area para hindi masayang ang
+      // resolution sa background — ito yung pangunahing fix sa "malaking
+      // frame" issue lalo na sa multi-photo mode.
+      const finalUri = await cropToGuideFrame(photo.uri, photo.width, photo.height);
 
-      // Kapag nakadalawang kuha na (Top + Bottom section), automatic submit na sa backend!
-      if (newPhotosList.length === 2) {
-        await submitPhotosToBackend(newPhotosList);
-      }
+      const updatedPhotos = [...capturedPhotos, finalUri];
+      setCapturedPhotos(updatedPhotos);
+
+      // Palaging mag-freeze preview pagkatapos ng bawat kuha (single o multi),
+      // para makapag-decide ang user: retake / add another / analyze na.
+      setIsPreviewing(true);
 
     } catch (error: any) {
       console.log("Capture Error:", error);
       Alert.alert("Error", "Bumagsak ang kuha ng camera. Subukan ulit.");
-    }
-  };
-
-  const handleReset = () => {
-    setCapturedPhotos([]);
-  };
-
-  const handleManualAnalyzeNow = () => {
-    if (capturedPhotos.length > 0) {
-      submitPhotosToBackend(capturedPhotos);
     }
   };
 
@@ -172,11 +221,22 @@ export default function ReceiptScannerModal({
     );
   }
 
+  const canAddAnother = isMultiMode && capturedPhotos.length < MAX_MULTI_PHOTOS;
+
   return (
     <Modal visible={visible} animationType="slide" transparent={false}>
       <View style={styles.container}>
-        {/* 1. CameraView */}
-        <CameraView ref={cameraRef} style={StyleSheet.absoluteFillObject} facing="back" />
+        
+        {/* 1. Camera Live Stream O Freeze Preview Frame */}
+        {isPreviewing && capturedPhotos.length > 0 ? (
+          <Image 
+            source={{ uri: capturedPhotos[capturedPhotos.length - 1] }} 
+            style={StyleSheet.absoluteFillObject} 
+            resizeMode="cover"
+          />
+        ) : (
+          <CameraView ref={cameraRef} style={StyleSheet.absoluteFillObject} facing="back" />
+        )}
 
         {/* 2. White Flash Overlay Animation Effect */}
         {isFlashing && <View style={styles.flashOverlay} pointerEvents="none" />}
@@ -190,14 +250,24 @@ export default function ReceiptScannerModal({
               <Ionicons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
             
-            <View style={styles.headerBadge}>
-              <Text style={styles.headerTitle}>
-                {capturedPhotos.length === 0 ? "Step 1: Top / Header" : "Step 2: Bottom / Total"}
-              </Text>
-            </View>
+            {/* Mode Selector Toggle Button */}
+            {!isPreviewing && (
+              <TouchableOpacity 
+                style={[styles.modeToggle, isMultiMode && styles.modeToggleActive]}
+                onPress={() => {
+                  setIsMultiMode(!isMultiMode);
+                  handleResetAll();
+                }}
+              >
+                <Ionicons name={isMultiMode ? "layers" : "document-text"} size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={styles.modeToggleText}>
+                  {isMultiMode ? "Long Receipt (Multi-Photo)" : "Standard (1 Photo)"}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             {capturedPhotos.length > 0 ? (
-              <TouchableOpacity onPress={handleReset} style={styles.resetButton}>
+              <TouchableOpacity onPress={handleResetAll} style={styles.resetButton}>
                 <Ionicons name="refresh" size={20} color="#FFFFFF" />
               </TouchableOpacity>
             ) : (
@@ -205,51 +275,83 @@ export default function ReceiptScannerModal({
             )}
           </View>
 
-          {/* Scanner Guidance Frame */}
+          {/* Scanner Guidance Frame / Freeze Notice */}
           <View style={styles.scanFrameContainer}>
-            <View style={styles.scanFrame} />
-            <Text style={styles.frameInstruction}>
-              {capturedPhotos.length === 0 
-                ? "📸 Step 1: Kunan ang Store Name & Header" 
-                : "📸 Step 2: Kunan ang Total Amount / Bottom Section"}
-            </Text>
+            {!isPreviewing ? (
+              <>
+                <View style={styles.scanFrame} />
+                <Text style={styles.frameInstruction}>
+                  {isMultiMode 
+                    ? (capturedPhotos.length === 0 
+                        ? "📸 Section 1: Kunan ang Store Header" 
+                        : `📸 Section ${capturedPhotos.length + 1}: Kunan ang susunod na parte`)
+                    : "📸 I-tapat ang buong resibo sa frame"}
+                </Text>
+              </>
+            ) : (
+              <View style={styles.freezeBadge}>
+                <Ionicons name="checkmark-circle" size={20} color="#10B981" style={{ marginRight: 6 }} />
+                <Text style={styles.freezeBadgeText}>Photo Captured! Pakisuri kung malinaw.</Text>
+              </View>
+            )}
           </View>
 
-          {/* Footer Controls & Multi-Photo Preview Bar */}
+          {/* Footer Controls & Actions */}
           <View style={styles.overlayFooter}>
             
-            {/* Thumbnail Preview Bar (Kapag may 1st Photo na) */}
-            {capturedPhotos.length > 0 && !isProcessing && (
-              <View style={styles.previewRow}>
-                {capturedPhotos.map((uri, idx) => (
-                  <View key={idx} style={styles.thumbnailWrapper}>
-                    <Image source={{ uri }} style={styles.thumbnailImage} />
-                    <View style={styles.thumbnailBadge}>
-                      <Text style={styles.thumbnailBadgeText}>#{idx + 1}</Text>
-                    </View>
+            {/* Case A: FREEZE PREVIEW MODE (Retake, Add Another, or Analyze) */}
+            {isPreviewing ? (
+              <View style={styles.previewActionsContainer}>
+                {isProcessing ? (
+                  <View style={styles.processingContainer}>
+                    <ActivityIndicator size="large" color="#10B981" />
+                    <Text style={styles.processingText}>FinAi Engine analyzing receipt...</Text>
                   </View>
-                ))}
+                ) : (
+                  <>
+                    {canAddAnother && (
+                      <TouchableOpacity style={styles.addAnotherButton} onPress={handleAddAnother}>
+                        <Ionicons name="add-circle-outline" size={18} color="#10B981" style={{ marginRight: 6 }} />
+                        <Text style={styles.addAnotherButtonText}>Add Another Section</Text>
+                      </TouchableOpacity>
+                    )}
 
-                {capturedPhotos.length === 1 && (
-                  <TouchableOpacity style={styles.analyzeNowBtn} onPress={handleManualAnalyzeNow}>
-                    <Ionicons name="sparkles" size={16} color="#FFFFFF" style={{ marginRight: 4 }} />
-                    <Text style={styles.analyzeNowText}>Analyze 1 Photo</Text>
-                  </TouchableOpacity>
+                    <View style={styles.actionButtonGroup}>
+                      <TouchableOpacity style={styles.retakeButton} onPress={handleRetakeLast}>
+                        <Ionicons name="camera-reverse" size={20} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.actionButtonText}>Retake</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity 
+                        style={styles.submitButton} 
+                        onPress={() => submitPhotosToBackend(capturedPhotos)}
+                      >
+                        <Ionicons name="sparkles" size={20} color="#FFFFFF" style={{ marginRight: 6 }} />
+                        <Text style={styles.actionButtonText}>
+                          Analyze {capturedPhotos.length} {capturedPhotos.length > 1 ? "Photos" : "Photo"}
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  </>
                 )}
               </View>
+            ) : (
+              /* Case B: LIVE CAMERA SHUTTER MODE */
+              <View style={{ alignItems: 'center' }}>
+                {isMultiMode && capturedPhotos.length >= 1 && (
+                  <View style={styles.stepIndicator}>
+                    <Text style={styles.stepIndicatorText}>
+                      {capturedPhotos.length} section{capturedPhotos.length > 1 ? "s" : ""} captured na. Kunan pa o Analyze na sa preview.
+                    </Text>
+                  </View>
+                )}
+
+                <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
+                  <View style={styles.captureButtonInner} />
+                </TouchableOpacity>
+              </View>
             )}
 
-            {/* Shutter Button & Processing State */}
-            {isProcessing ? (
-              <View style={styles.processingContainer}>
-                <ActivityIndicator size="large" color="#10B981" />
-                <Text style={styles.processingText}>FinAi AI Engine analyzing receipt...</Text>
-              </View>
-            ) : (
-              <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
-                <View style={styles.captureButtonInner} />
-              </TouchableOpacity>
-            )}
           </View>
 
         </View>
@@ -276,19 +378,25 @@ const styles = StyleSheet.create({
   },
   closeButton: { backgroundColor: 'rgba(0,0,0,0.6)', padding: 10, borderRadius: 20 },
   resetButton: { backgroundColor: 'rgba(239, 68, 68, 0.8)', padding: 10, borderRadius: 20 },
-  headerBadge: { 
-    backgroundColor: 'rgba(20, 45, 42, 0.85)', 
-    paddingHorizontal: 16, 
-    paddingVertical: 8, 
+  modeToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
     borderRadius: 20,
     borderWidth: 1,
+    borderColor: '#7C9A95'
+  },
+  modeToggleActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.3)',
     borderColor: '#10B981'
   },
-  headerTitle: { color: '#FFFFFF', fontSize: 15, fontWeight: 'bold' },
-  scanFrameContainer: { alignItems: 'center', justifyContent: 'center' },
+  modeToggleText: { color: '#FFFFFF', fontSize: 13, fontWeight: '600' },
+  scanFrameContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   scanFrame: { 
-    width: '85%', 
-    height: 320, 
+    width: '82%', 
+    height: '85%', 
     borderWidth: 2, 
     borderColor: '#10B981', 
     borderRadius: 20, 
@@ -307,36 +415,62 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(16, 185, 129, 0.3)',
     overflow: 'hidden'
   },
-  overlayFooter: { paddingBottom: 40, alignItems: 'center' },
-  previewRow: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    marginBottom: 20, 
-    backgroundColor: 'rgba(0,0,0,0.6)', 
-    padding: 8, 
-    borderRadius: 16 
+  freezeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(20, 45, 42, 0.95)',
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#10B981'
   },
-  thumbnailWrapper: { position: 'relative', marginRight: 10 },
-  thumbnailImage: { width: 45, height: 60, borderRadius: 8, borderWidth: 1, borderColor: '#10B981' },
-  thumbnailBadge: { 
-    position: 'absolute', 
-    top: -5, 
-    right: -5, 
-    backgroundColor: '#10B981', 
-    borderRadius: 8, 
-    paddingHorizontal: 4, 
-    paddingVertical: 1 
+  freezeBadgeText: { color: '#FFFFFF', fontSize: 13, fontWeight: 'bold' },
+  overlayFooter: { paddingBottom: 40, alignItems: 'center', paddingHorizontal: 20 },
+  previewActionsContainer: { width: '100%', alignItems: 'center' },
+  addAnotherButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+    paddingVertical: 12,
+    borderRadius: 16,
+    width: '100%',
+    marginBottom: 12
   },
-  thumbnailBadgeText: { color: '#FFFFFF', fontSize: 10, fontWeight: 'bold' },
-  analyzeNowBtn: { 
-    flexDirection: 'row', 
-    alignItems: 'center', 
-    backgroundColor: '#2b5f56', 
-    paddingHorizontal: 12, 
-    paddingVertical: 8, 
-    borderRadius: 10 
+  addAnotherButtonText: { color: '#10B981', fontWeight: 'bold', fontSize: 13 },
+  actionButtonGroup: { flexDirection: 'row', justifyContent: 'space-between', width: '100%', gap: 12 },
+  retakeButton: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: 'rgba(239, 68, 68, 0.85)',
+    paddingVertical: 14,
+    borderRadius: 16
   },
-  analyzeNowText: { color: '#FFFFFF', fontSize: 12, fontWeight: 'bold' },
+  submitButton: {
+    flex: 1.2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#10B981',
+    paddingVertical: 14,
+    borderRadius: 16
+  },
+  actionButtonText: { color: '#FFFFFF', fontWeight: 'bold', fontSize: 14 },
+  stepIndicator: {
+    backgroundColor: 'rgba(16, 185, 129, 0.2)',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#10B981'
+  },
+  stepIndicatorText: { color: '#10B981', fontSize: 12, fontWeight: 'bold' },
   captureButton: { 
     width: 75, 
     height: 75, 
@@ -350,10 +484,11 @@ const styles = StyleSheet.create({
   captureButtonInner: { width: 58, height: 58, borderRadius: 29, backgroundColor: '#FFFFFF' },
   processingContainer: { 
     alignItems: 'center', 
-    backgroundColor: 'rgba(20, 45, 42, 0.9)', 
-    paddingHorizontal: 20, 
-    paddingVertical: 12, 
-    borderRadius: 16 
+    backgroundColor: 'rgba(20, 45, 42, 0.95)', 
+    paddingHorizontal: 24, 
+    paddingVertical: 16, 
+    borderRadius: 16,
+    width: '100%'
   },
   processingText: { color: '#FFFFFF', marginTop: 8, fontSize: 14, fontWeight: '600' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
