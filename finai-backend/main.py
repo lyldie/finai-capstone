@@ -21,11 +21,13 @@ from email.message import EmailMessage
 import uvicorn
 
 # I-IMPORT ANG DB MULA SA DATABASE.PY
-from database import db 
+from database import db
+
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals
 
 app = FastAPI(title="FinAi Backend", version="1.0")
+
 
 # 1. Terminal Truth - Error Debugger
 @app.exception_handler(RequestValidationError)
@@ -39,6 +41,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         content={"detail": exc.errors(), "body": exc.body},
     )
 
+
 # 2. CORS Middleware
 app.add_middleware(
     CORSMiddleware,
@@ -48,10 +51,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
 # 3. Security, Gemini Client & Email Config
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER", "sobrangfinefinai@gmail.com")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu") 
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # Initialize Google GenAI Client
@@ -59,28 +63,34 @@ ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 otp_storage = {}
 
+
 # --- 4. EASYOCR INITIALIZATION ---
 print("Initializing EasyOCR Reader for FinAi (Primary Local Engine)...")
-reader = easyocr.Reader(['en'], gpu=False)
-print("EasyOCR Initialized successfully!")
+try:
+    reader = easyocr.Reader(["en"], gpu=False)
+    print("EasyOCR Initialized successfully!")
+except Exception as e:
+    print(f"EasyOCR init failed: {e}")
+    reader = None
+
 
 # --- 5. EXPANDED LOCAL MERCHANT & ITEM MATCHING DICTIONARY ---
 MERCHANT_CATEGORY_MAP = {
     "Food & Dining": [
-        "jollibee", "mcdonalds", "mcdo", "chowking", "mang inasal", "kfc", 
-        "starbucks", "greenwich", "tokyo tokyo", "shakeys", "pizza hut", 
+        "jollibee", "mcdonalds", "mcdo", "chowking", "mang inasal", "kfc",
+        "starbucks", "greenwich", "tokyo tokyo", "shakeys", "pizza hut",
         "bonchon", "burger king", "popeyes", "7-eleven", "uncle johns",
         "lugawan", "lugaw", "silog", "porksilog", "tapsilog", "chicksilog", "bangsilog",
-        "karinderya", "eatery", "canteen", "bistro", "grill", "samgyupsal", 
+        "karinderya", "eatery", "canteen", "bistro", "grill", "samgyupsal",
         "milktea", "coffee", "cafe", "bakery", "bakeshop", "kitchen", "diner", "resto", "eats"
     ],
     "Groceries": [
-        "puregold", "sm supermarket", "savemore", "robinsons supermarket", 
+        "puregold", "sm supermarket", "savemore", "robinsons supermarket",
         "waltermart", "dali", "alfamart", "landers", "snr", "super8", "hypermarket",
         "mart", "grocery", "supermarket", "wholesaler", "convenience"
     ],
     "Shopping & Personal Care": [
-        "watsons", "unql", "uniqlo", "bench", "penser", "cetaphil", 
+        "watsons", "unql", "uniqlo", "bench", "penser", "cetaphil",
         "miniso", "mr.diy", "mr diy", "h&m", "department store", "boutique", "apparel"
     ],
     "Utilities & Bills": [
@@ -92,8 +102,8 @@ MERCHANT_CATEGORY_MAP = {
 }
 
 CODE_REJECTION_PATTERNS = [
-    "git pull", "git push", "git commit", "uvicorn", "http://", "https://", 
-    "port 8000", "npm start", "expo start", "#backend", "#frontend", 
+    "git pull", "git push", "git commit", "uvicorn", "http://", "https://",
+    "port 8000", "npm start", "expo start", "#backend", "#frontend",
     "import react", "const ", "function()", "localhost", "def ", "class "
 ]
 
@@ -166,8 +176,8 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
     """I-validate ang month, day, at year para maiwasan ang maling petsa.
     Sinusubukan muna per-fragment, tapos sa buong merged text bilang fallback
     (kasi minsan hinahati ng EasyOCR ang petsa sa dalawang magkahiwalay na box)."""
-    date_pattern = r'\b(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})\b'
-    month_name_pattern = r'\b(' + '|'.join(MONTH_NAME_MAP.keys()) + r')\.?\s+(\d{1,2}),?\s+(\d{2,4})\b'
+    date_pattern = r"\b(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})\b"
+    month_name_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2}),?\s+(\d{2,4})\b"
     current_year = datetime.now().year
 
     search_pool = list(extracted_texts) + [" ".join(extracted_texts)]
@@ -206,10 +216,10 @@ def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
     """Hanapin ang total base sa keyword na 'total' (hindi 'subtotal'), sa
     parehong linya o sa kasunod na linya (kasi madalas nasa hiwalay na OCR
     box ang numero kaysa sa salitang 'TOTAL')."""
-    money_pattern = r'(?:PHP|P|₱)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})'
+    money_pattern = r"(?:PHP|P|₱)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})"
 
-    best_total = None       # priority-ranked mula "total" (pangkalahatan)
-    best_grand_total = None  # priority sa "grand total" / "amount due"
+    best_total = None
+    best_grand_total = None
 
     for i, text in enumerate(all_extracted_texts):
         low = text.lower()
@@ -220,10 +230,9 @@ def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
         if not matched_keyword:
             continue
 
-        # tignan muna kung may number sa parehong linya
         window_text = text
         nums = re.findall(money_pattern, window_text)
-        # kung wala, tignan yung susunod na linya (madalas doon ang amount)
+
         if not nums and i + 1 < len(all_extracted_texts):
             nums = re.findall(money_pattern, all_extracted_texts[i + 1])
 
@@ -244,6 +253,24 @@ def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
     return best_grand_total if best_grand_total is not None else best_total
 
 
+def pick_merchant_line(candidate_lines: List[str]):
+    """Piliin ang pinaka-malamang na business name mula sa unang ilang linya,
+    sa halip na basta index[0]. Returns (merchant_text, is_fallback_guess)."""
+    for line in candidate_lines[:5]:
+        clean = line.strip()
+        low = clean.lower()
+        if not clean:
+            continue
+        if any(tok in low for tok in MERCHANT_BLACKLIST_TOKENS):
+            continue
+        alpha_chars = sum(c.isalpha() for c in clean)
+        if alpha_chars < 3:
+            continue
+        return clean, False
+
+    return (candidate_lines[0] if candidate_lines else "Store Receipt"), True
+
+
 def match_merchant_and_category(full_text: str, candidate_lines: List[str], available_categories: List[str] = None):
     """Rule-based keyword matching algorithm para sa Merchant at Category.
     Returns (merchant, category, merchant_is_fallback)."""
@@ -259,10 +286,14 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
         for kw in keywords:
             if kw in text_lower:
                 matched_store = kw.title()
-                if kw in ["mcdo", "mcdonalds"]: matched_store = "McDonald's"
-                elif kw == "7-eleven": matched_store = "7-Eleven"
-                elif kw in ["mr.diy", "mr diy"]: matched_store = "MR.DIY"
-                elif kw == "snr": matched_store = "S&R Membership Shopping"
+                if kw in ["mcdo", "mcdonalds"]:
+                    matched_store = "McDonald's"
+                elif kw == "7-eleven":
+                    matched_store = "7-Eleven"
+                elif kw in ["mr.diy", "mr diy"]:
+                    matched_store = "MR.DIY"
+                elif kw == "snr":
+                    matched_store = "S&R Membership Shopping"
 
                 final_category = category_name
                 if available_categories and category_name not in available_categories:
@@ -275,38 +306,45 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
     return fallback_merchant, fallback_cat, is_fallback
 
 
-def pick_merchant_line(candidate_lines: List[str]):
-    """Piliin ang pinaka-malamang na business name mula sa unang ilang linya,
-    sa halip na basta index[0]. Returns (merchant_text, is_fallback_guess)."""
-    for line in candidate_lines[:5]:
-        clean = line.strip()
-        low = clean.lower()
-        if not clean:
-            continue
-        if any(tok in low for tok in MERCHANT_BLACKLIST_TOKENS):
-            continue
-        # tanggihan kung puro numero/simbolo (OR number, TIN, petsa, atbp.)
-        alpha_chars = sum(c.isalpha() for c in clean)
-        if alpha_chars < 3:
-            continue
-        return clean, False
-
-    # walang nakitang magandang candidate — gamitin na lang ang unang linya bilang huling fallback
-    return (candidate_lines[0] if candidate_lines else "Store Receipt"), True
-
-
 def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories: List[str]):
-    """PRIMARY LOCAL ENGINE: Merges text extracted from multiple receipt photos."""
+    """PRIMARY LOCAL ENGINE: More reliable OCR parsing for receipts."""
     all_extracted_texts = []
 
-    for idx, img_bytes in enumerate(images_bytes_list):
-        nparr = np.frombuffer(img_bytes, np.uint8)
-        img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        if img is not None:
-            enhanced = enhance_image_for_ocr(img)
-            results = reader.readtext(enhanced)
-            texts = [res[1] for res in results]
-            all_extracted_texts.extend(texts)
+    for img_bytes in images_bytes_list:
+        try:
+            nparr = np.frombuffer(img_bytes, np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+
+            if img is None:
+                continue
+
+            resized = resize_image_if_needed(img, max_dim=1400)
+
+            # OCR on both original and enhanced version
+            for variant in [resized, enhance_image_for_ocr(resized)]:
+                try:
+                    if reader is None:
+                        continue
+                    results = reader.readtext(variant)
+                    texts = [res[1] for res in results]
+                    all_extracted_texts.extend(texts)
+                except Exception as e:
+                    print(f"EasyOCR variant failed: {e}")
+        except Exception as e:
+            print(f"EasyOCR image failed: {e}")
+
+    if not all_extracted_texts:
+        return {
+            "amount": "0.00",
+            "merchant": "Store Receipt",
+            "category": user_categories[0] if user_categories else "General",
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "raw_text": "",
+            "amount_is_fallback": True,
+            "merchant_is_fallback": True,
+            "date_is_fallback": True,
+            "is_handwritten_likely": False
+        }
 
     full_text_block = " ".join(all_extracted_texts).lower()
 
@@ -315,29 +353,47 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     if is_code:
         raise HTTPException(status_code=400, detail="Hindi valid na resibo! Nakadetect ng code.")
 
-    # Keyword-anchored total extraction (hindi na basta pinakamalaking number)
-    keyword_total = extract_total_amount(all_extracted_texts)
-    total_is_fallback = keyword_total is None
+    # Extract preferred amount
+    preferred_amount = None
+    preferred_score = -999
 
-    if keyword_total is not None:
-        detected_amount_val = keyword_total
-    else:
-        # huling fallback lang: pinakamalaking makatwirang number sa buong resibo
+    for text in all_extracted_texts:
+        lowered = text.lower()
+        score = 0
+
+        if any(k in lowered for k in ["total", "amount due", "amount payable", "payable", "grand total"]):
+            score += 20
+        elif "subtotal" in lowered:
+            score += 2
+        elif "vat" in lowered or "tax" in lowered:
+            score -= 5
+
+        matches = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})", text)
+        for m in matches:
+            try:
+                val = float(m.replace(",", ""))
+                if 1.0 <= val <= 300000.0:
+                    if score > preferred_score:
+                        preferred_score = score
+                        preferred_amount = val
+            except Exception:
+                continue
+
+    if preferred_amount is None:
         amounts = []
         for text in all_extracted_texts:
-            cleaned_money = re.findall(r'(?:PHP|P|₱)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})', text, re.IGNORECASE)
-            for m in cleaned_money:
+            matches = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})", text)
+            for m in matches:
                 try:
-                    val = float(m.replace(',', ''))
+                    val = float(m.replace(",", ""))
                     if 1.0 <= val <= 300000.0:
                         amounts.append(val)
-                except ValueError:
+                except Exception:
                     continue
-        detected_amount_val = max(amounts) if amounts else 0.0
+        preferred_amount = max(amounts) if amounts else 0.0
 
-    detected_amount = f"{detected_amount_val:.2f}"
+    detected_amount = f"{preferred_amount:.2f}"
 
-    raw_first_line = all_extracted_texts[0] if len(all_extracted_texts) > 0 else "Store Receipt"
     detected_merchant, matched_category, merchant_is_fallback = match_merchant_and_category(
         full_text_block, all_extracted_texts, user_categories
     )
@@ -346,30 +402,28 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     detected_date = raw_date_found or datetime.now().strftime("%Y-%m-%d")
     date_is_fallback = raw_date_found is None
 
-    amounts_found_count = len(re.findall(r'\d+\.\d{2}', full_text_block))
-
     return {
         "amount": detected_amount,
         "merchant": detected_merchant,
         "category": matched_category,
         "date": detected_date,
         "raw_text": full_text_block,
-        "amount_is_fallback": total_is_fallback,
+        "amount_is_fallback": preferred_amount == 0.0,
         "merchant_is_fallback": merchant_is_fallback,
         "date_is_fallback": date_is_fallback,
-        "is_handwritten_likely": any(word in full_text_block for word in ["invoice", "articles", "qty", "sold to", "particulars"]) and amounts_found_count < 2
+        "is_handwritten_likely": False
     }
 
 
 async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
     """SECONDARY ENGINE: High-Accuracy Vision Fallback via Gemini 2.0 Flash."""
     print("🤖 Triggering Gemini 2.0 Flash Vision Processor...")
-    
+
     if not ai_client:
         raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
 
     categories_str = ", ".join(available_categories) if available_categories else "Food & Dining, Groceries, Shopping, Transportation, Utilities, Supplies, General"
-    
+
     prompt = f"""
     You are an expert financial receipt scanner specializing in Philippine receipts (both printed and handwritten/sulat-kamay).
     Examine the provided receipt image(s) carefully and extract the core transaction fields in strict JSON format:
@@ -387,37 +441,37 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
       "category": "Supplies"
     }}
     """
-    
+
     contents_payload = [prompt]
     for img_bytes in images_bytes_list:
         contents_payload.append({"mime_type": "image/jpeg", "data": img_bytes})
 
-    # Gemini API Call
     response = ai_client.models.generate_content(
-        model='gemini-2.0-flash',
+        model="gemini-2.0-flash",
         contents=contents_payload
     )
-    
+
     raw_response = response.text.strip()
-    raw_response = re.sub(r'```json\s*|\s*```', '', raw_response)
+    raw_response = re.sub(r"```json\s*|\s*```", "", raw_response)
     data = json.loads(raw_response)
-    
-    raw_date = str(data.get('date', datetime.now().strftime("%Y-%m-%d")))
+
+    raw_date = str(data.get("date", datetime.now().strftime("%Y-%m-%d")))
     sanitized_date = sanitize_and_parse_date([raw_date]) or datetime.now().strftime("%Y-%m-%d")
 
     try:
-        parsed_amt = float(data.get('amount', 0.0))
+        parsed_amt = float(data.get("amount", 0.0))
         formatted_amount = f"{parsed_amt:.2f}"
     except Exception:
         formatted_amount = "0.00"
 
     return {
         "amount": formatted_amount,
-        "merchant": str(data.get('merchant', 'Store Receipt')),
-        "category": str(data.get('category', 'General')),
+        "merchant": str(data.get("merchant", "Store Receipt")),
+        "category": str(data.get("category", "General")),
         "date": sanitized_date,
         "raw_text": f"Parsed via Gemini 2.0 Vision ({len(images_bytes_list)} image frames)"
     }
+
 
 # --- 6. MODELS ---
 class UserSignup(BaseModel):
@@ -425,9 +479,11 @@ class UserSignup(BaseModel):
     email: EmailStr
     password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
 
+
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
 
 class TransactionSchema(BaseModel):
     user_id: str
@@ -442,6 +498,7 @@ class TransactionSchema(BaseModel):
     date: Optional[str] = None
     goal_id: Optional[str] = None
 
+
 class InitialSetupSchema(BaseModel):
     user_id: str
     pin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
@@ -450,21 +507,25 @@ class InitialSetupSchema(BaseModel):
     target_amount: float = Field(..., gt=0)
     target_date: str
 
+
 # --- 7. HELPER FUNCTIONS ---
 def send_otp_email(target_email: str, otp_code: str):
     try:
         msg = EmailMessage()
-        msg['Subject'] = "FinAi - Verify Your Account 🐿️"
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = target_email
-        msg.set_content(f"Mabuhay paps!\n\nHeto ang iyong OTP Verification Code: {otp_code}\n\nValid ito sa loob ng 10 minuto.\n\n- FinAi Team")
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
+        msg["Subject"] = "FinAi - Verify Your Account 🐿️"
+        msg["From"] = EMAIL_SENDER
+        msg["To"] = target_email
+        msg.set_content(
+            f"Mabuhay paps!\n\nHeto ang iyong OTP Verification Code: {otp_code}\n\nValid ito sa loob ng 10 minuto.\n\n- FinAi Team"
+        )
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
             smtp.send_message(msg)
         return True
     except Exception as e:
         print(f"SMTP Error: {e}")
         return False
+
 
 # --- 8. AUTH ENDPOINTS ---
 @app.post("/register")
@@ -473,38 +534,39 @@ async def register(user: UserSignup):
     existing_user = await db.users.find_one({"email": clean_email})
     if existing_user:
         raise HTTPException(status_code=400, detail="Email na gamit na paps!")
-    
-    otp_code = ''.join(random.choices(string.digits, k=6))
+
+    otp_code = "".join(random.choices(string.digits, k=6))
     if send_otp_email(clean_email, otp_code):
         hashed_password = pwd_context.hash(user.password[:72])
         otp_storage[clean_email] = {
-            "name": user.name.strip(), 
+            "name": user.name.strip(),
             "password": hashed_password,
-            "otp": otp_code, 
+            "otp": otp_code,
             "timestamp": datetime.utcnow()
         }
         return {"status": "Success", "message": "OTP sent successfully!"}
     raise HTTPException(status_code=500, detail="Failed to send OTP email.")
+
 
 @app.post("/verify-otp")
 async def verify_otp(data: dict):
     raw_email = data.get("email", "")
     user_otp = str(data.get("otp", "")).strip()
     clean_email = raw_email.lower().strip()
-    
+
     if not clean_email or clean_email not in otp_storage:
         raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
-    
+
     stored_data = otp_storage[clean_email]
     if datetime.utcnow() - stored_data["timestamp"] > timedelta(minutes=10):
         del otp_storage[clean_email]
         raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
-        
+
     if stored_data["otp"] == user_otp:
         new_user = {
-            "name": stored_data["name"], 
+            "name": stored_data["name"],
             "email": clean_email,
-            "password": stored_data["password"], 
+            "password": stored_data["password"],
             "role": "user",
             "onboarding_completed": False,
             "created_at": datetime.utcnow()
@@ -512,17 +574,18 @@ async def verify_otp(data: dict):
         result = await db.users.insert_one(new_user)
         del otp_storage[clean_email]
         return {"status": "Success", "user_id": str(result.inserted_id)}
-        
+
     raise HTTPException(status_code=400, detail="Mali ang OTP code paps.")
+
 
 @app.post("/login")
 async def login(user: UserLogin):
     clean_email = user.email.lower().strip()
     db_user = await db.users.find_one({"email": clean_email})
-    
+
     if not db_user:
         raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
-    
+
     password_to_verify = user.password[:72]
     try:
         if not pwd_context.verify(password_to_verify, db_user["password"]):
@@ -530,29 +593,31 @@ async def login(user: UserLogin):
     except Exception as e:
         print(f"Bcrypt verification error: {e}")
         raise HTTPException(status_code=500, detail="Error sa pag-verify ng password.")
-        
+
     return {
-        "status": "Success", 
-        "user_id": str(db_user["_id"]), 
-        "name": db_user["name"], 
-        "email": db_user["email"], 
+        "status": "Success",
+        "user_id": str(db_user["_id"]),
+        "name": db_user["name"],
+        "email": db_user["email"],
         "role": db_user.get("role", "user"),
         "onboarding_completed": db_user.get("onboarding_completed", False)
     }
+
 
 @app.post("/verify-pin")
 async def verify_pin(data: dict):
     raw_email = data.get("email", "")
     clean_email = raw_email.lower().strip()
     input_pin = str(data.get("pin", "")).strip()
-    
+
     user = await db.users.find_one({"email": clean_email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-        
+
     if str(user.get("pin", "")) == input_pin:
         return {"status": "Success"}
     raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
+
 
 # --- 9. DUAL ENGINE OCR RECEIPT SCANNER ENDPOINT ---
 @app.post("/ocr-scan")
@@ -576,7 +641,7 @@ async def ocr_scan(
 
             if img is not None:
                 img_resized = resize_image_if_needed(img, max_dim=resize_cap)
-                _, encoded_img = cv2.imencode('.jpg', img_resized)
+                _, encoded_img = cv2.imencode(".jpg", img_resized)
                 processed_images_bytes.append(encoded_img.tobytes())
 
         if not processed_images_bytes:
@@ -601,21 +666,15 @@ async def ocr_scan(
             print(f"EasyOCR parsing error or rejected: {easyocr_err}")
 
         # --- STEP 2: RIGOROUS ACCURACY GATEKEEPER CHECK ---
-        # Gumagamit ngayon ng totoong "is_fallback" flags mula sa engine mismo,
-        # hindi na basta pinoproxy gamit ang default placeholder values.
         amt_val = float(easyocr_result.get("amount", "0.00")) if easyocr_result else 0.0
         amount_is_fallback = easyocr_result.get("amount_is_fallback", True) if easyocr_result else True
-        merchant_is_fallback = easyocr_result.get("merchant_is_fallback", True) if easyocr_result else True
-        date_is_fallback = easyocr_result.get("date_is_fallback", True) if easyocr_result else True
-        is_handwritten_flag = easyocr_result.get("is_handwritten_likely", False) if easyocr_result else False
+        raw_text = str(easyocr_result.get("raw_text", "")) if easyocr_result else ""
 
         is_high_confidence = (
             easyocr_result is not None
-            and amt_val >= 10.0
+            and amt_val > 0.0
             and not amount_is_fallback
-            and not merchant_is_fallback
-            and not date_is_fallback
-            and not is_handwritten_flag
+            and len(raw_text.strip()) > 20
         )
 
         # Kung pumasa sa mataas na antas ng kasiguraduhan, i-return ang EasyOCR
@@ -658,18 +717,20 @@ async def ocr_scan(
     except Exception as err:
         print(f"Scan API Fatal Error -> {err}")
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail="Hindi mabasa ang resibo. Siguraduhing malinaw ang kuha ng resibo."
         )
+
 
 # --- 10. TRANSACTION ENDPOINTS ---
 @app.post("/add-expense")
 async def add_expense(transaction: TransactionSchema):
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
-    if transaction_dict.get("goal_id"): transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
+    if transaction_dict.get("goal_id"):
+        transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
     result = await db.expenses.insert_one(transaction_dict)
-    
+
     if transaction.type.lower() == "expense":
         category_doc = await db.categories.find_one({"name": transaction.category})
         if category_doc:
@@ -680,51 +741,76 @@ async def add_expense(transaction: TransactionSchema):
                 await db.budgets.update_one({"_id": budget_exists["_id"]}, {"$inc": {"spent": transaction.amount}})
     return {"status": "Success", "id": str(result.inserted_id)}
 
+
 @app.put("/update-expense/{expense_id}")
 async def update_expense(expense_id: str, transaction: TransactionSchema):
-    if transaction.goal_id: transaction.goal_id = str(transaction.goal_id)
-    result = await db.expenses.update_one({"_id": ObjectId(expense_id)}, {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}})
-    if result.matched_count == 1: return {"status": "Success"}
+    if transaction.goal_id:
+        transaction.goal_id = str(transaction.goal_id)
+    result = await db.expenses.update_one(
+        {"_id": ObjectId(expense_id)},
+        {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
+    )
+    if result.matched_count == 1:
+        return {"status": "Success"}
     raise HTTPException(status_code=404, detail="Not found")
+
 
 @app.get("/get-expenses")
 async def get_expenses(user_id: str):
     cursor = db.expenses.find({"user_id": user_id}).sort("date", -1)
     expenses = await cursor.to_list(length=500)
-    for item in expenses: item["_id"] = str(item["_id"])
+    for item in expenses:
+        item["_id"] = str(item["_id"])
     return {"status": "Success", "data": expenses}
+
 
 @app.delete("/delete-expense/{expense_id}")
 async def delete_expense(expense_id: str):
-    try: exp_oid = ObjectId(expense_id)
-    except: raise HTTPException(status_code=400, detail="Maling format ng Expense ID")
+    try:
+        exp_oid = ObjectId(expense_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Maling format ng Expense ID")
 
     expense = await db.expenses.find_one({"_id": exp_oid})
-    if not expense: raise HTTPException(status_code=404, detail="Transaction not found")
+    if not expense:
+        raise HTTPException(status_code=404, detail="Transaction not found")
 
     goal_id = expense.get("goal_id")
     if goal_id:
         try:
             await db.goals.update_one({"_id": ObjectId(goal_id)}, {"$inc": {"current_savings": -float(expense["amount"])}})
-        except Exception as e: print(f"Goal update warning: {e}")
+        except Exception as e:
+            print(f"Goal update warning: {e}")
 
     result = await db.expenses.delete_one({"_id": exp_oid})
-    if result.deleted_count == 1: return {"status": "Success"}
+    if result.deleted_count == 1:
+        return {"status": "Success"}
     raise HTTPException(status_code=500, detail="Failed to delete transaction")
+
 
 # --- 11. ONBOARDING ---
 @app.post("/initial-setup")
 async def initial_setup(data: InitialSetupSchema):
-    await db.users.update_one({"_id": ObjectId(data.user_id)}, {"$set": {"pin": data.pin, "monthly_income": data.monthly_income, "onboarding_completed": True}})
-    await db.goals.insert_one({"user_id": data.user_id, **data.dict(exclude={"pin", "user_id", "monthly_income"}), "current_savings": 0.0, "created_at": datetime.utcnow()})
+    await db.users.update_one(
+        {"_id": ObjectId(data.user_id)},
+        {"$set": {"pin": data.pin, "monthly_income": data.monthly_income, "onboarding_completed": True}}
+    )
+    await db.goals.insert_one({
+        "user_id": data.user_id,
+        **data.dict(exclude={"pin", "user_id", "monthly_income"}),
+        "current_savings": 0.0,
+        "created_at": datetime.utcnow()
+    })
     return {"status": "Success"}
+
 
 # --- ROUTERS ---
 app.include_router(budgets.router)
 app.include_router(categories.router)
-app.include_router(accounts.router) 
+app.include_router(accounts.router)
 app.include_router(goal_types.router)
 app.include_router(goals.router)
+
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)
