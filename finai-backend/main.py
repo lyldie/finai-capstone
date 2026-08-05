@@ -108,7 +108,7 @@ CODE_REJECTION_PATTERNS = [
 ]
 
 # Mga salitang lagi kasama sa "TOTAL" line ng resibo (priority order, pinaka-mataas priority sa una)
-TOTAL_KEYWORDS = ["grand total", "total amount due", "total due", "amount due", "total"]
+TOTAL_KEYWORDS = ["grand total", "total amount due", "total amt due", "total due", "amount due", "total"]
 SUBTOTAL_KEYWORDS = ["subtotal", "sub-total", "sub total", "vatable sale", "vat sales", "less discount"]
 
 # Mga salitang hindi puwedeng maging "merchant name" (headers/noise lang ito)
@@ -174,13 +174,17 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
 
 def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
     """I-validate ang month, day, at year para maiwasan ang maling petsa.
-    Sinusubukan muna per-fragment, tapos sa buong merged text bilang fallback
-    (kasi minsan hinahati ng EasyOCR ang petsa sa dalawang magkahiwalay na box)."""
+    Kapag walang taon sa resibo, gagamitin ang kasalukuyang taon bilang fallback.
+    Sinusubukan muna per-fragment, tapos sa buong merged text bilang fallback."""
     date_pattern = r"\b(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})\b"
+    month_day_pattern = r"\b(\d{1,2})[-/.](\d{1,2})\b"
     month_name_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2}),?\s+(\d{2,4})\b"
+    month_day_without_year_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2})\b"
+    month_day_year_pattern = r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{2,4})\b"
     current_year = datetime.now().year
 
-    search_pool = list(extracted_texts) + [" ".join(extracted_texts)]
+    search_pool = [text.strip() for text in extracted_texts if text and text.strip()]
+    search_pool.append(" ".join(search_pool))
 
     for text in search_pool:
         low = text.lower()
@@ -196,7 +200,18 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
                 year, month, day = result
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
-        # 2) Month-name pattern (e.g. "March 14, 2018")
+        # 2) Numeric month/day without year (e.g. 03/14 or 14-03)
+        for p1, p2 in re.findall(month_day_pattern, text):
+            try:
+                left, right = int(p1), int(p2)
+            except ValueError:
+                continue
+            if 1 <= left <= 12 and 1 <= right <= 31:
+                return f"{current_year:04d}-{left:02d}-{right:02d}"
+            if 1 <= right <= 12 and 1 <= left <= 31:
+                return f"{current_year:04d}-{right:02d}-{left:02d}"
+
+        # 3) Month-name pattern with year (e.g. "March 14, 2018")
         for month_str, day_str, year_str in re.findall(month_name_pattern, low):
             month = MONTH_NAME_MAP.get(month_str)
             try:
@@ -209,66 +224,261 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
             if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
+        # 4) Month-name pattern without year (e.g. "March 14")
+        for month_str, day_str in re.findall(month_day_without_year_pattern, low):
+            month = MONTH_NAME_MAP.get(month_str)
+            try:
+                day = int(day_str)
+            except ValueError:
+                continue
+            if month and 1 <= day <= 31:
+                return f"{current_year:04d}-{month:02d}-{day:02d}"
+
+        # 5) Day-month-year pattern (e.g. "14 March 2018")
+        for day_str, month_str, year_str in re.findall(month_day_year_pattern, low):
+            month = MONTH_NAME_MAP.get(month_str)
+            try:
+                day = int(day_str)
+                year = int(year_str)
+                if year < 100:
+                    year += 2000
+            except ValueError:
+                continue
+            if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
+                return f"{year:04d}-{month:02d}-{day:02d}"
+
+        # 6) Day-month pattern without year (e.g. "14 March")
+        for day_str, month_str in re.findall(r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\b", low):
+            month = MONTH_NAME_MAP.get(month_str)
+            try:
+                day = int(day_str)
+            except ValueError:
+                continue
+            if month and 1 <= day <= 31:
+                return f"{current_year:04d}-{month:02d}-{day:02d}"
+
     return None
 
 
+def _extract_amount_candidates(text: str) -> List[float]:
+    """Extract amount-like values, including split formats like '689 75' -> 689.75."""
+    money_pattern = r"(?:PHP|P|₱)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+(?:\.\d{2})?)"
+    values: List[float] = []
+
+    for n in re.findall(money_pattern, text):
+        try:
+            val = float(n.replace(",", ""))
+        except ValueError:
+            continue
+        if 1.0 <= val <= 500000.0:
+            values.append(val)
+
+    for match in re.finditer(r"(?<!\d)(\d{1,3}(?:,\d{3})?|\d+)\s+(\d{1,2})(?!\d)", text):
+        try:
+            whole = float(match.group(1).replace(",", ""))
+            cents = float(match.group(2))
+        except ValueError:
+            continue
+        if 1.0 <= whole <= 500000.0 and 0 <= cents <= 99:
+            values.append(whole + cents / 100.0)
+
+    return values
+
+
 def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
-    """Hanapin ang total base sa keyword na 'total' (hindi 'subtotal'), sa
-    parehong linya o sa kasunod na linya (kasi madalas nasa hiwalay na OCR
-    box ang numero kaysa sa salitang 'TOTAL')."""
-    money_pattern = r"(?:PHP|P|₱)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+\.\d{2})"
+    """Hanapin ang total base sa keyword na 'total' (hindi 'subtotal').
+    Mas gusto ang halaga na malapit sa total line kaysa sa unang malaking numero."""
 
     best_total = None
-    best_grand_total = None
+    best_score = -1
 
     for i, text in enumerate(all_extracted_texts):
-        low = text.lower()
+        low = text.lower().strip()
+        if not low:
+            continue
+
         if any(sub in low for sub in SUBTOTAL_KEYWORDS):
             continue
 
-        matched_keyword = next((kw for kw in TOTAL_KEYWORDS if kw in low), None)
+        window_lines = [text]
+        for j in range(i + 1, min(i + 3, len(all_extracted_texts))):
+            window_lines.append(all_extracted_texts[j])
+        window_text = " ".join(window_lines)
+        window_low = window_text.lower()
+
+        matched_keyword = next((kw for kw in TOTAL_KEYWORDS if kw in window_low), None)
         if not matched_keyword:
             continue
 
-        window_text = text
-        nums = re.findall(money_pattern, window_text)
+        score = 0
+        if matched_keyword in ("grand total", "total amount due", "total due", "amount due"):
+            score += 120
+        else:
+            score += 80
 
-        if not nums and i + 1 < len(all_extracted_texts):
-            nums = re.findall(money_pattern, all_extracted_texts[i + 1])
+        if "vat" in window_low or "tax" in window_low:
+            score -= 70
+        if "cash" in window_low or "change" in window_low:
+            score -= 60
+        if "payable" in window_low:
+            score += 20
+        if "balance" in window_low:
+            score -= 20
 
-        for n in nums:
-            try:
-                val = float(n.replace(",", ""))
-            except ValueError:
-                continue
-            if not (1.0 <= val <= 500000.0):
-                continue
-            if matched_keyword in ("grand total", "total amount due", "total due", "amount due"):
-                if best_grand_total is None or val > best_grand_total:
-                    best_grand_total = val
-            else:
+        for val in _extract_amount_candidates(window_text):
+            if score > best_score:
+                best_score = score
+                best_total = val
+            elif score == best_score and best_total is not None and val > best_total:
+                best_total = val
+
+    if best_total is None:
+        for text in all_extracted_texts:
+            for val in _extract_amount_candidates(text):
                 if best_total is None or val > best_total:
                     best_total = val
 
-    return best_grand_total if best_grand_total is not None else best_total
+    return best_total
 
 
 def pick_merchant_line(candidate_lines: List[str]):
     """Piliin ang pinaka-malamang na business name mula sa unang ilang linya,
     sa halip na basta index[0]. Returns (merchant_text, is_fallback_guess)."""
-    for line in candidate_lines[:5]:
+    scored_candidates = []
+    generic_tokens = ["store", "mart", "cafe", "restaurant", "coffee", "bakery", "pharmacy", "hardware", "lumber", "gas", "supermarket", "grill", "shop"]
+
+    for idx, line in enumerate(candidate_lines[:10]):
         clean = line.strip()
         low = clean.lower()
         if not clean:
             continue
         if any(tok in low for tok in MERCHANT_BLACKLIST_TOKENS):
             continue
+
         alpha_chars = sum(c.isalpha() for c in clean)
         if alpha_chars < 3:
             continue
-        return clean, False
+
+        score = 0
+        if idx < 3:
+            score += 30
+        elif idx < 6:
+            score += 10
+
+        if len(clean.split()) <= 5:
+            score += 10
+        if not re.search(r"\d", clean):
+            score += 5
+        if len(clean) <= 60:
+            score += 4
+        if any(token in low for token in generic_tokens):
+            score += 2
+
+        if low in generic_tokens or low.endswith(tuple(generic_tokens)):
+            score -= 12
+
+        scored_candidates.append((score, clean))
+
+    if scored_candidates:
+        scored_candidates.sort(reverse=True)
+        return scored_candidates[0][1], False
 
     return (candidate_lines[0] if candidate_lines else "Store Receipt"), True
+
+
+def normalize_amount_value(raw_value) -> Optional[float]:
+    """Normalize raw OCR/Gemini amount values into a float when possible."""
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, (int, float)):
+        try:
+            amount = float(raw_value)
+            return amount if 1.0 <= amount <= 500000.0 else None
+        except Exception:
+            return None
+
+    text = str(raw_value).strip()
+    if not text:
+        return None
+
+    cleaned = text.replace("PHP", "").replace("₱", "").replace(",", "").strip()
+    match = re.search(r"(\d+(?:\.\d{1,2})?)", cleaned)
+    if not match:
+        return None
+
+    try:
+        amount = float(match.group(1))
+        return amount if 1.0 <= amount <= 500000.0 else None
+    except Exception:
+        return None
+
+
+def _score_receipt_candidate(result: dict, raw_text: str) -> int:
+    """Give a simple reliability score to candidate OCR results."""
+    if not result:
+        return 0
+
+    score = 0
+    amount = normalize_amount_value(result.get("amount"))
+    if amount is not None and not result.get("amount_is_fallback", False):
+        score += 80
+    elif amount is not None:
+        score += 20
+
+    merchant = str(result.get("merchant", "")).strip()
+    merchant_is_fallback = result.get("merchant_is_fallback", False)
+    if merchant and merchant.lower() not in {"store receipt", "receipt", "store"} and not merchant_is_fallback:
+        score += 40
+
+    date_value = str(result.get("date", "")).strip()
+    date_is_fallback = result.get("date_is_fallback", False)
+    if date_value and not date_is_fallback:
+        score += 20
+
+    if len(raw_text) > 20:
+        score += 10
+
+    return score
+
+
+def select_best_receipt_result(local_result: Optional[dict], gemini_result: Optional[dict], raw_text: str):
+    """Prefer EasyOCR by default, but use Gemini as a fallback when the local OCR result is weak or fallback-like."""
+    local_amount = normalize_amount_value(local_result.get("amount")) if local_result else None
+    gemini_amount = normalize_amount_value(gemini_result.get("amount")) if gemini_result else None
+
+    local_is_fallback = bool(local_result and local_result.get("amount_is_fallback", False))
+    gemini_is_fallback = bool(gemini_result and gemini_result.get("amount_is_fallback", False))
+    local_date = str(local_result.get("date", "")).strip() if local_result else ""
+    gemini_date = str(gemini_result.get("date", "")).strip() if gemini_result else ""
+    local_date_is_fallback = bool(local_result and local_result.get("date_is_fallback", False))
+    gemini_date_is_fallback = bool(gemini_result and gemini_result.get("date_is_fallback", False))
+
+    if gemini_result and gemini_amount is not None and not gemini_is_fallback:
+        if not local_result or local_amount is None or local_is_fallback:
+            return gemini_result, "Gemini"
+
+        local_has_cents = local_amount is not None and abs(local_amount - round(local_amount)) > 1e-9
+        gemini_has_cents = gemini_amount is not None and abs(gemini_amount - round(gemini_amount)) > 1e-9
+        if not local_has_cents and gemini_has_cents:
+            return gemini_result, "Gemini"
+
+        if local_date_is_fallback and not gemini_date_is_fallback and gemini_date:
+            return gemini_result, "Gemini"
+
+    candidates = []
+    if local_result:
+        candidates.append(("EasyOCR", local_result, _score_receipt_candidate(local_result, raw_text)))
+    if gemini_result:
+        candidates.append(("Gemini", gemini_result, _score_receipt_candidate(gemini_result, raw_text)))
+
+    if not candidates:
+        return None, "None"
+
+    best_engine, best_result, best_score = max(candidates, key=lambda item: item[2])
+    if best_score <= 0:
+        return None, "None"
+
+    return best_result, best_engine
 
 
 def match_merchant_and_category(full_text: str, candidate_lines: List[str], available_categories: List[str] = None):
@@ -353,46 +563,8 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     if is_code:
         raise HTTPException(status_code=400, detail="Hindi valid na resibo! Nakadetect ng code.")
 
-    # Extract preferred amount
-    preferred_amount = None
-    preferred_score = -999
-
-    for text in all_extracted_texts:
-        lowered = text.lower()
-        score = 0
-
-        if any(k in lowered for k in ["total", "amount due", "amount payable", "payable", "grand total"]):
-            score += 20
-        elif "subtotal" in lowered:
-            score += 2
-        elif "vat" in lowered or "tax" in lowered:
-            score -= 5
-
-        matches = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})", text)
-        for m in matches:
-            try:
-                val = float(m.replace(",", ""))
-                if 1.0 <= val <= 300000.0:
-                    if score > preferred_score:
-                        preferred_score = score
-                        preferred_amount = val
-            except Exception:
-                continue
-
-    if preferred_amount is None:
-        amounts = []
-        for text in all_extracted_texts:
-            matches = re.findall(r"(\d{1,3}(?:,\d{3})*(?:\.\d{2})?|\d+\.\d{2})", text)
-            for m in matches:
-                try:
-                    val = float(m.replace(",", ""))
-                    if 1.0 <= val <= 300000.0:
-                        amounts.append(val)
-                except Exception:
-                    continue
-        preferred_amount = max(amounts) if amounts else 0.0
-
-    detected_amount = f"{preferred_amount:.2f}"
+    total_amount_value = extract_total_amount(all_extracted_texts)
+    detected_amount = f"{total_amount_value:.2f}" if total_amount_value is not None else "0.00"
 
     detected_merchant, matched_category, merchant_is_fallback = match_merchant_and_category(
         full_text_block, all_extracted_texts, user_categories
@@ -408,7 +580,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
         "category": matched_category,
         "date": detected_date,
         "raw_text": full_text_block,
-        "amount_is_fallback": preferred_amount == 0.0,
+        "amount_is_fallback": total_amount_value is None or total_amount_value <= 0.0,
         "merchant_is_fallback": merchant_is_fallback,
         "date_is_fallback": date_is_fallback,
         "is_handwritten_likely": False
@@ -425,21 +597,16 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
     categories_str = ", ".join(available_categories) if available_categories else "Food & Dining, Groceries, Shopping, Transportation, Utilities, Supplies, General"
 
     prompt = f"""
-    You are an expert financial receipt scanner specializing in Philippine receipts (both printed and handwritten/sulat-kamay).
-    Examine the provided receipt image(s) carefully and extract the core transaction fields in strict JSON format:
+    You are an expert financial receipt scanner for Philippine receipts, including handwritten ones.
+    Read the image(s) carefully and extract the most likely transaction fields.
+    Rules:
+    1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, unit prices, and change.
+    2. "merchant": Return the business/store name only if it is clearly visible. If unclear, use a short neutral name like "Store Receipt".
+    3. "date": Return a date in YYYY-MM-DD format. If the year is missing, use the current year. If the date is unreadable, use today's date.
+    4. "category": Choose one category from this list: [{categories_str}].
 
-    1. "amount": The FINAL TOTAL AMOUNT DUE / GRAND TOTAL (e.g., 5895.00). Look at the bottom of the receipt for words like "TOTAL AMOUNT DUE", "GRAND TOTAL", or final handwritten sum. DO NOT return subtotal, unit prices, or VAT amounts unless it is the final total.
-    2. "merchant": Exact Business Name or Store Name found at the top header (e.g., "New Lite Lumber and Construction Supply").
-    3. "date": Transaction date in YYYY-MM-DD format (e.g., "2018-03-14"). If year is 2 digits like '18', interpret as '2018'. If missing or unreadable, return today's date.
-    4. "category": Select the single most accurate category from this list: [{categories_str}].
-
-    Output ONLY a valid JSON object without Markdown formatting or code blocks:
-    {{
-      "amount": 5895.00,
-      "merchant": "New Lite Lumber and Construction Supply",
-      "date": "2018-03-14",
-      "category": "Supplies"
-    }}
+    Output ONLY a valid JSON object with this shape:
+    {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "category": "Supplies"}}
     """
 
     contents_payload = [prompt]
@@ -453,23 +620,32 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
 
     raw_response = response.text.strip()
     raw_response = re.sub(r"```json\s*|\s*```", "", raw_response)
-    data = json.loads(raw_response)
+    try:
+        match = re.search(r"\{.*\}", raw_response, re.S)
+        if match:
+            raw_response = match.group(0)
+        data = json.loads(raw_response)
+    except Exception:
+        data = {}
 
     raw_date = str(data.get("date", datetime.now().strftime("%Y-%m-%d")))
     sanitized_date = sanitize_and_parse_date([raw_date]) or datetime.now().strftime("%Y-%m-%d")
 
-    try:
-        parsed_amt = float(data.get("amount", 0.0))
-        formatted_amount = f"{parsed_amt:.2f}"
-    except Exception:
-        formatted_amount = "0.00"
+    amount_value = normalize_amount_value(data.get("amount"))
+    formatted_amount = f"{amount_value:.2f}" if amount_value is not None else "0.00"
+
+    merchant_value = str(data.get("merchant", "Store Receipt")).strip() or "Store Receipt"
+    category_value = str(data.get("category", "General")).strip() or "General"
 
     return {
         "amount": formatted_amount,
-        "merchant": str(data.get("merchant", "Store Receipt")),
-        "category": str(data.get("category", "General")),
+        "merchant": merchant_value,
+        "category": category_value,
         "date": sanitized_date,
-        "raw_text": f"Parsed via Gemini 2.0 Vision ({len(images_bytes_list)} image frames)"
+        "raw_text": f"Parsed via Gemini 2.0 Vision ({len(images_bytes_list)} image frames)",
+        "amount_is_fallback": amount_value is None,
+        "merchant_is_fallback": merchant_value.lower() in {"store receipt", "receipt", "store"},
+        "date_is_fallback": sanitized_date == datetime.now().strftime("%Y-%m-%d")
     }
 
 
@@ -666,50 +842,43 @@ async def ocr_scan(
             print(f"EasyOCR parsing error or rejected: {easyocr_err}")
 
         # --- STEP 2: RIGOROUS ACCURACY GATEKEEPER CHECK ---
-        amt_val = float(easyocr_result.get("amount", "0.00")) if easyocr_result else 0.0
-        amount_is_fallback = easyocr_result.get("amount_is_fallback", True) if easyocr_result else True
         raw_text = str(easyocr_result.get("raw_text", "")) if easyocr_result else ""
+        easyocr_score = _score_receipt_candidate(easyocr_result, raw_text) if easyocr_result else 0
 
-        is_high_confidence = (
-            easyocr_result is not None
-            and amt_val > 0.0
-            and not amount_is_fallback
-            and len(raw_text.strip()) > 20
-        )
-
-        # Kung pumasa sa mataas na antas ng kasiguraduhan, i-return ang EasyOCR
-        if is_high_confidence:
-            print("✅ EasyOCR successfully extracted high-confidence result!")
-            return {
-                "status": "Success",
-                "engine": "EasyOCR (Offline Primary Engine)",
-                "data": easyocr_result
-            }
-
-        # --- STEP 3: SECONDARY FALLBACK ENGINE (GEMINI VISION) ---
+        gemini_result = None
         if GEMINI_API_KEY:
             try:
-                print("⚠️ EasyOCR confidence was low or amount was questionable. Triggering Gemini 2.0 Flash Fallback...")
+                print("⚠️ Running Gemini 2.0 Flash fallback to compare and improve OCR consistency...")
                 gemini_result = await gemini_multi_photo_fallback(processed_images_bytes, user_categories)
-                return {
-                    "status": "Success",
-                    "engine": "Gemini 2.0 Flash (AI Fallback)",
-                    "data": gemini_result
-                }
             except Exception as gemini_err:
                 print(f"Gemini API Error: {gemini_err}")
 
-        # Final Fallback if Gemini fails
-        return {
-            "status": "Success",
-            "engine": "EasyOCR (Partial Match)",
-            "data": easyocr_result if easyocr_result else {
+        final_result, final_engine = select_best_receipt_result(easyocr_result, gemini_result, raw_text)
+
+        if final_result is None:
+            final_result = {
                 "amount": "0.00",
                 "merchant": "Store Receipt",
                 "category": user_categories[0] if user_categories else "General",
                 "date": datetime.now().strftime("%Y-%m-%d"),
-                "raw_text": "Failed to parse text strictly."
+                "raw_text": "Failed to parse text strictly.",
+                "amount_is_fallback": True,
+                "merchant_is_fallback": True,
+                "date_is_fallback": True,
             }
+            final_engine = "EasyOCR (Partial Match)"
+
+        if final_engine == "Gemini" and gemini_result:
+            print("✅ Gemini provided the stronger receipt extraction.")
+        elif easyocr_score >= 100:
+            print("✅ EasyOCR produced a strong receipt extraction.")
+        else:
+            print("⚠️ OCR confidence was moderate; returning the best available result.")
+
+        return {
+            "status": "Success",
+            "engine": final_engine,
+            "data": final_result
         }
 
     except HTTPException as http_ex:

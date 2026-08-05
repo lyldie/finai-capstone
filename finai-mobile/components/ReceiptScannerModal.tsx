@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Ale
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
+import { API_URL } from '../config';
 
 // I-ignore ang OCR logs kung sakaling mag-trigger pa sa Expo LogBox
 LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Hindi valid na resibo']);
@@ -93,15 +94,19 @@ export default function ReceiptScannerModal({
 
   // Direct Submission Logic to FastAPI Endpoint
   const submitPhotosToBackend = async (photos: string[]) => {
+    if (!photos || photos.length === 0) {
+      Alert.alert("FinAi Scanner", "Walang larawan ang natanggap. Kunan ulit ang resibo.");
+      return;
+    }
+
     try {
       setIsProcessing(true);
 
       const formData = new FormData();
 
-      // I-append ang bawat litrato bilang 'files' para sa List[UploadFile]
       photos.forEach((uri, index) => {
         formData.append('files', {
-          uri: uri,
+          uri,
           name: `receipt_frame_${index + 1}.jpg`,
           type: 'image/jpeg',
         } as any);
@@ -111,8 +116,7 @@ export default function ReceiptScannerModal({
         formData.append('user_id', userId);
       }
 
-      // PALITAN ANG IP ADDRESS NG LOCAL IP MO KUNG KAILANGAN
-      const response = await fetch('http://192.168.1.74:8000/ocr-scan', {
+      const response = await fetch(`${API_URL}/ocr-scan`, {
         method: 'POST',
         body: formData,
         headers: {
@@ -120,26 +124,30 @@ export default function ReceiptScannerModal({
         },
       });
 
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.detail || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
+      let result: any = {};
+      try {
+        result = await response.json();
+      } catch {
+        result = {};
       }
 
-      setIsProcessing(false);
+      if (!response.ok) {
+        throw new Error(result?.detail || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
+      }
 
-      const extractedAmount = result.data.amount || "0.00";
-      const extractedMerchant = result.data.merchant || "Store";
-      const backendCategory = result.data.category || "General";
-      const extractedDate = result.data.date || new Date().toISOString().split('T')[0];
+      const payload = result?.data || {};
+      const extractedAmount = payload.amount || "0.00";
+      const extractedMerchant = payload.merchant || "Store";
+      const backendCategory = payload.category || "General";
+      const extractedDate = payload.date || new Date().toISOString().split('T')[0];
 
-      // 🔍 Dynamic Category Matching
       let matchedCategory = backendCategory;
-      const foundCat = categories.find(c => 
-        c.name.toLowerCase().includes(backendCategory.toLowerCase()) ||
-        backendCategory.toLowerCase().includes(c.name.toLowerCase())
-      );
-      
+      const foundCat = categories.find((c) => {
+        const categoryName = (c?.name || '').toLowerCase();
+        const backendName = (backendCategory || '').toLowerCase();
+        return categoryName.includes(backendName) || backendName.includes(categoryName);
+      });
+
       if (foundCat) {
         matchedCategory = foundCat.name;
       } else if (categories.length > 0) {
@@ -154,14 +162,10 @@ export default function ReceiptScannerModal({
       });
 
       onClose();
-
     } catch (error: any) {
       console.log("OCR Handled Error:", error?.message || error);
-      
-      Alert.alert(
-        "FinAi Scanner", 
-        error?.message || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps."
-      );
+      Alert.alert("FinAi Scanner", error?.message || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
+    } finally {
       setIsProcessing(false);
     }
   };
