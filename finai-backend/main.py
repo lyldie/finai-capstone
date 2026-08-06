@@ -17,6 +17,8 @@ import re
 import easyocr
 import json
 from google import genai
+from google.genai import types
+from dotenv import load_dotenv
 from email.message import EmailMessage
 import uvicorn
 
@@ -53,6 +55,7 @@ app.add_middleware(
 
 
 # 3. Security, Gemini Client & Email Config
+load_dotenv()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 EMAIL_SENDER = os.getenv("EMAIL_SENDER", "sobrangfinefinai@gmail.com")
 EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "natvzmqhkmkquafu")
@@ -172,10 +175,9 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
     return None
 
 
-def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
+def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool = False) -> Optional[str]:
     """I-validate ang month, day, at year para maiwasan ang maling petsa.
-    Kapag walang taon sa resibo, gagamitin ang kasalukuyang taon bilang fallback.
-    Sinusubukan muna per-fragment, tapos sa buong merged text bilang fallback."""
+    By default, incomplete dates stay unknown instead of receiving today's year."""
     date_pattern = r"\b(\d{1,4})[-/.](\d{1,2})[-/.](\d{1,4})\b"
     month_day_pattern = r"\b(\d{1,2})[-/.](\d{1,2})\b"
     month_name_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2}),?\s+(\d{2,4})\b"
@@ -200,16 +202,17 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
                 year, month, day = result
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
-        # 2) Numeric month/day without year (e.g. 03/14 or 14-03)
-        for p1, p2 in re.findall(month_day_pattern, text):
-            try:
-                left, right = int(p1), int(p2)
-            except ValueError:
-                continue
-            if 1 <= left <= 12 and 1 <= right <= 31:
-                return f"{current_year:04d}-{left:02d}-{right:02d}"
-            if 1 <= right <= 12 and 1 <= left <= 31:
-                return f"{current_year:04d}-{right:02d}-{left:02d}"
+        # Do not silently assign the current year to an incomplete date.
+        if allow_missing_year:
+            for p1, p2 in re.findall(month_day_pattern, text):
+                try:
+                    left, right = int(p1), int(p2)
+                except ValueError:
+                    continue
+                if 1 <= left <= 12 and 1 <= right <= 31:
+                    return f"{current_year:04d}-{left:02d}-{right:02d}"
+                if 1 <= right <= 12 and 1 <= left <= 31:
+                    return f"{current_year:04d}-{right:02d}-{left:02d}"
 
         # 3) Month-name pattern with year (e.g. "March 14, 2018")
         for month_str, day_str, year_str in re.findall(month_name_pattern, low):
@@ -224,15 +227,15 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
             if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
-        # 4) Month-name pattern without year (e.g. "March 14")
-        for month_str, day_str in re.findall(month_day_without_year_pattern, low):
-            month = MONTH_NAME_MAP.get(month_str)
-            try:
-                day = int(day_str)
-            except ValueError:
-                continue
-            if month and 1 <= day <= 31:
-                return f"{current_year:04d}-{month:02d}-{day:02d}"
+        if allow_missing_year:
+            for month_str, day_str in re.findall(month_day_without_year_pattern, low):
+                month = MONTH_NAME_MAP.get(month_str)
+                try:
+                    day = int(day_str)
+                except ValueError:
+                    continue
+                if month and 1 <= day <= 31:
+                    return f"{current_year:04d}-{month:02d}-{day:02d}"
 
         # 5) Day-month-year pattern (e.g. "14 March 2018")
         for day_str, month_str, year_str in re.findall(month_day_year_pattern, low):
@@ -247,15 +250,15 @@ def sanitize_and_parse_date(extracted_texts: List[str]) -> Optional[str]:
             if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
                 return f"{year:04d}-{month:02d}-{day:02d}"
 
-        # 6) Day-month pattern without year (e.g. "14 March")
-        for day_str, month_str in re.findall(r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\b", low):
-            month = MONTH_NAME_MAP.get(month_str)
-            try:
-                day = int(day_str)
-            except ValueError:
-                continue
-            if month and 1 <= day <= 31:
-                return f"{current_year:04d}-{month:02d}-{day:02d}"
+        if allow_missing_year:
+            for day_str, month_str in re.findall(r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\b", low):
+                month = MONTH_NAME_MAP.get(month_str)
+                try:
+                    day = int(day_str)
+                except ValueError:
+                    continue
+                if month and 1 <= day <= 31:
+                    return f"{current_year:04d}-{month:02d}-{day:02d}"
 
     return None
 
@@ -481,10 +484,100 @@ def select_best_receipt_result(local_result: Optional[dict], gemini_result: Opti
     return best_result, best_engine
 
 
+def _known_text(value) -> Optional[str]:
+    text = str(value or "").strip()
+    return None if text.lower() in {"", "store", "receipt", "store receipt", "none", "null"} else text
+
+
+def _same_merchant(left: Optional[str], right: Optional[str]) -> bool:
+    if not left or not right:
+        return False
+    clean = lambda value: re.sub(r"[^a-z0-9]", "", value.lower())
+    left_clean, right_clean = clean(left), clean(right)
+    return left_clean == right_clean or left_clean in right_clean or right_clean in left_clean
+
+
+def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Optional[dict]) -> dict:
+    """Reconcile each field independently; disagreement is a review state, never a silent guess."""
+    local_result, gemini_result = local_result or {}, gemini_result or {}
+    fields = {}
+
+    local_amount = normalize_amount_value(local_result.get("amount"))
+    gemini_amount = normalize_amount_value(gemini_result.get("amount"))
+    if local_amount is not None and gemini_amount is not None and abs(local_amount - gemini_amount) < 0.01:
+        fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.98, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+    elif gemini_amount is not None and local_amount is None:
+        fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.76, "status": "needs_review", "engines": ["Gemini"]}
+    elif local_amount is not None and gemini_amount is None:
+        fields["amount"] = {"value": f"{local_amount:.2f}", "confidence": 0.68, "status": "needs_review", "engines": ["EasyOCR"]}
+    else:
+        fields["amount"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+
+    local_merchant = _known_text(local_result.get("merchant"))
+    gemini_merchant = _known_text(gemini_result.get("merchant"))
+    if _same_merchant(local_merchant, gemini_merchant):
+        fields["merchant"] = {"value": gemini_merchant, "confidence": 0.95, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+    elif gemini_merchant and not local_merchant:
+        fields["merchant"] = {"value": gemini_merchant, "confidence": 0.74, "status": "needs_review", "engines": ["Gemini"]}
+    elif local_merchant and not gemini_merchant:
+        fields["merchant"] = {"value": local_merchant, "confidence": 0.62, "status": "needs_review", "engines": ["EasyOCR"]}
+    else:
+        fields["merchant"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+
+    local_date = local_result.get("date")
+    gemini_date = gemini_result.get("date")
+    if local_date and gemini_date and local_date == gemini_date:
+        fields["date"] = {"value": gemini_date, "confidence": 0.96, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+    elif gemini_date and not local_date:
+        fields["date"] = {"value": gemini_date, "confidence": 0.74, "status": "needs_review", "engines": ["Gemini"]}
+    elif local_date and not gemini_date:
+        fields["date"] = {"value": local_date, "confidence": 0.68, "status": "needs_review", "engines": ["EasyOCR"]}
+    else:
+        fields["date"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+
+    category = _known_text(gemini_result.get("category")) or _known_text(local_result.get("category")) or "General"
+    fields["category"] = {"value": category, "confidence": 0.70 if category != "General" else 0.35,
+                          "status": "suggested", "engines": ["Gemini"] if gemini_result else ["EasyOCR"]}
+
+    needs_review = [name for name, field in fields.items() if field["status"] == "needs_review"]
+    return {
+        # Flat fields retain compatibility with the existing mobile client.
+        "amount": fields["amount"]["value"],
+        "merchant": fields["merchant"]["value"],
+        "date": fields["date"]["value"],
+        "category": fields["category"]["value"],
+        "fields": fields,
+        "needs_review": needs_review,
+        "engine_summary": {"easyocr": bool(local_result), "gemini": bool(gemini_result)}
+    }
+
+
 def match_merchant_and_category(full_text: str, candidate_lines: List[str], available_categories: List[str] = None):
     """Rule-based keyword matching algorithm para sa Merchant at Category.
     Returns (merchant, category, merchant_is_fallback)."""
     text_lower = full_text.lower()
+
+    # A merchant logo/header appears near the top of the receipt. Prefer a
+    # known store found there over generic item words such as "cafe" or "mart"
+    # that may appear much later in the purchase list.
+    generic_keywords = {"mart", "cafe", "coffee", "bakery", "grill", "shop", "store", "restaurant", "gas", "supermarket"}
+    for line in candidate_lines[:12]:
+        line_lower = line.lower()
+        for category_name, keywords in MERCHANT_CATEGORY_MAP.items():
+            for kw in keywords:
+                if kw in generic_keywords or kw not in line_lower:
+                    continue
+                matched_store = kw.title()
+                if kw in ["mcdo", "mcdonalds"]:
+                    matched_store = "McDonald's"
+                elif kw == "7-eleven":
+                    matched_store = "7-Eleven"
+                elif kw in ["mr.diy", "mr diy"]:
+                    matched_store = "MR.DIY"
+                elif kw == "snr":
+                    matched_store = "S&R Membership Shopping"
+                final_category = category_name if not available_categories or category_name in available_categories else available_categories[0]
+                return matched_store, final_category, False
 
     if available_categories:
         for user_cat in available_categories:
@@ -516,8 +609,29 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
     return fallback_merchant, fallback_cat, is_fallback
 
 
+def _sort_easyocr_results_into_lines(results) -> List[str]:
+    """Keep OCR reading order. EasyOCR's return order is not reliable enough for receipts."""
+    positioned = []
+    for box, text, confidence in results:
+        if not text or confidence < 0.20:
+            continue
+        top = min(point[1] for point in box)
+        left = min(point[0] for point in box)
+        height = max(point[1] for point in box) - top
+        positioned.append((top, left, max(height, 12), text.strip()))
+
+    positioned.sort(key=lambda item: (item[0], item[1]))
+    lines = []
+    for top, left, height, text in positioned:
+        if lines and abs(top - lines[-1]["top"]) <= max(height, lines[-1]["height"]) * 0.65:
+            lines[-1]["parts"].append((left, text))
+        else:
+            lines.append({"top": top, "height": height, "parts": [(left, text)]})
+    return [" ".join(text for _, text in sorted(line["parts"])) for line in lines]
+
+
 def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories: List[str]):
-    """PRIMARY LOCAL ENGINE: More reliable OCR parsing for receipts."""
+    """Run EasyOCR as a layout-aware verifier, not an unstructured text source."""
     all_extracted_texts = []
 
     for img_bytes in images_bytes_list:
@@ -530,25 +644,27 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
 
             resized = resize_image_if_needed(img, max_dim=1400)
 
-            # OCR on both original and enhanced version
-            for variant in [resized, enhance_image_for_ocr(resized)]:
-                try:
-                    if reader is None:
-                        continue
-                    results = reader.readtext(variant)
-                    texts = [res[1] for res in results]
-                    all_extracted_texts.extend(texts)
-                except Exception as e:
-                    print(f"EasyOCR variant failed: {e}")
+            if reader is None:
+                continue
+
+            # Use one coherent reading order. The enhanced pass is only used
+            # when the original image has too little readable text, preventing
+            # duplicate tokens from corrupting total/date parsing.
+            results = reader.readtext(resized)
+            texts = _sort_easyocr_results_into_lines(results)
+            if len(" ".join(texts)) < 20:
+                results = reader.readtext(enhance_image_for_ocr(resized))
+                texts = _sort_easyocr_results_into_lines(results)
+            all_extracted_texts.extend(texts)
         except Exception as e:
             print(f"EasyOCR image failed: {e}")
 
     if not all_extracted_texts:
         return {
-            "amount": "0.00",
-            "merchant": "Store Receipt",
+            "amount": None,
+            "merchant": None,
             "category": user_categories[0] if user_categories else "General",
-            "date": datetime.now().strftime("%Y-%m-%d"),
+            "date": None,
             "raw_text": "",
             "amount_is_fallback": True,
             "merchant_is_fallback": True,
@@ -564,14 +680,14 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
         raise HTTPException(status_code=400, detail="Hindi valid na resibo! Nakadetect ng code.")
 
     total_amount_value = extract_total_amount(all_extracted_texts)
-    detected_amount = f"{total_amount_value:.2f}" if total_amount_value is not None else "0.00"
+    detected_amount = f"{total_amount_value:.2f}" if total_amount_value is not None else None
 
     detected_merchant, matched_category, merchant_is_fallback = match_merchant_and_category(
         full_text_block, all_extracted_texts, user_categories
     )
 
     raw_date_found = sanitize_and_parse_date(all_extracted_texts)
-    detected_date = raw_date_found or datetime.now().strftime("%Y-%m-%d")
+    detected_date = raw_date_found
     date_is_fallback = raw_date_found is None
 
     return {
@@ -588,7 +704,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
 
 
 async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
-    """SECONDARY ENGINE: High-Accuracy Vision Fallback via Gemini 2.0 Flash."""
+    """Vision extractor. Fields it cannot visibly read must remain null."""
     print("🤖 Triggering Gemini 2.0 Flash Vision Processor...")
 
     if not ai_client:
@@ -601,9 +717,10 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
     Read the image(s) carefully and extract the most likely transaction fields.
     Rules:
     1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, unit prices, and change.
-    2. "merchant": Return the business/store name only if it is clearly visible. If unclear, use a short neutral name like "Store Receipt".
-    3. "date": Return a date in YYYY-MM-DD format. If the year is missing, use the current year. If the date is unreadable, use today's date.
-    4. "category": Choose one category from this list: [{categories_str}].
+    2. "merchant": Return the business/store name only when visibly readable; otherwise null.
+    3. "date": Return YYYY-MM-DD only when visibly readable. Do not use today's date and do not invent a year; otherwise null.
+    4. "category": Choose one category from this list when supported by the receipt; otherwise "General".
+    5. Never guess a value. Return null for an unreadable amount, merchant, or date.
 
     Output ONLY a valid JSON object with this shape:
     {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "category": "Supplies"}}
@@ -611,11 +728,12 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
 
     contents_payload = [prompt]
     for img_bytes in images_bytes_list:
-        contents_payload.append({"mime_type": "image/jpeg", "data": img_bytes})
+        contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
     response = ai_client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=contents_payload
+        model="gemini-3.5-flash",
+        contents=contents_payload,
+        config=types.GenerateContentConfig(response_mime_type="application/json")
     )
 
     raw_response = response.text.strip()
@@ -628,13 +746,13 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
     except Exception:
         data = {}
 
-    raw_date = str(data.get("date", datetime.now().strftime("%Y-%m-%d")))
-    sanitized_date = sanitize_and_parse_date([raw_date]) or datetime.now().strftime("%Y-%m-%d")
+    raw_date = str(data.get("date") or "")
+    sanitized_date = sanitize_and_parse_date([raw_date]) if raw_date else None
 
     amount_value = normalize_amount_value(data.get("amount"))
-    formatted_amount = f"{amount_value:.2f}" if amount_value is not None else "0.00"
+    formatted_amount = f"{amount_value:.2f}" if amount_value is not None else None
 
-    merchant_value = str(data.get("merchant", "Store Receipt")).strip() or "Store Receipt"
+    merchant_value = str(data.get("merchant") or "").strip() or None
     category_value = str(data.get("category", "General")).strip() or "General"
 
     return {
@@ -644,8 +762,8 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
         "date": sanitized_date,
         "raw_text": f"Parsed via Gemini 2.0 Vision ({len(images_bytes_list)} image frames)",
         "amount_is_fallback": amount_value is None,
-        "merchant_is_fallback": merchant_value.lower() in {"store receipt", "receipt", "store"},
-        "date_is_fallback": sanitized_date == datetime.now().strftime("%Y-%m-%d")
+        "merchant_is_fallback": merchant_value is None,
+        "date_is_fallback": sanitized_date is None
     }
 
 
@@ -805,9 +923,8 @@ async def ocr_scan(
         if not files or len(files) == 0:
             raise HTTPException(status_code=400, detail="Walang litratong naipasa paps!")
 
-        # Kapag maraming photos (mahabang resibo), mas malaking resize cap para
-        # hindi masyadong lumiit ang text bago i-OCR.
-        resize_cap = 1024 if len(files) <= 1 else 1600
+        # Preserve enough detail for thermal-print and handwritten receipts.
+        resize_cap = 1600
 
         processed_images_bytes = []
         for file in files:
@@ -850,23 +967,17 @@ async def ocr_scan(
             try:
                 print("⚠️ Running Gemini 2.0 Flash fallback to compare and improve OCR consistency...")
                 gemini_result = await gemini_multi_photo_fallback(processed_images_bytes, user_categories)
+                extracted_fields = [field for field in ("merchant", "date", "amount") if gemini_result.get(field) is not None]
+                print(f"Gemini Vision succeeded. Read fields: {', '.join(extracted_fields) or 'none'}.")
             except Exception as gemini_err:
                 print(f"Gemini API Error: {gemini_err}")
 
-        final_result, final_engine = select_best_receipt_result(easyocr_result, gemini_result, raw_text)
-
-        if final_result is None:
-            final_result = {
-                "amount": "0.00",
-                "merchant": "Store Receipt",
-                "category": user_categories[0] if user_categories else "General",
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "raw_text": "Failed to parse text strictly.",
-                "amount_is_fallback": True,
-                "merchant_is_fallback": True,
-                "date_is_fallback": True,
-            }
-            final_engine = "EasyOCR (Partial Match)"
+        final_result = reconcile_receipt_fields(easyocr_result, gemini_result)
+        final_result["raw_text"] = raw_text
+        final_result["amount_is_fallback"] = final_result["amount"] is None
+        final_result["merchant_is_fallback"] = final_result["merchant"] is None
+        final_result["date_is_fallback"] = final_result["date"] is None
+        final_engine = "EasyOCR + Gemini" if gemini_result else "EasyOCR"
 
         if final_engine == "Gemini" and gemini_result:
             print("✅ Gemini provided the stronger receipt extraction.")

@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image } from 'react-native';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
-import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 
@@ -18,9 +17,14 @@ interface ReceiptScannerModalProps {
 
 // Dapat tumugma ito sa visual proportions ng styles.scanFrame sa ibaba
 // (width: '82%', height: '85%', centered) — dito kino-crop ang aktwal na litrato.
-const GUIDE_FRAME_WIDTH_RATIO = 0.82;
-const GUIDE_FRAME_HEIGHT_RATIO = 0.85;
 const MAX_MULTI_PHOTOS = 4;
+
+type ReviewField = { value: string; confidence: number; status: string; engines: string[] };
+type ReviewData = {
+  values: { amount: string; merchant: string; date: string; category: string };
+  fields: Record<string, ReviewField>;
+  needsReview: string[];
+};
 
 export default function ReceiptScannerModal({ 
   visible, 
@@ -37,6 +41,7 @@ export default function ReceiptScannerModal({
   const [isPreviewing, setIsPreviewing] = useState(false); // Freeze Frame State
   const [isProcessing, setIsProcessing] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
+  const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const cameraRef = useRef<any>(null);
 
   useEffect(() => {
@@ -52,6 +57,7 @@ export default function ReceiptScannerModal({
     setCapturedPhotos([]);
     setIsPreviewing(false);
     setIsProcessing(false);
+    setReviewData(null);
   };
 
   // Tinatanggal lang yung pinaka-huling kuha, hindi lahat — para sa "Retake"
@@ -70,28 +76,6 @@ export default function ReceiptScannerModal({
 
   // I-crop papunta sa proportions ng berdeng guide frame bago i-upload,
   // para hindi masayang ang resolution sa background/paligid ng resibo.
-  const cropToGuideFrame = async (uri: string, photoWidth?: number, photoHeight?: number): Promise<string> => {
-    try {
-      if (!photoWidth || !photoHeight) return uri;
-
-      const cropWidth = Math.round(photoWidth * GUIDE_FRAME_WIDTH_RATIO);
-      const cropHeight = Math.round(photoHeight * GUIDE_FRAME_HEIGHT_RATIO);
-      const originX = Math.round((photoWidth - cropWidth) / 2);
-      const originY = Math.round((photoHeight - cropHeight) / 2);
-
-      const result = await ImageManipulator.manipulateAsync(
-        uri,
-        [{ crop: { originX, originY, width: cropWidth, height: cropHeight } }],
-        { compress: 0.9, format: ImageManipulator.SaveFormat.JPEG }
-      );
-
-      return result.uri;
-    } catch (cropError) {
-      console.log("Crop Error (gagamitin na lang ang orihinal na litrato):", cropError);
-      return uri; // huwag ma-block ang buong flow kung sablay lang ang crop
-    }
-  };
-
   // Direct Submission Logic to FastAPI Endpoint
   const submitPhotosToBackend = async (photos: string[]) => {
     if (!photos || photos.length === 0) {
@@ -119,9 +103,6 @@ export default function ReceiptScannerModal({
       const response = await fetch(`${API_URL}/ocr-scan`, {
         method: 'POST',
         body: formData,
-        headers: {
-          'Content-Type': 'multipart/form-data',
-        },
       });
 
       let result: any = {};
@@ -136,10 +117,10 @@ export default function ReceiptScannerModal({
       }
 
       const payload = result?.data || {};
-      const extractedAmount = payload.amount || "0.00";
-      const extractedMerchant = payload.merchant || "Store";
+      const extractedAmount = payload.amount || "";
+      const extractedMerchant = payload.merchant || "";
       const backendCategory = payload.category || "General";
-      const extractedDate = payload.date || new Date().toISOString().split('T')[0];
+      const extractedDate = payload.date || "";
 
       let matchedCategory = backendCategory;
       const foundCat = categories.find((c) => {
@@ -154,14 +135,11 @@ export default function ReceiptScannerModal({
         matchedCategory = categories[0].name;
       }
 
-      onScanComplete({
-        amount: extractedAmount,
-        category: matchedCategory,
-        date: extractedDate,
-        note: `Scanned from ${extractedMerchant}`
+      setReviewData({
+        values: { amount: extractedAmount, merchant: extractedMerchant, date: extractedDate, category: matchedCategory },
+        fields: payload.fields || {},
+        needsReview: payload.needs_review || []
       });
-
-      onClose();
     } catch (error: any) {
       console.log("OCR Handled Error:", error?.message || error);
       Alert.alert("FinAi Scanner", error?.message || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
@@ -188,9 +166,7 @@ export default function ReceiptScannerModal({
       // 3. I-crop papunta sa guide frame area para hindi masayang ang
       // resolution sa background — ito yung pangunahing fix sa "malaking
       // frame" issue lalo na sa multi-photo mode.
-      const finalUri = await cropToGuideFrame(photo.uri, photo.width, photo.height);
-
-      const updatedPhotos = [...capturedPhotos, finalUri];
+      const updatedPhotos = [...capturedPhotos, photo.uri];
       setCapturedPhotos(updatedPhotos);
 
       // Palaging mag-freeze preview pagkatapos ng bawat kuha (single o multi),
@@ -220,6 +196,87 @@ export default function ReceiptScannerModal({
               <Text style={{ color: '#7C9A95' }}>Cancel</Text>
             </TouchableOpacity>
           </View>
+        </View>
+      </Modal>
+    );
+  }
+
+  const updateReviewValue = (key: keyof ReviewData['values'], value: string) => {
+    setReviewData((current) => current ? {
+      ...current,
+      values: { ...current.values, [key]: value }
+    } : current);
+  };
+
+  const confirmReview = () => {
+    if (!reviewData) return;
+    const amount = Number(reviewData.values.amount.replace(/,/g, ''));
+    if (!Number.isFinite(amount) || amount <= 0) {
+      Alert.alert('Amount required', 'Please enter a valid total amount before saving.');
+      return;
+    }
+
+    onScanComplete({
+      amount: amount.toFixed(2),
+      category: reviewData.values.category.trim() || 'General',
+      date: reviewData.values.date.trim(),
+      note: reviewData.values.merchant.trim() ? `Scanned from ${reviewData.values.merchant.trim()}` : 'Scanned receipt'
+    });
+    onClose();
+  };
+
+  if (reviewData) {
+    const reviewFields: Array<{ key: keyof ReviewData['values']; label: string; placeholder: string; keyboardType?: 'default' | 'decimal-pad' }> = [
+      { key: 'merchant', label: 'Merchant', placeholder: 'Enter merchant name' },
+      { key: 'date', label: 'Receipt date', placeholder: 'YYYY-MM-DD' },
+      { key: 'amount', label: 'Total amount', placeholder: '0.00', keyboardType: 'decimal-pad' },
+      { key: 'category', label: 'Category', placeholder: 'General' },
+    ];
+
+    return (
+      <Modal visible={visible} animationType="slide" transparent={false}>
+        <View style={styles.reviewContainer}>
+          <View style={styles.reviewHeader}>
+            <TouchableOpacity onPress={handleResetAll} style={styles.reviewCloseButton}>
+              <Ionicons name="arrow-back" size={22} color="#142D2A" />
+            </TouchableOpacity>
+            <Text style={styles.reviewTitle}>Review scanned receipt</Text>
+            <View style={{ width: 42 }} />
+          </View>
+          <Text style={styles.reviewSubtitle}>
+            Check the highlighted fields before saving. You can edit every field.
+          </Text>
+          <ScrollView contentContainerStyle={styles.reviewForm} keyboardShouldPersistTaps="handled">
+            {reviewFields.map(({ key, label, placeholder, keyboardType }) => {
+              const metadata = reviewData.fields[key];
+              const needsReview = reviewData.needsReview.includes(key) || !reviewData.values[key];
+              return (
+                <View key={key} style={[styles.reviewField, needsReview && styles.reviewFieldNeedsReview]}>
+                  <View style={styles.reviewLabelRow}>
+                    <Text style={styles.reviewLabel}>{label}</Text>
+                    <Text style={[styles.reviewStatus, needsReview ? styles.reviewStatusWarning : styles.reviewStatusConfirmed]}>
+                      {needsReview ? 'Needs review' : metadata?.status === 'suggested' ? 'Suggested' : 'Confirmed'}
+                    </Text>
+                  </View>
+                  <TextInput
+                    value={reviewData.values[key]}
+                    onChangeText={(value) => updateReviewValue(key, value)}
+                    placeholder={placeholder}
+                    placeholderTextColor="#7C9A95"
+                    keyboardType={keyboardType || 'default'}
+                    style={styles.reviewInput}
+                  />
+                  {metadata?.confidence !== undefined && (
+                    <Text style={styles.reviewConfidence}>Scanner confidence: {Math.round(metadata.confidence * 100)}%</Text>
+                  )}
+                </View>
+              );
+            })}
+          </ScrollView>
+          <TouchableOpacity style={styles.confirmButton} onPress={confirmReview}>
+            <Ionicons name="checkmark-circle" size={20} color="#FFFFFF" style={{ marginRight: 8 }} />
+            <Text style={styles.confirmButtonText}>Confirm and use details</Text>
+          </TouchableOpacity>
         </View>
       </Modal>
     );
@@ -365,6 +422,23 @@ export default function ReceiptScannerModal({
 }
 
 const styles = StyleSheet.create({
+  reviewContainer: { flex: 1, backgroundColor: '#F4F7F6', paddingTop: 54, paddingHorizontal: 20, paddingBottom: 28 },
+  reviewHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  reviewCloseButton: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#E2EAF4', justifyContent: 'center', alignItems: 'center' },
+  reviewTitle: { color: '#142D2A', fontSize: 19, fontWeight: '700' },
+  reviewSubtitle: { color: '#58706B', fontSize: 14, lineHeight: 20, marginTop: 18, marginBottom: 14 },
+  reviewForm: { paddingBottom: 18 },
+  reviewField: { backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#E2EAF4', padding: 14, marginBottom: 12 },
+  reviewFieldNeedsReview: { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' },
+  reviewLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  reviewLabel: { color: '#142D2A', fontSize: 14, fontWeight: '700' },
+  reviewStatus: { fontSize: 12, fontWeight: '700' },
+  reviewStatusWarning: { color: '#B45309' },
+  reviewStatusConfirmed: { color: '#059669' },
+  reviewInput: { color: '#142D2A', fontSize: 16, borderBottomWidth: 1, borderBottomColor: '#D7E1DF', paddingVertical: 7 },
+  reviewConfidence: { color: '#7C9A95', fontSize: 11, marginTop: 8 },
+  confirmButton: { backgroundColor: '#10B981', borderRadius: 15, minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+  confirmButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
   container: { flex: 1, backgroundColor: '#000000' },
   flashOverlay: {
     ...StyleSheet.absoluteFillObject,
