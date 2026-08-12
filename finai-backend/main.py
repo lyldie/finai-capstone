@@ -16,6 +16,7 @@ import numpy as np
 import re
 import easyocr
 import json
+import asyncio
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -148,6 +149,51 @@ def enhance_image_for_ocr(img_np: np.ndarray) -> np.ndarray:
     sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
     sharpened = cv2.filter2D(contrasted, -1, sharpen_kernel)
     return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
+
+
+def _order_receipt_corners(points: np.ndarray) -> np.ndarray:
+    """Return quadrilateral points as top-left, top-right, bottom-right, bottom-left."""
+    corners = points.reshape(4, 2).astype("float32")
+    ordered = np.zeros((4, 2), dtype="float32")
+    sums = corners.sum(axis=1)
+    diffs = np.diff(corners, axis=1).reshape(-1)
+    ordered[0] = corners[np.argmin(sums)]
+    ordered[2] = corners[np.argmax(sums)]
+    ordered[1] = corners[np.argmin(diffs)]
+    ordered[3] = corners[np.argmax(diffs)]
+    return ordered
+
+
+def detect_and_straighten_receipt(img_np: np.ndarray) -> tuple[np.ndarray, bool]:
+    """Crop the largest paper-like quadrilateral; safely keep the original if uncertain."""
+    height, width = img_np.shape[:2]
+    image_area = height * width
+    gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
+    edges = cv2.dilate(edges, np.ones((3, 3), np.uint8), iterations=1)
+    contours, _ = cv2.findContours(edges, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+
+    for contour in sorted(contours, key=cv2.contourArea, reverse=True)[:15]:
+        area = cv2.contourArea(contour)
+        if area < image_area * 0.18:
+            break
+        perimeter = cv2.arcLength(contour, True)
+        quadrilateral = cv2.approxPolyDP(contour, 0.02 * perimeter, True)
+        if len(quadrilateral) != 4 or not cv2.isContourConvex(quadrilateral):
+            continue
+
+        top_left, top_right, bottom_right, bottom_left = _order_receipt_corners(quadrilateral)
+        output_width = int(max(np.linalg.norm(bottom_right - bottom_left), np.linalg.norm(top_right - top_left)))
+        output_height = int(max(np.linalg.norm(top_right - bottom_right), np.linalg.norm(top_left - bottom_left)))
+        if output_width < 180 or output_height < 280:
+            continue
+
+        destination = np.array([[0, 0], [output_width - 1, 0], [output_width - 1, output_height - 1], [0, output_height - 1]], dtype="float32")
+        transform = cv2.getPerspectiveTransform(np.array([top_left, top_right, bottom_right, bottom_left]), destination)
+        return cv2.warpPerspective(img_np, transform, (output_width, output_height)), True
+
+    return img_np, False
 
 
 def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
@@ -497,7 +543,21 @@ def _same_merchant(left: Optional[str], right: Optional[str]) -> bool:
     return left_clean == right_clean or left_clean in right_clean or right_clean in left_clean
 
 
-def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Optional[dict]) -> dict:
+def resolve_supported_category(candidate: Optional[str], available_categories: Optional[List[str]]) -> str:
+    """Return the stored category spelling, or General when no allowed match exists."""
+    candidate = _known_text(candidate)
+    if not candidate:
+        return "General"
+    if not available_categories:
+        return candidate
+    candidate_lower = candidate.lower()
+    for category in available_categories:
+        if category.lower() == candidate_lower:
+            return category
+    return "General"
+
+
+def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Optional[dict], available_categories: Optional[List[str]] = None) -> dict:
     """Reconcile each field independently; disagreement is a review state, never a silent guess."""
     local_result, gemini_result = local_result or {}, gemini_result or {}
     fields = {}
@@ -535,7 +595,7 @@ def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Option
     else:
         fields["date"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
 
-    category = _known_text(gemini_result.get("category")) or _known_text(local_result.get("category")) or "General"
+    category = resolve_supported_category(gemini_result.get("category") or local_result.get("category"), available_categories)
     fields["category"] = {"value": category, "confidence": 0.70 if category != "General" else 0.35,
                           "status": "suggested", "engines": ["Gemini"] if gemini_result else ["EasyOCR"]}
 
@@ -576,7 +636,7 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
                     matched_store = "MR.DIY"
                 elif kw == "snr":
                     matched_store = "S&R Membership Shopping"
-                final_category = category_name if not available_categories or category_name in available_categories else available_categories[0]
+                final_category = resolve_supported_category(category_name, available_categories)
                 return matched_store, final_category, False
 
     if available_categories:
@@ -598,13 +658,11 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
                 elif kw == "snr":
                     matched_store = "S&R Membership Shopping"
 
-                final_category = category_name
-                if available_categories and category_name not in available_categories:
-                    final_category = available_categories[0] if available_categories else "General"
+                final_category = resolve_supported_category(category_name, available_categories)
 
                 return matched_store, final_category, False
 
-    fallback_cat = available_categories[0] if (available_categories and len(available_categories) > 0) else "General"
+    fallback_cat = "General"
     fallback_merchant, is_fallback = pick_merchant_line(candidate_lines)
     return fallback_merchant, fallback_cat, is_fallback
 
@@ -663,7 +721,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
         return {
             "amount": None,
             "merchant": None,
-            "category": user_categories[0] if user_categories else "General",
+            "category": "General",
             "date": None,
             "raw_text": "",
             "amount_is_fallback": True,
@@ -703,7 +761,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     }
 
 
-async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
+def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
     """Vision extractor. Fields it cannot visibly read must remain null."""
     print("🤖 Triggering Gemini 2.0 Flash Vision Processor...")
 
@@ -743,7 +801,8 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
         if match:
             raw_response = match.group(0)
         data = json.loads(raw_response)
-    except Exception:
+    except Exception as parse_error:
+        print(f"[Gemini] Response JSON was invalid: {parse_error}")
         data = {}
 
     raw_date = str(data.get("date") or "")
@@ -760,7 +819,7 @@ async def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_
         "merchant": merchant_value,
         "category": category_value,
         "date": sanitized_date,
-        "raw_text": f"Parsed via Gemini 2.0 Vision ({len(images_bytes_list)} image frames)",
+        "raw_text": f"Parsed via Gemini 3.5 Vision ({len(images_bytes_list)} image frames)",
         "amount_is_fallback": amount_value is None,
         "merchant_is_fallback": merchant_value is None,
         "date_is_fallback": sanitized_date is None
@@ -927,18 +986,22 @@ async def ocr_scan(
         resize_cap = 1600
 
         processed_images_bytes = []
+        receipt_crops = 0
         for file in files:
             contents = await file.read()
             nparr = np.frombuffer(contents, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
 
             if img is not None:
-                img_resized = resize_image_if_needed(img, max_dim=resize_cap)
+                receipt_image, was_straightened = detect_and_straighten_receipt(img)
+                receipt_crops += int(was_straightened)
+                img_resized = resize_image_if_needed(receipt_image, max_dim=resize_cap)
                 _, encoded_img = cv2.imencode(".jpg", img_resized)
                 processed_images_bytes.append(encoded_img.tobytes())
 
         if not processed_images_bytes:
             raise HTTPException(status_code=400, detail="Invalid image file(s).")
+        print(f"[Image] Receipt crop/straighten applied to {receipt_crops}/{len(processed_images_bytes)} photo(s).")
 
         # Fetch categories ng user
         user_categories = []
@@ -952,9 +1015,14 @@ async def ocr_scan(
 
         # --- STEP 1: PRIMARY LOCAL ENGINE (EASYOCR) ---
         print(f"🚀 Running EasyOCR Primary Engine on {len(processed_images_bytes)} photo(s)...")
+        # Start Gemini immediately, then run CPU-bound EasyOCR in a worker
+        # thread. Both engines process the same prepared receipt concurrently.
+        gemini_task = asyncio.create_task(asyncio.to_thread(gemini_multi_photo_fallback, processed_images_bytes, user_categories)) if GEMINI_API_KEY else None
+        if gemini_task:
+            print("[Gemini] Started concurrently with EasyOCR.")
         easyocr_result = None
         try:
-            easyocr_result = process_multi_photo_easyocr(processed_images_bytes, user_categories)
+            easyocr_result = await asyncio.to_thread(process_multi_photo_easyocr, processed_images_bytes, user_categories)
         except Exception as easyocr_err:
             print(f"EasyOCR parsing error or rejected: {easyocr_err}")
 
@@ -966,13 +1034,13 @@ async def ocr_scan(
         if GEMINI_API_KEY:
             try:
                 print("⚠️ Running Gemini 2.0 Flash fallback to compare and improve OCR consistency...")
-                gemini_result = await gemini_multi_photo_fallback(processed_images_bytes, user_categories)
+                gemini_result = await gemini_task if gemini_task else None
                 extracted_fields = [field for field in ("merchant", "date", "amount") if gemini_result.get(field) is not None]
                 print(f"Gemini Vision succeeded. Read fields: {', '.join(extracted_fields) or 'none'}.")
             except Exception as gemini_err:
                 print(f"Gemini API Error: {gemini_err}")
 
-        final_result = reconcile_receipt_fields(easyocr_result, gemini_result)
+        final_result = reconcile_receipt_fields(easyocr_result, gemini_result, user_categories)
         final_result["raw_text"] = raw_text
         final_result["amount_is_fallback"] = final_result["amount"] is None
         final_result["merchant_is_fallback"] = final_result["merchant"] is None

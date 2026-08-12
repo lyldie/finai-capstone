@@ -131,8 +131,10 @@ export default function ReceiptScannerModal({
 
       if (foundCat) {
         matchedCategory = foundCat.name;
-      } else if (categories.length > 0) {
-        matchedCategory = categories[0].name;
+      } else {
+        // Do not silently assign an unrelated first category. The review
+        // screen keeps General editable when the suggestion is unsupported.
+        matchedCategory = 'General';
       }
 
       setReviewData({
