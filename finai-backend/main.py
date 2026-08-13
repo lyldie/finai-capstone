@@ -566,6 +566,18 @@ def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Option
     gemini_amount = normalize_amount_value(gemini_result.get("amount"))
     if local_amount is not None and gemini_amount is not None and abs(local_amount - gemini_amount) < 0.01:
         fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.98, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+    elif gemini_amount is not None and local_amount is not None:
+        # Gemini interprets receipt semantics (for example, "Total Amt Due"),
+        # while EasyOCR can mistake an item price for the total. Keep Gemini's
+        # value visible, but require the user to confirm the disagreement.
+        print(f"[Reconcile] Amount conflict: EasyOCR={local_amount:.2f}, Gemini={gemini_amount:.2f}. Suggesting Gemini value for review.")
+        fields["amount"] = {
+            "value": f"{gemini_amount:.2f}",
+            "confidence": 0.72,
+            "status": "needs_review",
+            "engines": ["EasyOCR", "Gemini"],
+            "reason": "EasyOCR and Gemini found different amounts; Gemini's receipt-total interpretation is suggested."
+        }
     elif gemini_amount is not None and local_amount is None:
         fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.76, "status": "needs_review", "engines": ["Gemini"]}
     elif local_amount is not None and gemini_amount is None:

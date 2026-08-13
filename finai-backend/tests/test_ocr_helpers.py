@@ -8,7 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 easyocr_stub = types.SimpleNamespace(Reader=lambda *args, **kwargs: None)
 sys.modules.setdefault("easyocr", easyocr_stub)
 
-from main import extract_total_amount, pick_merchant_line, select_best_receipt_result
+from main import extract_total_amount, pick_merchant_line, reconcile_receipt_fields, select_best_receipt_result
 
 
 def test_extract_total_amount_prefers_the_real_total_line():
@@ -56,3 +56,15 @@ def test_pick_merchant_line_prefers_header_name_over_generic_label():
 
     assert merchant == "Savemore Market"
     assert is_fallback is False
+
+
+def test_reconcile_suggests_gemini_total_when_engines_disagree():
+    result = reconcile_receipt_fields(
+        {"amount": "125.01", "merchant": "Puregold", "date": "2026-08-03"},
+        {"amount": "3110.70", "merchant": "Puregold Price Club, Inc.", "date": "2026-08-03"},
+        ["Groceries"],
+    )
+
+    assert result["amount"] == "3110.70"
+    assert result["fields"]["amount"]["status"] == "needs_review"
+    assert "amount" in result["needs_review"]
