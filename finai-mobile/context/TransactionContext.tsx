@@ -8,7 +8,8 @@ export type TransactionType = 'Income' | 'Expense' | 'Transfer';
 export type Transaction = { id: string; amount: string; category: string; note: string; type: TransactionType; account: string; to_account?: string; date: string; };
 export type Category = { id: string; name: string; type: string; icon: string; };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; };
-export type Budget = { id: string; category_id: string; amount: number; spent: number; month_year: string; };
+export type Budget = { id: string; category_id: string; category_name?: string; amount: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
+export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
 
 export type Goal = {  
   id: string; 
@@ -25,6 +26,7 @@ type TransactionContextType = {
   categories: Category[];
   accounts: Account[];
   budgets: Budget[];
+  notifications: AppNotification[];
   goals: Goal[];
   isLoading: boolean;
   addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<void>;
@@ -41,6 +43,7 @@ type TransactionContextType = {
   totalExpense: number; 
   balance: number;
   fetchTransactions: () => Promise<void>;
+  markNotificationRead: (id: string) => Promise<void>;
 };
 
 const TransactionContext = createContext<TransactionContextType | undefined>(undefined);
@@ -50,6 +53,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
+  const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -59,12 +63,13 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { setIsLoading(false); return; }
 
-      const [transRes, catRes, accRes, budRes, goalsRes] = await Promise.all([
+      const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
         fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.json()),
         fetch(`${API_URL}/api/categories/?user_id=${userId}`).then(res => res.json()), 
         fetch(`${API_URL}/api/accounts?user_id=${userId}`).then(res => res.json()),    
         fetch(`${API_URL}/api/budgets/get-all/${userId}`).then(res => res.json()),
-        fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : [])
+        fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : []),
+        fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : [])
       ]);
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
@@ -86,6 +91,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       
       const parsedGoals = Array.isArray(goalsRes) ? goalsRes : (goalsRes.data || []);
       setGoals(parsedGoals.map((g: any) => ({ ...g, id: g._id || g.id })));
+      const parsedNotifications = Array.isArray(notificationRes) ? notificationRes : (notificationRes.data || []);
+      setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
       
     } catch (e) { console.error("Fetch Error:", e); } finally { setIsLoading(false); }
   }, []);
@@ -106,7 +113,13 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!userId) return;
     const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || new Date().toISOString().split('T')[0] };
     const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (res.ok) fetchTransactions(); else Alert.alert("Error", "Save failed.");
+    if (res.ok) {
+      const result = await res.json();
+      await fetchTransactions();
+      if (Array.isArray(result.notifications) && result.notifications.length) {
+        Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+      }
+    } else Alert.alert("Error", "Save failed.");
   };
 
   const updateTransaction = async (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
@@ -114,11 +127,26 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!userId) return;
     const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || new Date().toISOString().split('T')[0] };
     const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (res.ok) fetchTransactions(); else Alert.alert("Error", "Update failed.");
+    if (res.ok) {
+      const result = await res.json();
+      await fetchTransactions();
+      if (Array.isArray(result.notifications) && result.notifications.length) {
+        Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+      }
+    } else Alert.alert("Error", "Update failed.");
   };
 
   const deleteTransaction = async (id: string) => {
     if ((await fetch(`${API_URL}/delete-expense/${id}`, { method: 'DELETE' })).ok) fetchTransactions();
+  };
+
+  const markNotificationRead = async (id: string) => {
+    try {
+      const response = await fetch(`${API_URL}/api/notifications/${id}/read`, { method: 'PATCH' });
+      if (response.ok) {
+        setNotifications((current) => current.map((item) => item.id === id ? { ...item, is_read: true } : item));
+      }
+    } catch (error) { console.error('Notification read error:', error); }
   };
 
   const updateBudget = async (id: string, amount: number) => {
@@ -205,7 +233,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const balance = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

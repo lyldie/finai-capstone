@@ -27,7 +27,8 @@ import uvicorn
 from database import db
 
 # I-IMPORT ANG ROUTERS
-from routers import budgets, categories, accounts, goal_types, goals
+from routers import budgets, categories, accounts, goal_types, goals, notifications
+from services.budget_service import create_crossed_threshold_notifications
 
 app = FastAPI(title="FinAi Backend", version="1.0")
 
@@ -216,8 +217,12 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
         candidates.append((year, v2, v3))  # YMD
 
     for year, month, day in candidates:
-        if 2000 <= year <= (current_year + 1) and 1 <= month <= 12 and 1 <= day <= 31:
-            return year, month, day
+        if 2000 <= year <= (current_year + 1):
+            try:
+                datetime(year, month, day)  # Reject impossible dates such as February 31.
+                return year, month, day
+            except ValueError:
+                continue
     return None
 
 
@@ -255,10 +260,11 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                     left, right = int(p1), int(p2)
                 except ValueError:
                     continue
-                if 1 <= left <= 12 and 1 <= right <= 31:
-                    return f"{current_year:04d}-{left:02d}-{right:02d}"
-                if 1 <= right <= 12 and 1 <= left <= 31:
-                    return f"{current_year:04d}-{right:02d}-{left:02d}"
+                for month, day in ((left, right), (right, left)):
+                    try:
+                        return datetime(current_year, month, day).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
 
         # 3) Month-name pattern with year (e.g. "March 14, 2018")
         for month_str, day_str, year_str in re.findall(month_name_pattern, low):
@@ -270,8 +276,11 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                     year += 2000
             except ValueError:
                 continue
-            if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
-                return f"{year:04d}-{month:02d}-{day:02d}"
+            if month and 2000 <= year <= (current_year + 1):
+                try:
+                    return datetime(year, month, day).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
 
         if allow_missing_year:
             for month_str, day_str in re.findall(month_day_without_year_pattern, low):
@@ -280,8 +289,11 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                     day = int(day_str)
                 except ValueError:
                     continue
-                if month and 1 <= day <= 31:
-                    return f"{current_year:04d}-{month:02d}-{day:02d}"
+                if month:
+                    try:
+                        return datetime(current_year, month, day).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
 
         # 5) Day-month-year pattern (e.g. "14 March 2018")
         for day_str, month_str, year_str in re.findall(month_day_year_pattern, low):
@@ -293,8 +305,11 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                     year += 2000
             except ValueError:
                 continue
-            if month and 1 <= day <= 31 and 2000 <= year <= (current_year + 1):
-                return f"{year:04d}-{month:02d}-{day:02d}"
+            if month and 2000 <= year <= (current_year + 1):
+                try:
+                    return datetime(year, month, day).strftime("%Y-%m-%d")
+                except ValueError:
+                    continue
 
         if allow_missing_year:
             for day_str, month_str in re.findall(r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\b", low):
@@ -303,8 +318,11 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                     day = int(day_str)
                 except ValueError:
                     continue
-                if month and 1 <= day <= 31:
-                    return f"{current_year:04d}-{month:02d}-{day:02d}"
+                if month:
+                    try:
+                        return datetime(current_year, month, day).strftime("%Y-%m-%d")
+                    except ValueError:
+                        continue
 
     return None
 
@@ -335,59 +353,56 @@ def _extract_amount_candidates(text: str) -> List[float]:
 
 
 def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
-    """Hanapin ang total base sa keyword na 'total' (hindi 'subtotal').
-    Mas gusto ang halaga na malapit sa total line kaysa sa unang malaking numero."""
+    """Extract an amount tied to a total label; unknown is safer than a largest-number guess."""
+    money_pattern = r"(?:PHP|P|â‚±)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+(?:\.\d{2})?)"
+    best_candidate: Optional[tuple[int, float]] = None
 
-    best_total = None
-    best_score = -1
-
-    for i, text in enumerate(all_extracted_texts):
+    for index, text in enumerate(all_extracted_texts):
         low = text.lower().strip()
-        if not low:
+        if not low or any(keyword in low for keyword in SUBTOTAL_KEYWORDS):
+            continue
+        keyword = next((item for item in TOTAL_KEYWORDS if item in low), None)
+        if not keyword or "change" in low or "cash tendered" in low:
             continue
 
-        if any(sub in low for sub in SUBTOTAL_KEYWORDS):
-            continue
+        keyword_end = low.rfind(keyword) + len(keyword)
+        matches = []
+        for match in re.finditer(money_pattern, text, re.I):
+            try:
+                value = float(match.group(1).replace(",", ""))
+            except ValueError:
+                continue
+            if 1.0 <= value <= 500000.0:
+                matches.append((match.start(), value))
 
-        window_lines = [text]
-        for j in range(i + 1, min(i + 3, len(all_extracted_texts))):
-            window_lines.append(all_extracted_texts[j])
-        window_text = " ".join(window_lines)
-        window_low = window_text.lower()
-
-        matched_keyword = next((kw for kw in TOTAL_KEYWORDS if kw in window_low), None)
-        if not matched_keyword:
-            continue
-
-        score = 0
-        if matched_keyword in ("grand total", "total amount due", "total due", "amount due"):
-            score += 120
+        # Receipts normally place the final amount immediately after the total label.
+        after_label = [(position, value) for position, value in matches if position >= keyword_end]
+        if after_label:
+            position, value = min(after_label, key=lambda item: item[0] - keyword_end)
+        elif matches:
+            position, value = min(matches, key=lambda item: abs(item[0] - keyword_end))
         else:
-            score += 80
+            # OCR can put the amount on the next line. Only examine that single line.
+            if index + 1 >= len(all_extracted_texts):
+                continue
+            next_low = all_extracted_texts[index + 1].lower()
+            if any(noise in next_low for noise in ("cash", "change", "vat", "tax", "subtotal")):
+                continue
+            next_values = _extract_amount_candidates(all_extracted_texts[index + 1])
+            if len(next_values) != 1:
+                continue
+            position, value = 0, next_values[0]
 
-        if "vat" in window_low or "tax" in window_low:
-            score -= 70
-        if "cash" in window_low or "change" in window_low:
-            score -= 60
-        if "payable" in window_low:
+        score = 200 if keyword in ("grand total", "total amount due", "total amt due", "total due", "amount due") else 140
+        if "payable" in low:
             score += 20
-        if "balance" in window_low:
-            score -= 20
+        if "vat" in low or "tax" in low:
+            score -= 80
+        score -= min(abs(position - keyword_end), 60)
+        if best_candidate is None or score > best_candidate[0]:
+            best_candidate = (score, value)
 
-        for val in _extract_amount_candidates(window_text):
-            if score > best_score:
-                best_score = score
-                best_total = val
-            elif score == best_score and best_total is not None and val > best_total:
-                best_total = val
-
-    if best_total is None:
-        for text in all_extracted_texts:
-            for val in _extract_amount_candidates(text):
-                if best_total is None or val > best_total:
-                    best_total = val
-
-    return best_total
+    return best_candidate[1] if best_candidate else None
 
 
 def pick_merchant_line(candidate_lines: List[str]):
@@ -554,6 +569,17 @@ def resolve_supported_category(candidate: Optional[str], available_categories: O
     for category in available_categories:
         if category.lower() == candidate_lower:
             return category
+    normalized_candidate = re.sub(r"[^a-z]", "", candidate_lower)
+    category_aliases = {
+        "foodanddining": ("food", "dining", "restaurant"), "groceries": ("grocery", "groceries"),
+        "shoppingandpersonalcare": ("shopping", "personalcare"), "utilitiesandbills": ("utilities", "bills"),
+        "transportationandfuel": ("transport", "transpo", "fuel"),
+    }
+    aliases = category_aliases.get(normalized_candidate, ())
+    for category in available_categories:
+        normalized_category = re.sub(r"[^a-z]", "", category.lower())
+        if normalized_category in aliases or any(alias in normalized_category for alias in aliases):
+            return category
     return "General"
 
 
@@ -659,6 +685,8 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
 
     for category_name, keywords in MERCHANT_CATEGORY_MAP.items():
         for kw in keywords:
+            if kw in generic_keywords or kw not in text_lower:
+                continue
             if kw in text_lower:
                 matched_store = kw.title()
                 if kw in ["mcdo", "mcdonalds"]:
@@ -780,7 +808,8 @@ def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_catego
     if not ai_client:
         raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
 
-    categories_str = ", ".join(available_categories) if available_categories else "Food & Dining, Groceries, Shopping, Transportation, Utilities, Supplies, General"
+    allowed_categories = list(dict.fromkeys((available_categories or []) + ["General"]))
+    categories_str = ", ".join(allowed_categories)
 
     prompt = f"""
     You are an expert financial receipt scanner for Philippine receipts, including handwritten ones.
@@ -789,7 +818,7 @@ def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_catego
     1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, unit prices, and change.
     2. "merchant": Return the business/store name only when visibly readable; otherwise null.
     3. "date": Return YYYY-MM-DD only when visibly readable. Do not use today's date and do not invent a year; otherwise null.
-    4. "category": Choose one category from this list when supported by the receipt; otherwise "General".
+    4. "category": Choose EXACTLY one category from this allowed list: {categories_str}. If no listed category is supported, return "General".
     5. Never guess a value. Return null for an unreadable amount, merchant, or date.
 
     Output ONLY a valid JSON object with this shape:
@@ -1019,7 +1048,7 @@ async def ocr_scan(
         user_categories = []
         if user_id:
             try:
-                cursor = db.categories.find({"$or": [{"user_id": user_id}, {"is_default": True}]})
+                cursor = db.categories.find({"$or": [{"user_id": user_id}, {"category_role": "admin"}, {"is_default": True}]})
                 cat_docs = await cursor.to_list(length=100)
                 user_categories = [c["name"] for c in cat_docs]
             except Exception as e:
@@ -1091,15 +1120,10 @@ async def add_expense(transaction: TransactionSchema):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
     result = await db.expenses.insert_one(transaction_dict)
 
+    notifications_created = []
     if transaction.type.lower() == "expense":
-        category_doc = await db.categories.find_one({"name": transaction.category})
-        if category_doc:
-            cat_id = str(category_doc["_id"])
-            current_month = datetime.utcnow().strftime("%m-%Y")
-            budget_exists = await db.budgets.find_one({"user_id": transaction.user_id, "category_id": cat_id, "month_year": current_month})
-            if budget_exists:
-                await db.budgets.update_one({"_id": budget_exists["_id"]}, {"$inc": {"spent": transaction.amount}})
-    return {"status": "Success", "id": str(result.inserted_id)}
+        notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
+    return {"status": "Success", "id": str(result.inserted_id), "notifications": notifications_created}
 
 
 @app.put("/update-expense/{expense_id}")
@@ -1111,7 +1135,8 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
         {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
     )
     if result.matched_count == 1:
-        return {"status": "Success"}
+        notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
+        return {"status": "Success", "notifications": notifications_created}
     raise HTTPException(status_code=404, detail="Not found")
 
 
@@ -1144,6 +1169,7 @@ async def delete_expense(expense_id: str):
 
     result = await db.expenses.delete_one({"_id": exp_oid})
     if result.deleted_count == 1:
+        await create_crossed_threshold_notifications(str(expense.get("user_id", "")))
         return {"status": "Success"}
     raise HTTPException(status_code=500, detail="Failed to delete transaction")
 
@@ -1170,6 +1196,7 @@ app.include_router(categories.router)
 app.include_router(accounts.router)
 app.include_router(goal_types.router)
 app.include_router(goals.router)
+app.include_router(notifications.router)
 
 
 if __name__ == "__main__":

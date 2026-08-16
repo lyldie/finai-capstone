@@ -69,6 +69,10 @@ export default function TabLayout() {
             href: null, // Magic line para mawala yung 'two' sa bottom bar navigation!
           }}
         />
+        <Tabs.Screen
+          name="notifications"
+          options={{ href: null }}
+        />
 
       </Tabs>
     </GestureHandlerRootView>

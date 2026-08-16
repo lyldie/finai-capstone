@@ -33,7 +33,7 @@ export default function InsightsScreen() {
 
   // DYNAMIC Context (Sama natin si goalTypes/presetTypes kung mayroon sa context)
   const transactionContext = useTransactions();
-  const { 
+  const {
     budgets = [], 
     transactions = [], 
     isLoading = false, 
@@ -44,6 +44,14 @@ export default function InsightsScreen() {
     accounts = [], 
     depositToGoal 
   } = transactionContext;
+
+  const periodTypeForTimeframe = { Week: 'weekly', Month: 'monthly', Year: 'annual' } as const;
+  const selectedPeriodType = periodTypeForTimeframe[timeframe];
+  const today = new Date();
+  const todayKey = today.toISOString().slice(0, 10);
+  const activeBudgets = useMemo(() => budgets.filter((budget) =>
+    budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
+  ), [budgets, todayKey]);
   
   // Safe extraction ng goalTypes list mula sa context kung available
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
@@ -55,10 +63,11 @@ export default function InsightsScreen() {
 
   // DYNAMIC COMPUTATIONS
   const stats = useMemo(() => {
-    const totalBudget = budgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
-    const totalSpent = transactions
-      .filter(t => t.type === 'Expense')
-      .reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+    // Budget summaries arrive pre-filtered by their own period from the backend.
+    // For the selected KPI timeframe, compare only matching weekly/monthly/annual budgets.
+    const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
+    const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
+    const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
     
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
     
@@ -71,7 +80,7 @@ export default function InsightsScreen() {
     const overallGoalProgress = totalTarget > 0 ? (totalSavings / totalTarget) * 100 : 0;
 
     return { totalBudget, totalSpent, usage, netCashFlow, totalTarget, totalSavings, overallGoalProgress };
-  }, [budgets, transactions, goals]);
+  }, [activeBudgets, selectedPeriodType, transactions, goals]);
 
   const getAlertColor = (percentage: number) => {
     if (percentage >= 100) return CRITICAL_RED;     // Over budget
@@ -236,28 +245,20 @@ export default function InsightsScreen() {
 
             {isLoading ? (
               <ActivityIndicator size="small" color={FINAI_DEEP_GREEN} style={{ marginVertical: 20 }} />
-            ) : budgets.length === 0 ? (
+            ) : activeBudgets.length === 0 ? (
               <View style={styles.categoryBudgetCard}>
                 <Text style={{ color: FINAI_SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
                   Walang nakaset na budget limit paps. Pindutin ang "Set Limit" sa itaas para mag-add! 🐿️
                 </Text>
               </View>
             ) : (
-              budgets.map((item, index) => {
+              activeBudgets.map((item, index) => {
                 const categoryInfo = categories.find(c => c.id === item.category_id);
-                const categoryName = categoryInfo ? categoryInfo.name : 'Unknown';
-
-                const spent = transactions
-                  .filter(t => t.type === 'Expense' && t.category === categoryName)
-                  .reduce((acc, curr) => acc + (parseFloat(curr.amount) || 0), 0);
-                
+                const categoryName = item.category_name || categoryInfo?.name || 'Unknown';
+                const spent = Number(item.spent) || 0;
                 const limitAmount = item.amount || 0;
-                const percentageUsed = limitAmount > 0 ? (spent / limitAmount) * 100 : 0;
-
-                const rawMonthYear = item.month_year || '07-2026';
-                const cleanMonthYear = rawMonthYear.includes('-') && rawMonthYear.split('-')[0].length === 4 
-                  ? `${rawMonthYear.split('-')[1]}-${rawMonthYear.split('-')[0]}` 
-                  : rawMonthYear;
+                const percentageUsed = Number(item.percentage_used) || 0;
+                const periodLabel = `${item.period_type[0].toUpperCase()}${item.period_type.slice(1)} · ${item.period_key}`;
 
                 return (
                   <TouchableOpacity 
@@ -265,7 +266,7 @@ export default function InsightsScreen() {
                     style={styles.categoryBudgetCard}
                     onPress={() => router.push({
                       pathname: '/setbudget',
-                      params: { id: item.id, category_id: item.category_id, amount: item.amount }
+                      params: { id: item.id, category_id: item.category_id, amount: item.amount, period_type: item.period_type }
                     })}
                     onLongPress={() => {
                       Alert.alert("Burahin ang budget?", `Sigurado ka bang buburahin ang budget limit para sa ${categoryName}?`, [
@@ -281,7 +282,7 @@ export default function InsightsScreen() {
                         </View>
                         <View style={{ marginLeft: 12 }}>
                           <Text style={styles.categoryTitle}>{categoryName}</Text>
-                          <Text style={styles.categoryPeriodText}>{cleanMonthYear} Limit</Text>
+                          <Text style={styles.categoryPeriodText}>{periodLabel} limit</Text>
                         </View>
                       </View>
                       <View style={styles.categoryRightPart}>

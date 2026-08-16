@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 
@@ -72,6 +73,33 @@ export default function ReceiptScannerModal({
   // kailangan ng 3+ segments.
   const handleAddAnother = () => {
     setIsPreviewing(false);
+  };
+
+  const cropPhotoToGuide = async (uri: string): Promise<string> => {
+    try {
+      const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
+        Image.getSize(uri, (width, height) => resolve({ width, height }), reject);
+      });
+      // Keep a small safety margin around the visual guide, then let the
+      // backend straighten and isolate the document edges.
+      const cropWidth = Math.max(1, Math.round(dimensions.width * 0.86));
+      const cropHeight = Math.max(1, Math.round(dimensions.height * 0.89));
+      const cropped = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ crop: {
+          originX: Math.max(0, Math.round((dimensions.width - cropWidth) / 2)),
+          originY: Math.max(0, Math.round((dimensions.height - cropHeight) / 2)),
+          width: cropWidth,
+          height: cropHeight,
+        } }],
+        { compress: 0.95, format: ImageManipulator.SaveFormat.JPEG }
+      );
+      return cropped.uri;
+    } catch (error) {
+      // A failed crop should never discard a valid receipt capture.
+      console.log('Guide crop fallback:', error);
+      return uri;
+    }
   };
 
   // I-crop papunta sa proportions ng berdeng guide frame bago i-upload,
@@ -168,7 +196,8 @@ export default function ReceiptScannerModal({
       // 3. I-crop papunta sa guide frame area para hindi masayang ang
       // resolution sa background — ito yung pangunahing fix sa "malaking
       // frame" issue lalo na sa multi-photo mode.
-      const updatedPhotos = [...capturedPhotos, photo.uri];
+      const croppedUri = await cropPhotoToGuide(photo.uri);
+      const updatedPhotos = [...capturedPhotos, croppedUri];
       setCapturedPhotos(updatedPhotos);
 
       // Palaging mag-freeze preview pagkatapos ng bawat kuha (single o multi),

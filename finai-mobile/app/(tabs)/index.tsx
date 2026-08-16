@@ -17,7 +17,8 @@ export default function Dashboard() {
     fetchTransactions,
     isLoading,
     categories,
-    accounts
+    accounts,
+    notifications
   } = useTransactions();
 
   const [activeTab, setActiveTab] = useState('Daily'); 
@@ -26,6 +27,7 @@ export default function Dashboard() {
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth()); 
   const router = useRouter();
+  const unreadNotifications = notifications.filter((notification) => !notification.is_read).length;
 
   useFocusEffect(
     useCallback(() => {
@@ -181,6 +183,11 @@ export default function Dashboard() {
             <Text style={[styles.navTabText, activeTab === tab && styles.activeNavTabText]}>{tab === 'Daily' ? 'Daily History' : 'Monthly Overview'}</Text>
           </TouchableOpacity>
         ))}
+        {/* Route types are generated at Expo start; the cast keeps this new hidden tab usable before regeneration. */}
+        <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
+          <Ionicons name="notifications-outline" size={22} color="#2b5f56" />
+          {unreadNotifications > 0 && <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications > 9 ? '9+' : unreadNotifications}</Text></View>}
+        </TouchableOpacity>
       </View>
 
       {/* Greeting Header (Fixed Single Line) */}
@@ -292,7 +299,10 @@ export default function Dashboard() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
-  topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, justifyContent: 'space-around', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, justifyContent: 'space-around', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', position: 'relative' },
+  notificationButton: { position: 'absolute', right: 18, top: 53, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#F3F4F6' },
+  notificationBadge: { position: 'absolute', top: -3, right: -4, minWidth: 17, height: 17, borderRadius: 9, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
+  notificationBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: '800' },
   navTab: { paddingVertical: 8, paddingHorizontal: 20, borderRadius: 20, backgroundColor: '#F3F4F6' },
   activeNavTab: { backgroundColor: '#2b5f56', elevation: 2 }, 
   navTabText: { color: '#56736E', fontSize: 13, fontWeight: '700' },

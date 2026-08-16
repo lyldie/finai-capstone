@@ -3,49 +3,46 @@ import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, ActivityInd
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTransactions } from '../context/TransactionContext'; 
+import { API_URL } from '../config';
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
 const FINAI_LIGHT_BG = '#F7F9F8';
 const FINAI_CARD_BG = '#FFFFFF';
 
-const PERIODS = ['Weekly', 'Monthly', 'Yearly'];
+const PERIODS = [
+  { label: 'Weekly', value: 'weekly' },
+  { label: 'Monthly', value: 'monthly' },
+  { label: 'Annual', value: 'annual' },
+] as const;
 
 export default function SetBudgetScreen() {
   const router = useRouter();
-  const { id, amount: initialAmount, categoryName, category_id } = useLocalSearchParams();
+  const { id, amount: initialAmount, categoryName, category_id, period_type } = useLocalSearchParams();
   
   const { categories, budgets, fetchTransactions, updateBudget } = useTransactions();
   
   const expenseCategories = categories?.filter((c: any) => c.type === 'expense') || [];
 
   const [selectedCategory, setSelectedCategory] = useState<any>(null);
-  const [selectedPeriod, setSelectedPeriod] = useState('Monthly');
+  const [selectedPeriod, setSelectedPeriod] = useState<'weekly' | 'monthly' | 'annual'>('monthly');
   const [amount, setAmount] = useState(initialAmount as string || '');
   const [loading, setLoading] = useState(false);
 
-  // FIX: Dito ang magic. Filter logic based on mode
-  const existingBudgetCategoryIds = budgets.map(b => b.category_id);
-  
-  const availableCategories = expenseCategories.filter((c: any) => {
-    // Kung may 'id' (Edit Mode), i-include lang natin yung current category 
-    // at yung mga categories na wala pa sa budgets.
-    if (id) {
-      return !existingBudgetCategoryIds.includes(c.id) || c.id === category_id;
-    }
-    // Kung walang 'id' (Create Mode), i-filter out lahat ng may budget na
-    return !existingBudgetCategoryIds.includes(c.id);
-  });
+  // A category may have a separate weekly, monthly, and annual budget.
+  const availableCategories = expenseCategories;
 
   useEffect(() => {
     if (category_id) {
       const found = categories.find((c: any) => c.id === String(category_id));
       if (found) setSelectedCategory(found);
     }
-  }, [category_id, categories]);
+    if (period_type === 'weekly' || period_type === 'monthly' || period_type === 'annual') {
+      setSelectedPeriod(period_type);
+    }
+  }, [category_id, categories, period_type]);
 
   const handleSaveBudget = async () => {
     if (!selectedCategory) {
@@ -70,18 +67,17 @@ export default function SetBudgetScreen() {
 
     try {
       const userId = await AsyncStorage.getItem('user_id');
-      const currentDate = new Date();
-      const currentMonthYear = `${String(currentDate.getMonth() + 1).padStart(2, '0')}-${currentDate.getFullYear()}`;
-
       const payload = {
         user_id: userId,
         category_id: selectedCategory?.id, 
         amount: parseFloat(amount),
-        period: selectedPeriod,
-        month_year: currentMonthYear 
+        period_type: selectedPeriod,
       };
 
-      await axios.post('http://192.168.1.67:8000/api/budgets/set-limit', payload);
+      const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+      });
+      if (!response.ok) throw new Error('Failed to save budget');
       await fetchTransactions(); 
       Alert.alert("Ayos paps! 🎉", "Ligtas at na-save na sa MongoDB.", [{ text: "Solid!", onPress: () => router.back() }]);
     } catch (error) {
@@ -135,9 +131,9 @@ export default function SetBudgetScreen() {
           <View style={styles.formCard}>
             <Text style={styles.label}>Siklo ng Badyet</Text>
             <View style={styles.row}>
-              {PERIODS.map((p) => (
-                <TouchableOpacity key={p} style={[styles.periodBtn, selectedPeriod === p && styles.activePeriodBtn]} onPress={() => setSelectedPeriod(p)}>
-                  <Text style={[styles.periodText, selectedPeriod === p && styles.activePeriodText]}>{p}</Text>
+              {PERIODS.map((period) => (
+                <TouchableOpacity key={period.value} style={[styles.periodBtn, selectedPeriod === period.value && styles.activePeriodBtn]} onPress={() => setSelectedPeriod(period.value)}>
+                  <Text style={[styles.periodText, selectedPeriod === period.value && styles.activePeriodText]}>{period.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
