@@ -1,10 +1,17 @@
 import React, { useMemo, useState, useCallback } from 'react';
-import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
 import { useAuth } from '../../context/AuthContext'; // 👈 1. Import Auth Context
 import { useRouter, useFocusEffect } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable'; 
+
+const transactionDate = (value: string) => {
+  const [year, month, day] = value.split('-').map(Number);
+  return year && month && day ? new Date(year, month - 1, day) : new Date(value);
+};
+
+const isIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 
 export default function Dashboard() {
   const { user } = useAuth(); // 👈 2. Kunin ang user data
@@ -24,6 +31,11 @@ export default function Dashboard() {
   const [activeTab, setActiveTab] = useState('Daily'); 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedFilter, setSelectedFilter] = useState('All'); 
+  const [selectedCategory, setSelectedCategory] = useState('All');
+  const [selectedAccount, setSelectedAccount] = useState('All');
+  const [startDate, setStartDate] = useState('');
+  const [endDate, setEndDate] = useState('');
+  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth()); 
   const router = useRouter();
@@ -68,16 +80,19 @@ export default function Dashboard() {
   const sections = useMemo(() => {
     const groups: { [key: string]: { title: string; data: Transaction[]; income: number; expense: number } } = {};
     const filteredTransactions = transactions.filter(t => {
-      const transDate = new Date(t.date);
-      if (activeTab === 'Daily') {
+      const transDate = transactionDate(t.date);
+      if (activeTab === 'Daily' && !startDate && !endDate) {
         if (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear) return false;
       }
       const matchesType = selectedFilter === 'All' || t.type === selectedFilter;
+      const matchesCategory = selectedCategory === 'All' || t.category === selectedCategory;
+      const matchesAccount = selectedAccount === 'All' || t.account === selectedAccount || t.to_account === selectedAccount;
+      const matchesDateRange = (!startDate || t.date >= startDate) && (!endDate || t.date <= endDate);
       const query = searchQuery.toLowerCase().trim();
       const matchesSearch = query === '' || 
         (t.category && t.category.toLowerCase().includes(query)) || 
         (t.note && t.note.toLowerCase().includes(query));
-      return matchesType && matchesSearch;
+      return matchesType && matchesCategory && matchesAccount && matchesDateRange && matchesSearch;
     });
 
     filteredTransactions.forEach(t => {
@@ -88,13 +103,13 @@ export default function Dashboard() {
       if (t.type === 'Income') groups[date].income += amt;
       else if (t.type === 'Expense') groups[date].expense += amt;
     });
-    return Object.values(groups).sort((a, b) => new Date(b.title).getTime() - new Date(a.title).getTime());
-  }, [transactions, searchQuery, selectedFilter, activeTab, selectedMonth, selectedYear]); 
+    return Object.values(groups).sort((a, b) => transactionDate(b.title).getTime() - transactionDate(a.title).getTime());
+  }, [transactions, searchQuery, selectedFilter, selectedCategory, selectedAccount, startDate, endDate, activeTab, selectedMonth, selectedYear]);
 
   const localStats = useMemo(() => {
     let incMonthSum = 0, expMonthSum = 0, incYearSum = 0, expYearSum = 0;
     transactions.forEach(t => {
-      const transDate = new Date(t.date);
+      const transDate = transactionDate(t.date);
       const amt = parseFloat(t.amount) || 0;
       if (transDate.getMonth() === selectedMonth && transDate.getFullYear() === selectedYear) {
         if (t.type === 'Income') incMonthSum += amt;
@@ -165,6 +180,27 @@ export default function Dashboard() {
     </View>
   ), []);
 
+  const hasAdvancedFilters = selectedCategory !== 'All' || selectedAccount !== 'All' || !!startDate || !!endDate;
+
+  const applyAdvancedFilters = () => {
+    if ((startDate && !isIsoDate(startDate)) || (endDate && !isIsoDate(endDate))) {
+      Alert.alert('Invalid date', 'Use YYYY-MM-DD for the date range.');
+      return;
+    }
+    if (startDate && endDate && startDate > endDate) {
+      Alert.alert('Invalid date range', 'The start date must be before the end date.');
+      return;
+    }
+    setIsFilterModalVisible(false);
+  };
+
+  const clearAdvancedFilters = () => {
+    setSelectedCategory('All');
+    setSelectedAccount('All');
+    setStartDate('');
+    setEndDate('');
+  };
+
   if (isLoading) {
     return (
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
@@ -200,23 +236,23 @@ export default function Dashboard() {
       <View style={styles.headerCard}>
         {activeTab === 'Daily' ? (
           <>
-            <Text style={styles.balanceLabel}>Net Balance ({monthsNames[selectedMonth]})</Text>
-            <Text style={styles.balanceValue}>₱{localStats.monthNet.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+            <Text style={styles.balanceLabel}>Current Balance</Text>
+            <Text style={styles.balanceValue}>₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Income</Text>
+                <Text style={styles.statLabel}>Income ({monthsNames[selectedMonth]})</Text>
                 <Text style={[styles.statValue, { color: '#10B981' }]}>+₱{localStats.monthIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
               </View>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Expenses</Text>
+                <Text style={styles.statLabel}>Expenses ({monthsNames[selectedMonth]})</Text>
                 <Text style={[styles.statValue, { color: '#EF4444' }]}>-₱{localStats.monthExpense.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
               </View>
             </View>
           </>
         ) : (
           <>
-            <Text style={styles.balanceLabel}>Yearly Net Total ({selectedYear})</Text>
+            <Text style={styles.balanceLabel}>Yearly Cash Flow ({selectedYear})</Text>
             <Text style={styles.balanceValue}>₱{localStats.yearNet.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
             <View style={styles.statsRow}>
               <View style={styles.statItem}>
@@ -250,6 +286,10 @@ export default function Dashboard() {
                 <Text style={[styles.filterChipText, selectedFilter === filter && styles.activeFilterChipText]}>{filter}</Text>
               </TouchableOpacity>
             ))}
+            <TouchableOpacity onPress={() => setIsFilterModalVisible(true)} style={[styles.filterChip, hasAdvancedFilters && styles.activeFilterChip]}>
+              <Ionicons name="options-outline" size={14} color={hasAdvancedFilters ? '#FFFFFF' : '#56736E'} />
+              <Text style={[styles.filterChipText, hasAdvancedFilters && styles.activeFilterChipText]}>More filters</Text>
+            </TouchableOpacity>
           </ScrollView>
         </View>
       )}
@@ -272,7 +312,7 @@ export default function Dashboard() {
             </View>
           </View>
           {monthsNames.map((mName, idx) => {
-            const filtered = transactions.filter(t => new Date(t.date).getMonth() === idx && new Date(t.date).getFullYear() === selectedYear);
+            const filtered = transactions.filter(t => transactionDate(t.date).getMonth() === idx && transactionDate(t.date).getFullYear() === selectedYear);
             const inc = filtered.filter(t => t.type === 'Income').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
             const exp = filtered.filter(t => t.type === 'Expense').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
             if (filtered.length === 0) return null;
@@ -292,6 +332,37 @@ export default function Dashboard() {
         </ScrollView>
       )}
 
+      <Modal visible={isFilterModalVisible} transparent animationType="slide" onRequestClose={() => setIsFilterModalVisible(false)}>
+        <View style={styles.filterModalOverlay}>
+          <View style={styles.filterModalContent}>
+            <View style={styles.filterModalHeader}>
+              <Text style={styles.filterModalTitle}>Filter transactions</Text>
+              <TouchableOpacity onPress={() => setIsFilterModalVisible(false)}><Ionicons name="close" size={24} color="#142D2A" /></TouchableOpacity>
+            </View>
+            <Text style={styles.filterLabel}>Category</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
+              {['All', ...categories.map((category) => category.name)].map((name) => (
+                <TouchableOpacity key={name} onPress={() => setSelectedCategory(name)} style={[styles.filterChip, selectedCategory === name && styles.activeFilterChip]}><Text style={[styles.filterChipText, selectedCategory === name && styles.activeFilterChipText]}>{name}</Text></TouchableOpacity>
+              ))}
+            </ScrollView>
+            <Text style={styles.filterLabel}>Payment account</Text>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
+              {['All', ...accounts.map((account) => account.name)].map((name) => (
+                <TouchableOpacity key={name} onPress={() => setSelectedAccount(name)} style={[styles.filterChip, selectedAccount === name && styles.activeFilterChip]}><Text style={[styles.filterChipText, selectedAccount === name && styles.activeFilterChipText]}>{name}</Text></TouchableOpacity>
+              ))}
+            </ScrollView>
+            <Text style={styles.filterLabel}>Date range (optional)</Text>
+            <View style={styles.dateRangeRow}>
+              <TextInput value={startDate} onChangeText={setStartDate} placeholder="Start YYYY-MM-DD" placeholderTextColor="#7C9A95" style={styles.dateRangeInput} maxLength={10} />
+              <TextInput value={endDate} onChangeText={setEndDate} placeholder="End YYYY-MM-DD" placeholderTextColor="#7C9A95" style={styles.dateRangeInput} maxLength={10} />
+            </View>
+            <View style={styles.filterModalActions}>
+              <TouchableOpacity onPress={clearAdvancedFilters} style={styles.clearFilterButton}><Text style={styles.clearFilterText}>Clear</Text></TouchableOpacity>
+              <TouchableOpacity onPress={applyAdvancedFilters} style={styles.applyFilterButton}><Text style={styles.applyFilterText}>Apply filters</Text></TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
       <TouchableOpacity style={styles.fab} onPress={() => router.push('/(tabs)/two')}><Ionicons name="add" size={32} color="#FFFFFF" /></TouchableOpacity>
     </View>
   );
@@ -326,7 +397,7 @@ const styles = StyleSheet.create({
   searchIcon: { marginRight: 8 },
   searchInput: { flex: 1, color: '#142D2A', fontSize: 14 },
   filterRow: { flexDirection: 'row', paddingTop: 10, gap: 8 },
-  filterChip: { backgroundColor: '#F3F4F6', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0' },
+  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F3F4F6', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0' },
   activeFilterChip: { backgroundColor: '#2b5f56', borderColor: '#2b5f56' },
   filterChipText: { color: '#56736E', fontSize: 12, fontWeight: '600' },
   activeFilterChipText: { color: '#FFFFFF' },
@@ -362,5 +433,18 @@ const styles = StyleSheet.create({
   transactionCountSub: { color: '#7C9A95', fontSize: 12, marginTop: 3 },
   monthLeftBlock: { flexDirection: 'column', flex: 1 },
   monthRightBlock: { alignItems: 'flex-end', minWidth: 120 },
-  monthlyStatText: { fontSize: 14, fontWeight: '700', textAlign: 'right', lineHeight: 20 }
+  monthlyStatText: { fontSize: 14, fontWeight: '700', textAlign: 'right', lineHeight: 20 },
+  filterModalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(20, 45, 42, 0.45)' },
+  filterModalContent: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 20, paddingBottom: 30, maxHeight: '82%' },
+  filterModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
+  filterModalTitle: { color: '#142D2A', fontSize: 18, fontWeight: '800' },
+  filterLabel: { color: '#56736E', fontSize: 13, fontWeight: '700', marginTop: 12, marginBottom: 8 },
+  modalChipRow: { gap: 8, paddingRight: 20 },
+  dateRangeRow: { flexDirection: 'row', gap: 10 },
+  dateRangeInput: { flex: 1, borderWidth: 1, borderColor: '#E2E8F0', color: '#142D2A', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, fontSize: 13 },
+  filterModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 24 },
+  clearFilterButton: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, backgroundColor: '#F3F4F6' },
+  clearFilterText: { color: '#56736E', fontWeight: '700' },
+  applyFilterButton: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12, backgroundColor: '#2b5f56' },
+  applyFilterText: { color: '#FFFFFF', fontWeight: '700' }
 });

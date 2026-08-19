@@ -118,8 +118,7 @@ async def seed_categories():
         {"name": "Cash", "initial_balance": 0.0, "icon": "wallet", "account_role": "admin"}, 
         {"name": "GCash", "initial_balance": 0.0, "icon": "phone-portrait", "account_role": "admin"}, 
         {"name": "Bank", "initial_balance": 0.0, "icon": "card", "account_role": "admin"}, 
-        {"name": "Savings", "initial_balance": 0.0, "icon": "archive", "account_role": "admin"},
-        {"name": "Savings", "type": "expense", "icon": "archive-outline", "category_role": "admin"}
+        {"name": "Savings", "initial_balance": 0.0, "icon": "archive", "account_role": "admin"}
     ]
 
     all_data = expense_categories + income_categories

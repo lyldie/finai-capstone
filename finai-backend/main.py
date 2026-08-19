@@ -903,6 +903,25 @@ class InitialSetupSchema(BaseModel):
 
 
 # --- 7. HELPER FUNCTIONS ---
+def validate_transaction_for_storage(transaction: TransactionSchema):
+    transaction.type = transaction.type.strip().title()
+    transaction.account = transaction.account.strip()
+    transaction.to_account = transaction.to_account.strip() if transaction.to_account else None
+
+    if transaction.type not in {"Income", "Expense", "Transfer"}:
+        raise HTTPException(status_code=422, detail="Invalid transaction type.")
+    if not transaction.account:
+        raise HTTPException(status_code=422, detail="A source payment account is required.")
+    if transaction.type == "Transfer":
+        if not transaction.to_account:
+            raise HTTPException(status_code=422, detail="A destination payment account is required for a transfer.")
+        if transaction.account == transaction.to_account:
+            raise HTTPException(status_code=422, detail="Transfer source and destination accounts must be different.")
+        transaction.category = "Transfer"
+    else:
+        transaction.to_account = None
+
+
 def send_otp_email(target_email: str, otp_code: str):
     try:
         msg = EmailMessage()
@@ -1114,6 +1133,7 @@ async def ocr_scan(
 # --- 10. TRANSACTION ENDPOINTS ---
 @app.post("/add-expense")
 async def add_expense(transaction: TransactionSchema):
+    validate_transaction_for_storage(transaction)
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
     if transaction_dict.get("goal_id"):
@@ -1128,6 +1148,7 @@ async def add_expense(transaction: TransactionSchema):
 
 @app.put("/update-expense/{expense_id}")
 async def update_expense(expense_id: str, transaction: TransactionSchema):
+    validate_transaction_for_storage(transaction)
     if transaction.goal_id:
         transaction.goal_id = str(transaction.goal_id)
     result = await db.expenses.update_one(

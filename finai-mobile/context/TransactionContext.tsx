@@ -7,7 +7,7 @@ import { API_URL } from '../config';
 export type TransactionType = 'Income' | 'Expense' | 'Transfer';
 export type Transaction = { id: string; amount: string; category: string; note: string; type: TransactionType; account: string; to_account?: string; date: string; };
 export type Category = { id: string; name: string; type: string; icon: string; };
-export type Account = { id: string; name: string; initial_balance: number; icon: string; };
+export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
 export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
 
@@ -66,7 +66,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
         fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.json()),
         fetch(`${API_URL}/api/categories/?user_id=${userId}`).then(res => res.json()), 
-        fetch(`${API_URL}/api/accounts?user_id=${userId}`).then(res => res.json()),    
+        fetch(`${API_URL}/api/accounts/user/${userId}`).then(res => res.json()),
         fetch(`${API_URL}/api/budgets/get-all/${userId}`).then(res => res.json()),
         fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : []),
         fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : [])
@@ -100,13 +100,22 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
 
   const getAccountBalance = useCallback((accountName: string) => {
-    return transactions.reduce((total, t) => {
-      if (t.account === accountName) {
-        return total + (t.type === 'Income' ? parseFloat(t.amount) : -parseFloat(t.amount));
+    // Prefer a user's own account record over an admin account-type preset.
+    const account = accounts.find((item) => item.name === accountName && item.account_role !== 'admin')
+      || accounts.find((item) => item.name === accountName);
+    const openingBalance = Number(account?.initial_balance) || 0;
+
+    return transactions.reduce((total, transaction) => {
+      const amount = Number.parseFloat(transaction.amount) || 0;
+      if (transaction.type === 'Income' && transaction.account === accountName) return total + amount;
+      if (transaction.type === 'Expense' && transaction.account === accountName) return total - amount;
+      if (transaction.type === 'Transfer') {
+        if (transaction.account === accountName) total -= amount;
+        if (transaction.to_account === accountName) total += amount;
       }
       return total;
-    }, 0);
-  }, [transactions]);
+    }, openingBalance);
+  }, [accounts, transactions]);
 
   const addTransaction = async (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
     const userId = await AsyncStorage.getItem('user_id');
@@ -119,7 +128,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (Array.isArray(result.notifications) && result.notifications.length) {
         Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
-    } else Alert.alert("Error", "Save failed.");
+    } else {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || 'Save failed.');
+    }
   };
 
   const updateTransaction = async (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
@@ -133,7 +145,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (Array.isArray(result.notifications) && result.notifications.length) {
         Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
-    } else Alert.alert("Error", "Update failed.");
+    } else {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || 'Update failed.');
+    }
   };
 
   const deleteTransaction = async (id: string) => {
@@ -230,7 +245,12 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
-  const balance = useMemo(() => totalIncome - totalExpense, [totalIncome, totalExpense]);
+  const balance = useMemo(() => {
+    const accountNames = [...new Set(accounts.map((account) => account.name))];
+    return accountNames.length
+      ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
+      : totalIncome - totalExpense;
+  }, [accounts, getAccountBalance, totalExpense, totalIncome]);
 
   return (
     <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>

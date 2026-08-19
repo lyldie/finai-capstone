@@ -5,6 +5,19 @@ import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useTransactions, TransactionType } from '../../context/TransactionContext'; 
 import DateTimePicker from '@react-native-community/datetimepicker'; 
 import ReceiptScannerModal from '../../components/ReceiptScannerModal'; 
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
+const formatLocalDate = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const dateFromIso = (value: string) => {
+  const [year, month, day] = value.split('-').map(Number);
+  return year && month && day ? new Date(year, month - 1, day) : new Date();
+};
 
 export default function TabTwoScreen() {
   const router = useRouter();
@@ -15,9 +28,10 @@ export default function TabTwoScreen() {
   const [amount, setAmount] = useState('');
   const [note, setNote] = useState('');
   const [category, setCategory] = useState('Select Category');
-  const [account, setAccount] = useState('Cash'); 
-  const [toAccount, setToAccount] = useState('GCash'); 
-  const [date, setDate] = useState(new Date().toISOString().split('T')[0]); 
+  const [account, setAccount] = useState('');
+  const [toAccount, setToAccount] = useState('');
+  const [date, setDate] = useState(formatLocalDate(new Date()));
+  const [scannerUserId, setScannerUserId] = useState<string | undefined>();
   
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
@@ -32,11 +46,24 @@ export default function TabTwoScreen() {
     setAmount('');
     setNote('');
     setCategory('Select Category');
-    setAccount('Cash');
-    setToAccount('GCash');
-    setDate(new Date().toISOString().split('T')[0]);
+    setAccount(accounts[0]?.name || '');
+    setToAccount(accounts.find((item) => item.name !== accounts[0]?.name)?.name || '');
+    setDate(formatLocalDate(new Date()));
     setType('Expense');
   };
+
+  useEffect(() => {
+    AsyncStorage.getItem('user_id').then((id) => setScannerUserId(id || undefined));
+  }, []);
+
+  useEffect(() => {
+    if (params?.id || accounts.length === 0) return;
+    setAccount((current) => accounts.some((item) => item.name === current) ? current : accounts[0].name);
+    setToAccount((current) => {
+      if (accounts.some((item) => item.name === current && item.name !== account)) return current;
+      return accounts.find((item) => item.name !== account)?.name || '';
+    });
+  }, [accounts, params?.id, account]);
 
   useEffect(() => {
     if (params && params.id) {
@@ -53,7 +80,7 @@ export default function TabTwoScreen() {
       if (params.to_account) setToAccount(params.to_account as string);
       if (params.date) setDate(params.date as string); 
     }
-  }, [params.id]); 
+  }, [params.id, params.type, params.amount, params.note, params.category, params.account, params.to_account, params.date]);
 
   useFocusEffect(
     useCallback(() => {
@@ -75,10 +102,14 @@ export default function TabTwoScreen() {
     if (parts.length > 2) {
       return; 
     }
-    setAmount(cleaned);
+    const [whole, decimal] = cleaned.split('.');
+    setAmount(decimal === undefined ? whole : `${whole}.${decimal.slice(0, 2)}`);
   };
 
   const handleSave = async () => {
+    if (!account) { Alert.alert('Account required', 'Mag-register o pumili muna ng payment account.'); return; }
+    if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Pumili ng destination payment account.'); return; }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > formatLocalDate(new Date())) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
     if (!amount || parseFloat(amount) <= 0) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
     if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
@@ -146,7 +177,7 @@ export default function TabTwoScreen() {
           </View>
 
           <View style={styles.card}>
-            <InputRow label="Date" value={date} icon="calendar-outline" onPress={() => { setTempDate(new Date(date)); setShowDatePicker(true); }} />
+            <InputRow label="Date" value={date} icon="calendar-outline" onPress={() => { setTempDate(dateFromIso(date)); setShowDatePicker(true); }} />
             {showDatePicker && (Platform.OS === 'ios' ? (
               <Modal visible={showDatePicker} animationType="slide" transparent={true}>
                 <View style={styles.pickerModalOverlay}>
@@ -154,14 +185,14 @@ export default function TabTwoScreen() {
                     <View style={styles.pickerHeader}>
                       <TouchableOpacity onPress={() => setShowDatePicker(false)}><Text style={styles.pickerCancelText}>Cancel</Text></TouchableOpacity>
                       <Text style={styles.pickerHeaderTitle}>Select Date</Text>
-                      <TouchableOpacity onPress={() => { setDate(tempDate.toISOString().split('T')[0]); setShowDatePicker(false); }}><Text style={styles.pickerDoneText}>Done</Text></TouchableOpacity>
+                      <TouchableOpacity onPress={() => { setDate(formatLocalDate(tempDate)); setShowDatePicker(false); }}><Text style={styles.pickerDoneText}>Done</Text></TouchableOpacity>
                     </View>
                     <DateTimePicker value={tempDate} mode="date" display="spinner" themeVariant="light" maximumDate={new Date()} onChange={(e, d) => { if (d) setTempDate(d); }} />
                   </View>
                 </View>
               </Modal>
             ) : (
-              <DateTimePicker value={new Date(date)} mode="date" display="default" maximumDate={new Date()} onChange={(e, d) => { setShowDatePicker(false); if (d) setDate(d.toISOString().split('T')[0]); }} />
+              <DateTimePicker value={dateFromIso(date)} mode="date" display="default" maximumDate={new Date()} onChange={(e, d) => { setShowDatePicker(false); if (d) setDate(formatLocalDate(d)); }} />
             ))}
             
             <InputRow label={type === 'Transfer' ? "From" : "Account"} value={account} icon="wallet-outline" onPress={() => { setSelectingTarget('from'); setIsAccModalVisible(true); }} />
@@ -208,6 +239,10 @@ export default function TabTwoScreen() {
                 <Text style={styles.accOptionText}>{acc.name}</Text>
               </TouchableOpacity>
             ))}
+            <TouchableOpacity onPress={() => { setIsAccModalVisible(false); router.push('/accounts'); }} style={styles.manageAccountsButton}>
+              <Ionicons name="settings-outline" size={18} color="#2b5f56" />
+              <Text style={styles.manageAccountsText}>Manage my accounts</Text>
+            </TouchableOpacity>
             <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}>
               <Text style={{color: '#142D2A', fontWeight: '600'}}>Close</Text>
             </TouchableOpacity>
@@ -220,10 +255,11 @@ export default function TabTwoScreen() {
         visible={isScannerVisible}
         onClose={() => setIsScannerVisible(false)}
         categories={categories}
+        userId={scannerUserId}
         onScanComplete={(data) => {
           setAmount(data.amount);
-          setCategory(data.category);
-          setDate(data.date);
+          setCategory(categories.some((item) => item.name === data.category && item.type === 'expense') ? data.category : 'Select Category');
+          setDate(/^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : formatLocalDate(new Date()));
           setNote(data.note);
           setType('Expense'); 
         }}
@@ -261,6 +297,8 @@ const styles = StyleSheet.create({
   closeModalButton: { marginTop: 20, alignItems: 'center', paddingVertical: 10 },
   accOption: { flexDirection: 'row', alignItems: 'center', padding: 18, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4' },
   accOptionText: { color: '#142D2A', fontSize: 16, marginLeft: 15, fontWeight: '500' },
+  manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 18, paddingVertical: 11, borderRadius: 12, backgroundColor: '#EAF4F1' },
+  manageAccountsText: { color: '#2b5f56', fontWeight: '700' },
   pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.3)', justifyContent: 'flex-end' },
   pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },
   pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4', width: '100%' },

@@ -42,6 +42,7 @@ export default function InsightsScreen() {
     goals = [], 
     deleteGoal, 
     accounts = [], 
+    getAccountBalance,
     depositToGoal 
   } = transactionContext;
 
@@ -56,11 +57,6 @@ export default function InsightsScreen() {
   // Safe extraction ng goalTypes list mula sa context kung available
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
-  const getAccountBalance = (accName: string) => {
-    const account = accounts?.find((a: any) => a.name === accName);
-    return account ? ((account as any).balance || (account as any).initial_balance || 0) : 0;
-  };
-
   // DYNAMIC COMPUTATIONS
   const stats = useMemo(() => {
     // Budget summaries arrive pre-filtered by their own period from the backend.
@@ -71,8 +67,12 @@ export default function InsightsScreen() {
     
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
     
-    const netCashFlow = transactions.reduce((acc, t) => 
-      t.type === 'Income' ? acc + (Number(t.amount) || 0) : acc - (Number(t.amount) || 0), 0);
+    const netCashFlow = transactions.reduce((acc, t) => {
+      const amount = Number(t.amount) || 0;
+      if (t.type === 'Income') return acc + amount;
+      if (t.type === 'Expense') return acc - amount;
+      return acc; // Transfers move money between personal accounts only.
+    }, 0);
 
     const safeGoals = goals || [];
     const totalTarget = safeGoals.reduce((acc, g) => acc + (Number(g.target_amount) || 0), 0);
