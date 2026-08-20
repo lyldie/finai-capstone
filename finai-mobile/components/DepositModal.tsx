@@ -28,6 +28,11 @@ export default function DepositModal({
   }, [visible]);
 
   const handleConfirm = async () => {
+    if (!selectedGoal || !selectedGoal.id) {
+      Alert.alert("Error", "Walang napiling goal paps.");
+      return;
+    }
+
     const amount = parseFloat(depositAmount);
     if (!amount || amount <= 0) {
       Alert.alert("Teka paps! ✋", "Maglagay ka ng tamang halaga.");
@@ -54,11 +59,12 @@ export default function DepositModal({
       <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setIsDropdownOpen(false); }}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Deposit sa {selectedGoal?.target_name}</Text>
+            <Text style={styles.modalTitle}>Deposit sa {selectedGoal?.target_name || 'Goal'}</Text>
             
             <TextInput
               style={styles.modalInput}
               placeholder="₱ 0.00"
+              placeholderTextColor="#A2B5B0"
               keyboardType="numeric"
               value={depositAmount}
               onChangeText={setDepositAmount}
@@ -120,9 +126,9 @@ export default function DepositModal({
 
             {/* MAIN ACTION BUTTON */}
             <TouchableOpacity 
-              style={styles.confirmBtn} 
+              style={[styles.confirmBtn, (!selectedAccount || !depositAmount) && { opacity: 0.6 }]} 
               onPress={handleConfirm} 
-              disabled={isSubmitting || !selectedAccount}
+              disabled={isSubmitting || !selectedAccount || !depositAmount}
             >
               {isSubmitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>I-hulog</Text>}
             </TouchableOpacity>
@@ -141,7 +147,7 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
   modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
   modalTitle: { fontSize: 18, fontWeight: 'bold', color: FINAI_DEEP_GREEN, marginBottom: 15 },
-  modalInput: { borderWidth: 1, borderColor: '#EBF0EE', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, backgroundColor: FINAI_LIGHT_BG },
+  modalInput: { borderWidth: 1, borderColor: '#EBF0EE', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, backgroundColor: FINAI_LIGHT_BG, color: '#142D2A' },
   label: { fontSize: 12, color: FINAI_SAGE, marginBottom: 6, fontWeight: '600' },
   
   // Dropdown Styles

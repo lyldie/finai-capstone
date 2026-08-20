@@ -1,26 +1,32 @@
 import React, { useState, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TouchableOpacity, TextInput, 
-  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator 
+  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard 
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Gagamitin natin ito para hindi na manghula ang screen kung sino ang user
 
 export default function SetupPinScreen() {
   const [pin, setPin] = useState('');
   const [income, setIncome] = useState('');
   const [goalName, setGoalName] = useState('');
   const [goalAmount, setGoalAmount] = useState('');
-  const [goalDate, setGoalDate] = useState(''); // Format: YYYY-MM-DD
+  const [goalDate, setGoalDate] = useState(''); 
   const [loading, setLoading] = useState(false);
 
   const inputRef = useRef<TextInput>(null); 
   const router = useRouter();
+  
+  // 👈 [NEW] Kunin ang current user mula sa session natin
+  const { user } = useAuth();
 
   const handleConfirmPinAndSetup = async () => {
+    Keyboard.dismiss(); // 👈 [NEW] Itago ang keyboard kapag nagsa-save
+
     // 1. Validation para sa PIN length
     if (pin.length !== 4) {
       Alert.alert("Wait lang paps!", "Kailangan 4 digits ang PIN mo para safe.");
@@ -40,6 +46,20 @@ export default function SetupPinScreen() {
       return;
     }
 
+    // 👈 [NEW] Strict Date Validation (Bawal ang past tense)
+    const parsedTargetDate = new Date(goalDate.trim());
+    if (isNaN(parsedTargetDate.getTime())) {
+      Alert.alert("Invalid Date", "Hindi yata totoong petsa 'yan paps.");
+      return;
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Reset time para malinis ang comparison
+    if (parsedTargetDate <= today) {
+      Alert.alert("Invalid Date", "Dapat sa future ang target date mo paps, lagpas sa araw na ito!");
+      return;
+    }
+
     const parsedIncome = parseFloat(income);
     const parsedGoalAmount = parseFloat(goalAmount);
 
@@ -56,8 +76,8 @@ export default function SetupPinScreen() {
     setLoading(true);
 
     try {
-      // 4. Hugutin ang user_id na naitabi nung nakaraang step
-      const userId = await AsyncStorage.getItem('user_id');
+      // 4. Hugutin ang user_id gamit ang AuthContext natin na ginawa kanina
+      const userId = user?.id || await AsyncStorage.getItem('user_id');
       if (!userId) {
         Alert.alert("Session Error", "Hindi mahanap ang user session. Subukang mag-register ulit paps.");
         router.replace('/signup');
@@ -123,9 +143,14 @@ export default function SetupPinScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      <ScrollView contentContainerStyle={{ flexGrow: 1 }} bounces={true} showsVerticalScrollIndicator={false}>
+      {/* 👈 [NEW] keyboardShouldPersistTaps */}
+      <ScrollView 
+        contentContainerStyle={{ flexGrow: 1 }} 
+        bounces={true} 
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         
-        {/* Header with Green Gradients */}
         <LinearGradient
           colors={['#4c8479', '#2b5f56']}
           style={styles.header}
@@ -138,12 +163,11 @@ export default function SetupPinScreen() {
 
         <View style={styles.content}>
           
-          {/* SECTION 1: SECURITY PIN CARD */}
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>🔒 SECURITY LOCK</Text>
             <Text style={styles.instruction}>Enter a 4-digit PIN to secure your wallet</Text>
             
-            <Pressable style={styles.pinWrapper} onPress={focusInput}>
+            <Pressable style={styles.pinWrapper} onPress={focusInput} disabled={loading}>
               <View style={styles.pinContainer}>
                 {[...Array(4)].map((_, i) => (
                   <View key={i} style={[styles.dot, pin.length > i && styles.dotActive]} />
@@ -159,10 +183,10 @@ export default function SetupPinScreen() {
               value={pin}
               onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
               autoFocus={true}
+              editable={!loading}
             />
           </View>
 
-          {/* SECTION 2: MONTHLY INCOME CARD */}
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>💰 MONTHLY BASELINE</Text>
             <Text style={styles.label}>Magkano ang monthly income mo paps?</Text>
@@ -173,10 +197,10 @@ export default function SetupPinScreen() {
               keyboardType="numeric"
               value={income}
               onChangeText={setIncome}
+              editable={!loading}
             />
           </View>
 
-          {/* SECTION 3: FINANCIAL GOALS CARD */}
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>🎯 FIRST FINANCIAL GOAL</Text>
             
@@ -187,6 +211,7 @@ export default function SetupPinScreen() {
               placeholderTextColor="#999"
               value={goalName}
               onChangeText={setGoalName}
+              editable={!loading}
             />
 
             <Text style={styles.label}>Target Savings Amount (Magkano ang target ipon?)</Text>
@@ -197,6 +222,7 @@ export default function SetupPinScreen() {
               keyboardType="numeric"
               value={goalAmount}
               onChangeText={setGoalAmount}
+              editable={!loading}
             />
 
             <Text style={styles.label}>Target Date (Kailan mo gustong makamit? YYYY-MM-DD)</Text>
@@ -206,10 +232,10 @@ export default function SetupPinScreen() {
               placeholderTextColor="#999"
               value={goalDate}
               onChangeText={setGoalDate}
+              editable={!loading}
             />
           </View>
 
-          {/* SYSTEM SETUP SUBMIT BUTTON */}
           <View style={styles.buttonWrapper}>
             <TouchableOpacity 
               style={[styles.button, (!isFormComplete || loading) && { opacity: 0.5 }]}

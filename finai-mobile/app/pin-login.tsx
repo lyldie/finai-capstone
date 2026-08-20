@@ -5,15 +5,20 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Import natin ang AuthContext
 
 export default function PinLoginScreen() {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
+  // 👈 [NEW] Kunin ang user data at logout function
+  const { user, logoutUser } = useAuth();
+
   // Traffic Cop: Direct bypass check kapag admin o kapag valid na session
   useEffect(() => {
     const checkRoleBypass = async () => {
+      // Mas magandang basahin direkta sa session para mabilis
       const role = await AsyncStorage.getItem('user_role');
       if (role === 'admin') {
         router.replace('/(admin)/admin-dashboard');
@@ -41,7 +46,8 @@ export default function PinLoginScreen() {
     setLoading(true);
 
     try {
-      const email = await AsyncStorage.getItem('user_email');
+      // 👈 [NEW] Mas reliable: kunin muna sa context bago sa storage
+      const email = user?.email || await AsyncStorage.getItem('user_email');
       const savedPin = await AsyncStorage.getItem('user_pin');
 
       // 1. Backend Verification (Primary)
@@ -55,7 +61,7 @@ export default function PinLoginScreen() {
         const data = await response.json();
 
         if (response.ok) {
-          const role = await AsyncStorage.getItem('user_role');
+          const role = user?.role || await AsyncStorage.getItem('user_role');
           if (role === 'admin') {
             router.replace('/(admin)/admin-dashboard');
           } else {
@@ -65,6 +71,7 @@ export default function PinLoginScreen() {
         } else {
           Alert.alert("Mali paps!", data.detail || "Hindi match ang PIN mo.");
           setPin('');
+          setLoading(false); // 👈 [NEW] Kailangan itigil ang loading kung mali ang PIN sa backend
           return;
         }
       }
@@ -99,6 +106,21 @@ export default function PinLoginScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  // 👈 [NEW] Proper Switch Account Logic
+  const handleSwitchAccount = async () => {
+    Alert.alert("Switch Account", "Sigurado ka bang gusto mong mag-log out at gumamit ng ibang account?", [
+      { text: "Cancel", style: "cancel" },
+      { 
+        text: "Yes, Log out", 
+        style: "destructive",
+        onPress: async () => {
+          await logoutUser(); // Binubura lahat ng session data (PIN, Email, etc.)
+          router.replace('/login');
+        }
+      }
+    ]);
   };
 
   return (
@@ -141,9 +163,11 @@ export default function PinLoginScreen() {
         </View>
       )}
 
+      {/* 👈 [NEW] Tinawag na natin yung tamang Switch Account function */}
       <TouchableOpacity 
         style={styles.switchAccountBtn}
-        onPress={() => router.replace('/login')}
+        onPress={handleSwitchAccount}
+        disabled={loading}
       >
         <Text style={styles.switchAccountText}>Switch Account or Login via Password</Text>
       </TouchableOpacity>

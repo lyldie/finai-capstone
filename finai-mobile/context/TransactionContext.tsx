@@ -42,7 +42,7 @@ type TransactionContextType = {
   totalIncome: number; 
   totalExpense: number; 
   balance: number;
-  fetchTransactions: () => Promise<void>;
+  fetchTransactions: (showLoading?: boolean) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
 };
 
@@ -57,11 +57,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [goals, setGoals] = useState<Goal[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  const fetchTransactions = useCallback(async () => {
-    setIsLoading(true);
+  // Option for silent refresh (showLoading = false) para iwas flicker sa UI
+  const fetchTransactions = useCallback(async (showLoading = true) => {
+    if (showLoading) setIsLoading(true);
     try {
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { setIsLoading(false); return; }
+      if (!userId) { 
+        if (showLoading) setIsLoading(false); 
+        return; 
+      }
 
       const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
         fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.json()),
@@ -74,9 +78,14 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         setTransactions(transRes.data.map((i: any) => ({
-          id: i._id || i.id, amount: i.amount?.toString() || '0', category: i.category || 'General',
-          note: i.title || i.note || i.item_name || i.category || '', type: i.type || 'Expense',
-          account: i.account || 'Cash', to_account: i.to_account || '', date: i.date || new Date().toISOString().split('T')[0]
+          id: i._id || i.id, 
+          amount: i.amount?.toString() || '0', 
+          category: i.category || 'General',
+          note: i.title || i.note || i.item_name || i.category || '', 
+          type: i.type || 'Expense',
+          account: i.account || (accounts[0]?.name || 'Cash'), 
+          to_account: i.to_account || '', 
+          date: i.date ? i.date.split('T')[0] : new Date().toISOString().split('T')[0]
         })));
       }
       
@@ -91,16 +100,22 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       
       const parsedGoals = Array.isArray(goalsRes) ? goalsRes : (goalsRes.data || []);
       setGoals(parsedGoals.map((g: any) => ({ ...g, id: g._id || g.id })));
+
       const parsedNotifications = Array.isArray(notificationRes) ? notificationRes : (notificationRes.data || []);
       setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
       
-    } catch (e) { console.error("Fetch Error:", e); } finally { setIsLoading(false); }
+    } catch (e) { 
+      console.error("Fetch Error:", e); 
+    } finally { 
+      if (showLoading) setIsLoading(false); 
+    }
+  }, [accounts]);
+
+  useEffect(() => { 
+    fetchTransactions(true); 
   }, []);
 
-  useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
-
   const getAccountBalance = useCallback((accountName: string) => {
-    // Prefer a user's own account record over an admin account-type preset.
     const account = accounts.find((item) => item.name === accountName && item.account_role !== 'admin')
       || accounts.find((item) => item.name === accountName);
     const openingBalance = Number(account?.initial_balance) || 0;
@@ -124,9 +139,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (res.ok) {
       const result = await res.json();
-      await fetchTransactions();
+      await fetchTransactions(false); // Silent refresh
       if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
     } else {
       const error = await res.json().catch(() => ({}));
@@ -141,9 +156,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     if (res.ok) {
       const result = await res.json();
-      await fetchTransactions();
+      await fetchTransactions(false); // Silent refresh
       if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget alert', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
     } else {
       const error = await res.json().catch(() => ({}));
@@ -152,7 +167,16 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const deleteTransaction = async (id: string) => {
-    if ((await fetch(`${API_URL}/delete-expense/${id}`, { method: 'DELETE' })).ok) fetchTransactions();
+    try {
+      const res = await fetch(`${API_URL}/delete-expense/${id}`, { method: 'DELETE' });
+      if (res.ok) {
+        await fetchTransactions(false); // Silent refresh
+      } else {
+        Alert.alert("Error", "Hindi nabura ang record sa server.");
+      }
+    } catch (e) {
+      Alert.alert("Error", "Network connection failed.");
+    }
   };
 
   const markNotificationRead = async (id: string) => {
@@ -167,14 +191,14 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const updateBudget = async (id: string, amount: number) => {
     try {
       const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
-      if (res.ok) fetchTransactions(); else Alert.alert("Error", "Failed to update budget.");
+      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to update budget.");
     } catch (e) { console.error(e); }
   };
 
   const deleteBudget = async (id: string) => {
     try {
       const res = await fetch(`${API_URL}/api/budgets/delete/${id}`, { method: 'DELETE' });
-      if (res.ok) fetchTransactions(); else Alert.alert("Error", "Failed to delete budget.");
+      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete budget.");
     } catch (e) { console.error(e); }
   };
 
@@ -188,7 +212,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         body: JSON.stringify({ user_id: userId, goal_type_id, target_name: name, target_amount, current_savings: 0, target_date }),
       });
       if (!response.ok) throw new Error('Failed to add goal');
-      await fetchTransactions(); 
+      await fetchTransactions(false); 
     } catch (error) { console.error("addGoal Error:", error); Alert.alert("Error", "Bumagsak ang pag-save ng goal."); }
   };
 
@@ -211,7 +235,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
 
       if (!response.ok) throw new Error('Failed to update goal');
-      await fetchTransactions(); 
+      await fetchTransactions(false); 
     } catch (error) { 
       console.error("updateGoal Error:", error); 
       Alert.alert("Error", "Bumagsak ang pag-update ng goal."); 
@@ -219,22 +243,43 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const deleteGoal = async (id: string) => {
-    const res = await fetch(`${API_URL}/api/goals/${id}`, { method: 'DELETE' });
-    if (res.ok) fetchTransactions(); else Alert.alert("Error", "Failed to delete.");
+    try {
+      const res = await fetch(`${API_URL}/api/goals/${id}`, { method: 'DELETE' });
+      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete goal.");
+    } catch (e) {
+      Alert.alert("Error", "Network connection failed.");
+    }
   };
 
+  // --- 🚨 INAYOS NA ENDPOINT PARA SA GOAL DEPOSITS ---
   const depositToGoal = async (goalId: string, amount: number, account: string): Promise<boolean> => {
     try {
-      const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
-        method: 'PATCH',
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) throw new Error("User session not found.");
+
+      const payload = {
+        user_id: userId,
+        amount: amount,
+        category: "Goal Contribution",
+        type: "Transfer",
+        account: account,
+        goal_id: goalId,
+        date: new Date().toISOString().split('T')[0],
+        title: "Paghulog sa Alkansya"
+      };
+
+      const response = await fetch(`${API_URL}/add-goal-contribution`, {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ amount, account })
+        body: JSON.stringify(payload)
       });
+
       if (!response.ok) {
         const errorData = await response.json();
         throw new Error(errorData.detail || 'Failed to process deposit');
       }
-      await fetchTransactions(); 
+      
+      await fetchTransactions(false); 
       return true;
     } catch (error: any) {
       console.error("depositToGoal Error:", error);
@@ -245,12 +290,22 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
+  
+  // --- 🚨 INAYOS NA BALANCE COMPUTATION ---
   const balance = useMemo(() => {
     const accountNames = [...new Set(accounts.map((account) => account.name))];
-    return accountNames.length
+    
+    // 1. Kunin ang total mula sa regular accounts (Cash, Bank, GCash)
+    const totalFromAccounts = accountNames.length
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
       : totalIncome - totalExpense;
-  }, [accounts, getAccountBalance, totalExpense, totalIncome]);
+
+    // 2. Kunin ang kabuuang ipon mula sa lahat ng Goals/Alkansya
+    const totalGoalSavings = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
+
+    // 3. I-add sila para makuha ang totoong Net Worth ng user
+    return totalFromAccounts + totalGoalSavings;
+  }, [accounts, getAccountBalance, totalExpense, totalIncome, goals]); 
 
   return (
     <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>

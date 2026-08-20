@@ -1,5 +1,9 @@
 import React, { useState } from 'react';
-import { View, TextInput, TouchableOpacity, Alert, StyleSheet, Text, ScrollView, StatusBar, Image, KeyboardAvoidingView, Platform, ActivityIndicator } from 'react-native';
+import { 
+  View, TextInput, TouchableOpacity, Alert, StyleSheet, Text, 
+  ScrollView, StatusBar, Image, KeyboardAvoidingView, Platform, 
+  ActivityIndicator, Keyboard 
+} from 'react-native';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Checkbox } from 'expo-checkbox'; 
@@ -18,6 +22,7 @@ export default function SignupScreen() {
   const router = useRouter();
 
   const handleSignup = async () => {
+    Keyboard.dismiss(); // 👈 [NEW] Itago ang keyboard kapag pinindot ang signup
     const cleanName = name.trim();
     const cleanEmail = email.trim().toLowerCase();
 
@@ -27,26 +32,33 @@ export default function SignupScreen() {
       return;
     }
 
-    // 2. Email Format Validation
+    // 👈 [NEW] 2. Name Validation (Letters at spaces lang para iwas invalid data sa database)
+    const nameRegex = /^[a-zA-ZñÑ\s\-]+$/;
+    if (!nameRegex.test(cleanName)) {
+      Alert.alert("Invalid Name", "Letters, spaces, at hyphens lang sana sa pangalan paps.");
+      return;
+    }
+
+    // 3. Email Format Validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
       Alert.alert("Invalid Email", "Paki-check ang email format mo paps!");
       return;
     }
 
-    // 3. Password Length Validation
+    // 4. Password Length Validation
     if (password.length < 6) {
       Alert.alert("Weak Password", "Dapat at least 6 characters ang password paps.");
       return;
     }
 
-    // 4. Password Match Validation
+    // 5. Password Match Validation
     if (password !== retypePassword) {
       Alert.alert("Wait lang!", "Hindi match yung password mo paps.");
       return;
     }
 
-    // 5. Terms Agreement Check
+    // 6. Terms Agreement Check
     if (!isAgree) {
       Alert.alert("Privacy Policy", "Paki-check yung agreement paps.");
       return;
@@ -106,7 +118,12 @@ export default function SignupScreen() {
         </View>
       </LinearGradient>
 
-      <ScrollView contentContainerStyle={styles.formContainer} showsVerticalScrollIndicator={false}>
+      {/* 👈 [NEW] keyboardShouldPersistTaps="handled" */}
+      <ScrollView 
+        contentContainerStyle={styles.formContainer} 
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
         {/* Full Name */}
         <View style={styles.inputWrapper}>
           <Ionicons name="person" size={20} color="#999" style={styles.icon} />
@@ -116,6 +133,8 @@ export default function SignupScreen() {
             style={styles.input} 
             value={name} 
             onChangeText={setName} 
+            autoCapitalize="words" // 👈 [NEW] Auto-capitalize ng bawat salita sa pangalan
+            editable={!loading} // 👈 [NEW] Naka-disable kapag nag-l-load
           />
         </View>
 
@@ -130,6 +149,7 @@ export default function SignupScreen() {
             onChangeText={setEmail} 
             keyboardType="email-address" 
             autoCapitalize="none" 
+            editable={!loading}
           />
         </View>
 
@@ -143,6 +163,7 @@ export default function SignupScreen() {
             value={password} 
             onChangeText={setPassword} 
             secureTextEntry={!showPassword} 
+            editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
             <Ionicons name={showPassword ? "eye-off" : "eye"} size={20} color="#999" />
@@ -159,6 +180,7 @@ export default function SignupScreen() {
             value={retypePassword} 
             onChangeText={setRetypePassword} 
             secureTextEntry={!showRetypePassword} 
+            editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowRetypePassword(!showRetypePassword)}>
             <Ionicons name={showRetypePassword ? "eye-off" : "eye"} size={20} color="#999" />
@@ -167,7 +189,12 @@ export default function SignupScreen() {
 
         {/* Terms Checkbox */}
         <View style={styles.checkboxContainer}>
-          <Checkbox value={isAgree} onValueChange={setAgree} color={isAgree ? '#2b5f56' : undefined} />
+          <Checkbox 
+            value={isAgree} 
+            onValueChange={setAgree} 
+            color={isAgree ? '#2b5f56' : undefined} 
+            disabled={loading} // 👈 [NEW]
+          />
           <Text style={styles.checkboxLabel}> I agree to <Text style={styles.boldText} onPress={showPrivacyPolicy}>Terms & Privacy</Text></Text>
         </View>
 
@@ -177,7 +204,7 @@ export default function SignupScreen() {
         </TouchableOpacity>
 
         {/* Footer Link */}
-        <TouchableOpacity onPress={() => router.replace('/login')}>
+        <TouchableOpacity onPress={() => router.replace('/login')} disabled={loading}>
           <Text style={styles.footerText}>Have an account? <Text style={styles.boldLink}>Sign In</Text></Text>
         </TouchableOpacity>
       </ScrollView>

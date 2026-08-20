@@ -9,6 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext'; // 👈 [NEW] In-import natin ang AuthContext
 
 export default function LoginScreen() {
   const [email, setEmail] = useState('');
@@ -16,6 +17,9 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
+  
+  // 👈 [NEW] Kinukuha natin ang loginUser function mula sa Context
+  const { loginUser } = useAuth(); 
 
   const handleLogin = async () => {
     const cleanedEmail = email.trim().toLowerCase();
@@ -39,20 +43,15 @@ export default function LoginScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        // Safe storage ng user session details
-        if (data.user_id) {
-          await AsyncStorage.setItem('user_id', String(data.user_id));
-        }
-        if (data.name) {
-          await AsyncStorage.setItem('user_name', data.name);
-        }
-        await AsyncStorage.setItem('user_email', cleanedEmail); 
-        
-        if (data.role) {
-          await AsyncStorage.setItem('user_role', data.role);
-        }
+        // 👈 [NEW INTEGRATION]: Ginamit natin ang loginUser para sabay mag-update ang global state at AsyncStorage
+        await loginUser({
+          id: String(data.user_id),
+          name: data.name,
+          email: cleanedEmail,
+          role: data.role
+        });
 
-        // [INTEGRATED LOGIC]: Smart Redirection
+        // Smart Redirection
         if (data.role === 'admin') {
           router.replace('/(admin)/admin-dashboard'); 
         } else {

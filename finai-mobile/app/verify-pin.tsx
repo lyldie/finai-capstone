@@ -5,22 +5,26 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config'; 
+import { useAuth } from '../context/AuthContext'; // 👈 [NEW] I-connect sa global state
 
 export default function VerifyPinScreen() {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
+  // 👈 [NEW] Kunin ang user data at logout function
+  const { user, logoutUser } = useAuth();
+
   // Traffic Cop - Check role agad pagka-load
   useEffect(() => {
     const checkRoleBypass = async () => {
-      const role = await AsyncStorage.getItem('user_role');
+      const role = user?.role || await AsyncStorage.getItem('user_role');
       if (role === 'admin') {
         router.replace('/(admin)/admin-dashboard');
       }
     };
     checkRoleBypass();
-  }, []);
+  }, [user]); // 👈 [NEW] Dependency on user para mabilis mag-update
 
   const handlePress = (num: string) => {
     if (pin.length < 4 && !loading) setPin(prev => prev + num);
@@ -41,9 +45,12 @@ export default function VerifyPinScreen() {
     setLoading(true);
 
     try {
-      const email = await AsyncStorage.getItem('user_email');
+      // 👈 [NEW] Mas mabilis kumuha sa Context bago sa Storage
+      const email = user?.email || await AsyncStorage.getItem('user_email');
+      
       if (!email) {
         Alert.alert("Error", "No user session found. Please login again.");
+        await logoutUser(); // Siguraduhing malinis bago ibalik sa login
         router.replace('/login');
         return;
       }
@@ -62,7 +69,7 @@ export default function VerifyPinScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        const role = await AsyncStorage.getItem('user_role');
+        const role = user?.role || await AsyncStorage.getItem('user_role');
         if (role === 'admin') {
           router.replace('/(admin)/admin-dashboard');
         } else {
@@ -73,11 +80,37 @@ export default function VerifyPinScreen() {
         setPin(''); 
       }
     } catch (e) {
-      Alert.alert("Error", "Hindi maka-connect sa server.");
-      setPin('');
+      // 👈 [NEW] OFFLINE FALLBACK: Kung walang internet, i-check ang local PIN
+      const savedPin = await AsyncStorage.getItem('user_pin');
+      if (savedPin && pin === savedPin) {
+        const role = user?.role || await AsyncStorage.getItem('user_role');
+        if (role === 'admin') {
+          router.replace('/(admin)/admin-dashboard');
+        } else {
+          router.replace('/(tabs)');
+        }
+      } else {
+        Alert.alert("Connection Error", "Hindi maka-connect sa server at hindi rin match ang local PIN.");
+        setPin('');
+      }
     } finally {
       setLoading(false);
     }
+  };
+
+  // 👈 [NEW] Proper Switch Account Logic para walang overlap ng data
+  const handleSwitchAccount = async () => {
+    Alert.alert("Switch Account", "Gusto mo bang mag-login gamit ang ibang account?", [
+      { text: "Cancel", style: "cancel" },
+      { 
+        text: "Yes", 
+        style: "destructive",
+        onPress: async () => {
+          await logoutUser(); // Linisin lahat
+          router.replace('/login');
+        }
+      }
+    ]);
   };
 
   return (
@@ -120,10 +153,11 @@ export default function VerifyPinScreen() {
         </View>
       )}
 
-      {/* Button para pantay sa pin-login at walang nawawalang element */}
+      {/* 👈 [NEW] Ginamit na natin yung handleSwitchAccount */}
       <TouchableOpacity 
         style={styles.switchAccountBtn}
-        onPress={() => router.replace('/login')}
+        onPress={handleSwitchAccount}
+        disabled={loading}
       >
         <Text style={styles.switchAccountText}>Switch Account or Login via Password</Text>
       </TouchableOpacity>

@@ -1,11 +1,12 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
 import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
-import { Stack, useRouter } from 'expo-router';
+import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
-import { useEffect, useState } from 'react';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useEffect } from 'react';
 import 'react-native-reanimated';
+
+// Context Providers
 import { TransactionProvider } from '../context/TransactionContext';
 import { AuthProvider } from '../context/AuthContext';
 
@@ -31,46 +32,19 @@ export default function RootLayout() {
 
   if (!loaded) return null;
 
-  return <RootLayoutNav />;
-}
-
-function RootLayoutNav() {
-  const [isReady, setIsReady] = useState(false);
-  const router = useRouter();
-
-  useEffect(() => {
-    const checkAuth = async () => {
-      try {
-        const userId = await AsyncStorage.getItem('user_id');
-        setIsReady(true);
-        
-        setTimeout(() => {
-          if (userId) {
-            router.replace('/verify-pin');
-          } else {
-            router.replace('/getstarted');
-          }
-        }, 100);
-      } catch (e) {
-        setIsReady(true);
-      }
-    };
-    checkAuth();
-  }, []);
-
-  if (!isReady) return null;
-
   return (
     <AuthProvider>
       <TransactionProvider>
         <ThemeProvider value={DefaultTheme}>
-          <Stack screenOptions={{ headerShown: false }}>
+          {/* Ginawa nating getstarted ang pinaka-unang screen */}
+          <Stack screenOptions={{ headerShown: false }} initialRouteName="getstarted">
             <Stack.Screen name="index" />
             <Stack.Screen name="getstarted" />
             <Stack.Screen name="login" />
             <Stack.Screen name="signup" />
             <Stack.Screen name="setup-pin" />
             <Stack.Screen name="verify-pin" />
+            <Stack.Screen name="pin-login" /> {/* 👈 Idinagdag natin ito! */}
             <Stack.Screen name="(tabs)" />
             <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
           </Stack>

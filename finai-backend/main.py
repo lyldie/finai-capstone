@@ -803,7 +803,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
 
 def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
     """Vision extractor. Fields it cannot visibly read must remain null."""
-    print("🤖 Triggering Gemini 2.0 Flash Vision Processor...")
+    print("🤖 Triggering Gemini 3.5 Flash Vision Processor...")
 
     if not ai_client:
         raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
@@ -999,7 +999,7 @@ async def login(user: UserLogin):
     if not db_user:
         raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
 
-    password_to_verify = user.password[:72]
+   password_to_verify = user.password[:72]
     try:
         if not pwd_context.verify(password_to_verify, db_user["password"]):
             raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
@@ -1131,6 +1131,36 @@ async def ocr_scan(
 
 
 # --- 10. TRANSACTION ENDPOINTS ---
+
+@app.post("/add-goal-contribution")
+async def add_goal_contribution(transaction: TransactionSchema):
+    # I-force ang system na basahin ito bilang Transfer papunta sa isang Goal
+    transaction.type = "Transfer"
+    transaction.category = "Goal Contribution"
+    validate_transaction_for_storage(transaction)
+
+    if not transaction.goal_id:
+        raise HTTPException(status_code=400, detail="Kailangan ng Goal ID para makapag-hulog paps!")
+
+    transaction_dict = transaction.dict()
+    transaction_dict["created_at"] = datetime.utcnow()
+    transaction_dict["goal_id"] = str(transaction.goal_id)
+
+    # 1. Hanapin ang goal at dagdagan agad ang current_savings nito
+    goal_update = await db.goals.update_one(
+        {"_id": ObjectId(transaction.goal_id)},
+        {"$inc": {"current_savings": float(transaction.amount)}}
+    )
+
+    if goal_update.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
+
+    # 2. I-save ang resibo ng paghuhulog sa history (expenses collection)
+    result = await db.expenses.insert_one(transaction_dict)
+
+    return {"status": "Success", "id": str(result.inserted_id), "message": "Naihulog na sa goal!"}
+
+
 @app.post("/add-expense")
 async def add_expense(transaction: TransactionSchema):
     validate_transaction_for_storage(transaction)
@@ -1151,14 +1181,46 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
     validate_transaction_for_storage(transaction)
     if transaction.goal_id:
         transaction.goal_id = str(transaction.goal_id)
+
+    # 1. Kunin ang lumang transaction para may pagbasehan ng computation
+    old_txn = await db.expenses.find_one({"_id": ObjectId(expense_id)})
+    if not old_txn:
+        raise HTTPException(status_code=404, detail="Transaction not found")
+
+    old_goal = old_txn.get("goal_id")
+    new_goal = transaction.goal_id
+    old_amount = float(old_txn.get("amount", 0))
+    new_amount = float(transaction.amount)
+
+    # 2. Mag-compute at mag-adjust ng ipon sa db.goals
+    if old_goal == new_goal and old_goal:
+        # Same goal, nag-iba lang ng amount (e.g. 500 naging 1000)
+        difference = new_amount - old_amount
+        if difference != 0:
+            await db.goals.update_one(
+                {"_id": ObjectId(old_goal)}, 
+                {"$inc": {"current_savings": difference}}
+            )
+    elif old_goal != new_goal:
+        # Nilipat sa ibang goal, o kaya tinanggalan ng goal
+        if old_goal:
+            # Bawiin yung pera mula sa lumang target
+            await db.goals.update_one({"_id": ObjectId(old_goal)}, {"$inc": {"current_savings": -old_amount}})
+        if new_goal:
+            # Ipasok yung pera sa bagong target
+            await db.goals.update_one({"_id": ObjectId(new_goal)}, {"$inc": {"current_savings": new_amount}})
+
+    # 3. I-save yung bagong transaction data
     result = await db.expenses.update_one(
         {"_id": ObjectId(expense_id)},
         {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
     )
+
     if result.matched_count == 1:
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
         return {"status": "Success", "notifications": notifications_created}
-    raise HTTPException(status_code=404, detail="Not found")
+    
+    raise HTTPException(status_code=404, detail="Failed to update transaction.")
 
 
 @app.get("/get-expenses")
@@ -1181,17 +1243,22 @@ async def delete_expense(expense_id: str):
     if not expense:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
+    # Bawiin ang pera sa goal savings kung naka-link ito
     goal_id = expense.get("goal_id")
     if goal_id:
         try:
-            await db.goals.update_one({"_id": ObjectId(goal_id)}, {"$inc": {"current_savings": -float(expense["amount"])}})
+            await db.goals.update_one(
+                {"_id": ObjectId(goal_id)}, 
+                {"$inc": {"current_savings": -float(expense["amount"])}}
+            )
         except Exception as e:
-            print(f"Goal update warning: {e}")
+            print(f"Goal rollback error: {e}")
 
     result = await db.expenses.delete_one({"_id": exp_oid})
     if result.deleted_count == 1:
         await create_crossed_threshold_notifications(str(expense.get("user_id", "")))
-        return {"status": "Success"}
+        return {"status": "Success", "message": "Transaction deleted successfully"}
+        
     raise HTTPException(status_code=500, detail="Failed to delete transaction")
 
 

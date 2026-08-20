@@ -1,12 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, Alert, StatusBar, 
-  Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard
+  Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard, Platform
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Import natin yung pinagandang AuthContext
 
 export default function OtpVerifyScreen() {
   const [otp, setOtp] = useState('');
@@ -16,6 +17,9 @@ export default function OtpVerifyScreen() {
   
   const { email } = useLocalSearchParams(); 
   const targetEmail = Array.isArray(email) ? email[0] : (email || '');
+
+  // 👈 [NEW] Kunin ang loginUser function
+  const { loginUser } = useAuth(); 
 
   const handleVerify = async () => {
     Keyboard.dismiss();
@@ -46,11 +50,18 @@ export default function OtpVerifyScreen() {
       if (response.ok) {
         const userId = data.user_id || data.id;
         
-        // Fix: Always ensure userId & email are saved as Strings
+        // 👈 [NEW INTEGRATION]: I-save ang user session sa global state at AsyncStorage nang sabay
         if (userId) {
-          await AsyncStorage.setItem('user_id', String(userId));
+          await loginUser({
+            id: String(userId),
+            name: data.name || "User", // Fallback incase hindi ibalik ng backend ang name sa OTP verify
+            email: cleanEmail,
+            role: data.role
+          });
+        } else {
+           // Fallback kung email lang ang naibalik
+           await AsyncStorage.setItem('user_email', cleanEmail);
         }
-        await AsyncStorage.setItem('user_email', cleanEmail);
 
         Alert.alert("Success! ✅", "Verified na ang account mo.", [
           { text: "G", onPress: () => router.replace('/setup-pin') }
@@ -70,7 +81,8 @@ export default function OtpVerifyScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" />
 
-      <KeyboardAvoidingView behavior="padding" style={styles.content}>
+      {/* 👈 [NEW] Cross-platform KeyboardAvoidingView behavior */}
+      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.content}>
         <Text style={styles.title}>OTP Verification</Text>
         <Text style={styles.subtitle}>Pakisulat yung 6-digit code na sinend namin sa:{"\n"}
           <Text style={{fontWeight: 'bold', color: '#edb232'}}>{targetEmail}</Text>
@@ -102,7 +114,8 @@ export default function OtpVerifyScreen() {
           {loading ? <ActivityIndicator color="#1c3c36" /> : <Text style={styles.btnText}>VERIFY CODE</Text>}
         </TouchableOpacity>
         
-        <TouchableOpacity onPress={() => router.replace('/signup')} style={{marginTop: 25}}>
+        {/* 👈 [NEW] Naka-disable din ang 'Back to Signup' kapag naglo-loading */}
+        <TouchableOpacity onPress={() => router.replace('/signup')} style={{marginTop: 25}} disabled={loading}>
           <Text style={{color: '#fff', opacity: 0.8}}>Wrong email? <Text style={{fontWeight: 'bold', color: '#edb232'}}>Back to Signup</Text></Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
