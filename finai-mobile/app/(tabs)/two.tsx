@@ -19,6 +19,21 @@ const dateFromIso = (value: string) => {
   return year && month && day ? new Date(year, month - 1, day) : new Date();
 };
 
+// Strict numeric check: rejects '', '.', 'NaN', and anything parseFloat would
+// silently coerce. This is the gate that closes the amount-bypass loophole.
+const isValidAmount = (value: string) => {
+  if (!value) return false;
+  const num = Number(value);
+  return value !== '.' && !Number.isNaN(num) && num > 0;
+};
+
+// Calendar-valid ISO date check (catches things like 2026-02-30, not just the shape).
+const isValidIsoDate = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = dateFromIso(value);
+  return !Number.isNaN(d.getTime()) && formatLocalDate(d) === value;
+};
+
 export default function TabTwoScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
@@ -32,7 +47,8 @@ export default function TabTwoScreen() {
   const [toAccount, setToAccount] = useState('');
   const [date, setDate] = useState(formatLocalDate(new Date()));
   const [scannerUserId, setScannerUserId] = useState<string | undefined>();
-  
+  const [isSaving, setIsSaving] = useState(false);
+
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
   const [isScannerVisible, setIsScannerVisible] = useState(false); 
@@ -56,14 +72,22 @@ export default function TabTwoScreen() {
     AsyncStorage.getItem('user_id').then((id) => setScannerUserId(id || undefined));
   }, []);
 
+  // Keeps `account` / `toAccount` in sync with the real accounts list.
+  // toAccount's updater is nested inside account's so it always reads the
+  // just-computed value instead of a stale one from the previous render —
+  // this removes the one-tick window where both could resolve to the same
+  // account before self-correcting.
   useEffect(() => {
     if (params?.id || accounts.length === 0) return;
-    setAccount((current) => accounts.some((item) => item.name === current) ? current : accounts[0].name);
-    setToAccount((current) => {
-      if (accounts.some((item) => item.name === current && item.name !== account)) return current;
-      return accounts.find((item) => item.name !== account)?.name || '';
+    setAccount((current) => {
+      const validCurrent = accounts.some((a) => a.name === current) ? current : accounts[0].name;
+      setToAccount((tCurrent) => {
+        if (accounts.some((a) => a.name === tCurrent) && tCurrent !== validCurrent) return tCurrent;
+        return accounts.find((a) => a.name !== validCurrent)?.name || '';
+      });
+      return validCurrent;
     });
-  }, [accounts, params?.id, account]);
+  }, [accounts, params?.id]);
 
   useEffect(() => {
     if (params && params.id) {
@@ -107,22 +131,41 @@ export default function TabTwoScreen() {
   };
 
   const handleSave = async () => {
+    if (isSaving) return; // double-submit guard
+
     if (!account) { Alert.alert('Account required', 'Mag-register o pumili muna ng payment account.'); return; }
     if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Pumili ng destination payment account.'); return; }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || date > formatLocalDate(new Date())) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
-    if (!amount || parseFloat(amount) <= 0) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
+
+    const validAccountNames = accounts.map((a) => a.name);
+    if (!validAccountNames.includes(account)) { Alert.alert('Ops!', 'Hindi valid ang napiling account. Pumili ulit.'); return; }
+    if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Ops!', 'Hindi valid ang destination account. Pumili ulit.'); return; }
+
+    if (!isValidIsoDate(date) || date > formatLocalDate(new Date())) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
+
+    if (!isValidAmount(amount)) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
+
     if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
+
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
     if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert("Wait lang!", "Pili ka muna ng category paps."); return; }
+
+    const numericAmount = Number(amount).toFixed(2); // normalized amount string, guaranteed parseable
+
+    setIsSaving(true);
     try {
       if (params && params.id) {
-        await updateTransaction(params.id as string, amount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
+        await updateTransaction(params.id as string, numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
         Alert.alert("Success!", "Na-update na ang record!", [{ text: "OK", onPress: () => router.back() }]);
       } else {
-        await addTransaction(amount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date); 
+        await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date); 
         Alert.alert("Success!", `Na-record na ang iyong ${type}!`, [{ text: "OK", onPress: () => router.back() }]);
       }
-    } catch (err) { console.error("Save Error:", err); Alert.alert("Ops!", "Hindi nagawa ang operation."); }
+    } catch (err) {
+      console.error("Save Error:", err);
+      Alert.alert("Ops!", "Hindi nagawa ang operation.");
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const InputRow = ({ label, value, onPress, icon }: any) => (
@@ -138,6 +181,15 @@ export default function TabTwoScreen() {
     </TouchableOpacity>
   );
 
+  // Accounts shown for the side being picked, excluding whichever account
+  // is currently selected on the *other* side of a Transfer. This closes
+  // the same-account gap in the UI instead of only catching it on save.
+  const accountOptionsFor = (target: 'from' | 'to') => {
+    if (type !== 'Transfer') return accounts;
+    const exclude = target === 'from' ? toAccount : account;
+    return accounts.filter((acc) => acc.name !== exclude);
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -149,7 +201,9 @@ export default function TabTwoScreen() {
               <Ionicons name="scan-outline" size={22} color={getActiveColor()} />
             </TouchableOpacity>
           )}
-          <TouchableOpacity onPress={handleSave} style={{ marginLeft: 15 }}><Ionicons name="checkmark" size={28} color={getActiveColor()} /></TouchableOpacity>
+          <TouchableOpacity onPress={handleSave} disabled={isSaving} style={{ marginLeft: 15, opacity: isSaving ? 0.4 : 1 }}>
+            <Ionicons name="checkmark" size={28} color={getActiveColor()} />
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -233,7 +287,7 @@ export default function TabTwoScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Select Account</Text>
-            {accounts.map((acc) => (
+            {accountOptionsFor(selectingTarget).map((acc) => (
               <TouchableOpacity key={acc.id} style={styles.accOption} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
                 <Ionicons name="wallet-outline" size={20} color={getActiveColor()} />
                 <Text style={styles.accOptionText}>{acc.name}</Text>
