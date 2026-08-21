@@ -9,8 +9,10 @@ import { API_URL } from '../../config';
 import { getIcon } from '../../utils/iconHelper';
 
 interface Account {
-  id: string; // Binago natin mula _id para mag-match sa backend response
+  id: string; 
   name: string;
+  initial_balance?: number;
+  icon?: string;
 }
 
 export default function AccountsScreen() {
@@ -51,7 +53,7 @@ export default function AccountsScreen() {
         onPress: async () => {
           const response = await fetch(`${API_URL}/api/accounts/${id}`, { method: 'DELETE' });
           if (response.ok) fetchAccounts();
-          else Alert.alert("Error", "Hindi ma-delete.");
+          else Alert.alert("Error", "Hindi ma-delete. Baka may history na 'to.");
         }
       }
     ]);
@@ -64,14 +66,18 @@ export default function AccountsScreen() {
   };
 
   const updateAccount = async () => {
-    // Dito ang fix: gagamit na tayo ng .id (galing sa backend)
     if (!editingAccount || !editingAccount.id) return;
 
     try {
       const response = await fetch(`${API_URL}/api/accounts/${editingAccount.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }),
+        // Idinagdag natin ang initial_balance para hindi mag-422 ang FastAPI
+        body: JSON.stringify({ 
+          name: newName,
+          initial_balance: editingAccount.initial_balance || 0.0,
+          icon: editingAccount.icon || "wallet"
+        }),
       });
       if (response.ok) {
         setModalVisible(false);
@@ -109,7 +115,6 @@ export default function AccountsScreen() {
       {loading ? <ActivityIndicator size="large" color="#3D7D6C" style={{flex: 1}} /> : (
         <FlatList
           data={accounts}
-          // Dito ang fix sa unique key:
           keyExtractor={(item, index) => item.id ? item.id : index.toString()}
           renderItem={renderAccountItem}
           contentContainerStyle={styles.listContent}
@@ -120,17 +125,25 @@ export default function AccountsScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Account</Text>
-            <TextInput style={styles.input} value={newName} onChangeText={setNewName} placeholder="Account Name" />
-            <TouchableOpacity style={styles.saveBtn} onPress={updateAccount}><Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}><Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text></TouchableOpacity>
+            <TextInput 
+              style={styles.input} 
+              value={newName} 
+              onChangeText={setNewName} 
+              placeholder="Account Name"
+              placeholderTextColor="#8BA19D" 
+            />
+            <TouchableOpacity style={styles.saveBtn} onPress={updateAccount}>
+              <Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}>
+              <Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
     </SafeAreaView>
   );
 }
-
-
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#f4f7f6' },
@@ -144,6 +157,6 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 25, borderRadius: 20, width: '85%' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 20, color: '#1c3c36' },
-  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee' },
+  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee', color: '#1c3c36' },
   saveBtn: { backgroundColor: '#3D7D6C', padding: 15, borderRadius: 15, alignItems: 'center' }
 });

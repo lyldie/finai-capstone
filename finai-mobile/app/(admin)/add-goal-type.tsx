@@ -18,7 +18,6 @@ export default function AddGoalTypeScreen() {
     }
 
     try {
-      // Nagpadala lang tayo ng 'name', automatic na ang icon base sa name
       const response = await fetch(`${API_URL}/api/goal-types/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -51,6 +50,7 @@ export default function AddGoalTypeScreen() {
         <TextInput 
           style={styles.input} 
           placeholder="e.g. Savings, Travel, Gadget"
+          placeholderTextColor="#8BA19D"
           value={name}
           onChangeText={setName}
         />
@@ -69,7 +69,7 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '900', color: '#1c3c36' },
   form: { padding: 25 },
   label: { fontSize: 14, fontWeight: '700', color: '#8BA19D', marginBottom: 8 },
-  input: { backgroundColor: '#ffffff', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee' },
+  input: { backgroundColor: '#ffffff', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee', color: '#1c3c36' },
   saveBtn: { backgroundColor: '#3D7D6C', padding: 18, borderRadius: 15, alignItems: 'center' },
   saveBtnText: { color: 'white', fontWeight: 'bold', fontSize: 16 }
 });

@@ -27,25 +27,20 @@ export default function AddCategoryScreen() {
       return;
     }
 
-    // AUTO-ASSIGN LOGIC:
-    // Dito natin tinutukoy yung icon base sa type. 
-    // Hindi na kailangang i-input ng user!
-    const autoIcon = type === 'income' ? 'trending-up' : 'trending-down';
-
     setLoading(true);
     try {
-      // Sa loob ng handleSave:
-const response = await fetch(`${API_URL}/api/categories/`, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ 
-    name: name, 
-    type: type, 
-    icon: autoIcon,
-    category_role: "admin",
-    user_id: null
-  }),
-});
+      const response = await fetch(`${API_URL}/api/categories/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          name: name, 
+          type: type, 
+          category_role: "admin",
+          user_id: null
+          // HINDI NA NATIN IPAPASA YUNG ICON DITO!
+          // Hahayaan natin ang backend (get_default_icon) ang mag-assign base sa pangalan para mas matalino!
+        }),
+      });
 
       if (response.ok) {
         Alert.alert("Success", "Added na paps!");
@@ -81,6 +76,7 @@ const response = await fetch(`${API_URL}/api/categories/`, {
           <TextInput 
             style={styles.input} 
             placeholder="e.g. Groceries" 
+            placeholderTextColor="#8BA19D"
             value={name} 
             onChangeText={setName} 
           />
@@ -137,7 +133,8 @@ const styles = StyleSheet.create({
     fontSize: 16, 
     marginBottom: 20, 
     borderWidth: 1, 
-    borderColor: '#eee' 
+    borderColor: '#eee',
+    color: '#1c3c36'
   },
   typeContainer: { flexDirection: 'row', gap: 10, marginBottom: 30 },
   typeBtn: { 

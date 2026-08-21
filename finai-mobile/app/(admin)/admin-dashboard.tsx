@@ -103,14 +103,14 @@ export default function AdminDashboard() {
             subtitle="Control panel"
             icon="people-outline" 
             color="#6C5CE7" 
-            onPress={() => console.log('Go to Users')}
+          onPress={() => router.push('/(admin)/users' as any)}
           />
           <MenuCard 
             title="Audit Logs" 
             subtitle="History of activities"
             icon="receipt-outline" 
             color="#A0A0A0" 
-            onPress={() => console.log('Go to Logs')}
+            onPress={() => router.push('/(admin)/logs' as any)}
           />
         </View>
       </ScrollView>

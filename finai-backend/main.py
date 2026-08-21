@@ -21,13 +21,15 @@ from google import genai
 from google.genai import types
 from dotenv import load_dotenv
 from email.message import EmailMessage
+from fastapi import BackgroundTasks  # Idagdag mo itong BackgroundTasks
+from email_utils import send_threshold_alert # I-import ang email sender natin
 import uvicorn
 
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db
 
 # I-IMPORT ANG ROUTERS
-from routers import budgets, categories, accounts, goal_types, goals, notifications
+from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs
 from services.budget_service import create_crossed_threshold_notifications
 
 app = FastAPI(title="FinAi Backend", version="1.0")
@@ -1162,17 +1164,45 @@ async def add_goal_contribution(transaction: TransactionSchema):
 
 
 @app.post("/add-expense")
-async def add_expense(transaction: TransactionSchema):
+async def add_expense(transaction: TransactionSchema, background_tasks: BackgroundTasks):
     validate_transaction_for_storage(transaction)
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
+    
     if transaction_dict.get("goal_id"):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
+        
     result = await db.expenses.insert_one(transaction_dict)
 
     notifications_created = []
     if transaction.type.lower() == "expense":
+        # 1. Che-check ng system kung may na-hit na budget limit
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
+        
+        # 2. 🚨 EMAIL ALERT INTEGRATION 🚨
+        if notifications_created:
+            # Kunin ang email ng user mula sa database
+            user = await db.users.find_one({"_id": ObjectId(transaction.user_id)})
+            
+            if user and user.get("email"):
+                target_email = user["email"]
+                
+                # I-check lahat ng na-generate na notifications
+                for notif in notifications_created:
+                    # Kadalasan ang notif ay dictionary na may "threshold" value
+                    threshold = notif.get("threshold", 0)
+                    
+                    # Kung 90% (Critical) o 100% (Over Budget), magsesend tayo ng email!
+                    if threshold >= 90:
+                        category = transaction.category
+                        # Papadaanin natin sa BackgroundTasks para hindi mag-lag ang phone ni user
+                        background_tasks.add_task(
+                            send_threshold_alert, 
+                            target_email, 
+                            category, 
+                            f"{threshold}% used"
+                        )
+
     return {"status": "Success", "id": str(result.inserted_id), "notifications": notifications_created}
 
 
@@ -1285,7 +1315,8 @@ app.include_router(accounts.router)
 app.include_router(goal_types.router)
 app.include_router(goals.router)
 app.include_router(notifications.router)
-
+app.include_router(users.router)
+app.include_router(logs.router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

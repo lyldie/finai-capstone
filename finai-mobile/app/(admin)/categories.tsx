@@ -67,11 +67,9 @@ export default function CategoriesScreen() {
     setModalVisible(true);
   };
 
-  // Siguraduhin na 'id' ang gamit sa fetch URL
   const updateCategory = async () => {
     if (!editingCategory) return;
     
-    // I-handle kung alin ang gagamitin: .id ang priority
     const catId = editingCategory.id || editingCategory._id;
 
     try {
@@ -81,14 +79,16 @@ export default function CategoriesScreen() {
         body: JSON.stringify({ 
           name: newName, 
           type: newType, 
-          icon: editingCategory.icon 
+          icon: editingCategory.icon,
+          category_role: 'admin' // 🚨 ITO ANG FIX! Para hindi mawala sa admin dashboard kapag na-save.
         }),
       });
-      // ... etc
       if (response.ok) {
         setModalVisible(false);
         fetchCategories();
-      } else Alert.alert("Error", "Hindi ma-update.");
+      } else {
+        Alert.alert("Error", "Hindi ma-update.");
+      }
     } catch (error) {
       Alert.alert("Error", "Check connection.");
     }
@@ -130,7 +130,6 @@ export default function CategoriesScreen() {
       {loading ? <ActivityIndicator size="large" color="#3D7D6C" style={{flex: 1}} /> : (
         <SectionList
           sections={sections}
-          // Paps, ito ang pinaka-stable na keyExtractor para sa panel defense:
           keyExtractor={(item, index) => `${item._id || item.id || 'cat'}-${index}`}
           renderItem={renderCategoryItem}
           renderSectionHeader={({ section: { title } }) => (
@@ -144,9 +143,35 @@ export default function CategoriesScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Category</Text>
-            <TextInput style={styles.input} value={newName} onChangeText={setNewName} placeholder="Category Name" />
-            <TouchableOpacity style={styles.saveBtn} onPress={updateCategory}><Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}><Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text></TouchableOpacity>
+            <TextInput 
+              style={styles.input} 
+              value={newName} 
+              onChangeText={setNewName} 
+              placeholder="Category Name"
+              placeholderTextColor="#8BA19D" 
+            />
+            
+            <View style={styles.typeContainer}>
+              <TouchableOpacity 
+                style={[styles.typeBtn, newType === 'income' && styles.incomeActive]} 
+                onPress={() => setNewType('income')}
+              >
+                <Text style={newType === 'income' ? styles.btnTextActive : styles.btnText}>Income</Text>
+              </TouchableOpacity>
+              <TouchableOpacity 
+                style={[styles.typeBtn, newType === 'expense' && styles.expenseActive]} 
+                onPress={() => setNewType('expense')}
+              >
+                <Text style={newType === 'expense' ? styles.btnTextActive : styles.btnText}>Expense</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity style={styles.saveBtn} onPress={updateCategory}>
+              <Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}>
+              <Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -167,6 +192,12 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 25, borderRadius: 20, width: '85%' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 20, color: '#1c3c36' },
-  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee' },
-  saveBtn: { backgroundColor: '#3D7D6C', padding: 15, borderRadius: 15, alignItems: 'center' }
+  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee', color: '#1c3c36' },
+  saveBtn: { backgroundColor: '#3D7D6C', padding: 15, borderRadius: 15, alignItems: 'center' },
+  typeContainer: { flexDirection: 'row', gap: 10, marginBottom: 20 },
+  typeBtn: { flex: 1, padding: 12, borderRadius: 15, backgroundColor: '#fff', alignItems: 'center', borderWidth: 1, borderColor: '#eee' },
+  incomeActive: { backgroundColor: '#2e7d32', borderColor: '#2e7d32' },
+  expenseActive: { backgroundColor: '#c62828', borderColor: '#c62828' },
+  btnText: { fontWeight: '600', color: '#333' },
+  btnTextActive: { fontWeight: '700', color: 'white' },
 });

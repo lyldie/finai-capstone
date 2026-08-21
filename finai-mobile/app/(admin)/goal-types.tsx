@@ -6,7 +6,7 @@ import {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
-import { getIcon } from '../../utils/iconHelper'; // Import natin yung smart helper
+import { getIcon } from '../../utils/iconHelper'; 
 
 interface GoalType {
   id: string;
@@ -67,7 +67,7 @@ export default function GoalTypesScreen() {
       const response = await fetch(`${API_URL}/api/goal-types/${editingGoalType.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName }), // Inalis na natin ang icon dito
+        body: JSON.stringify({ name: newName }), 
       });
       if (response.ok) {
         setModalVisible(false);
@@ -82,7 +82,6 @@ export default function GoalTypesScreen() {
     <View style={styles.card}>
       <View style={styles.cardInfo}>
         <View style={styles.iconBox}>
-          {/* Dito tinatawag ang smart helper function */}
           <Ionicons name={getIcon(item.name) as any} size={20} color="#edb232" />
         </View>
         <Text style={styles.cardText}>{item.name}</Text>
@@ -106,7 +105,7 @@ export default function GoalTypesScreen() {
       {loading ? <ActivityIndicator size="large" color="#3D7D6C" style={{flex: 1}} /> : (
         <FlatList
           data={goalTypes}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item, index) => item.id ? item.id : index.toString()}
           renderItem={renderItem}
           contentContainerStyle={styles.listContent}
         />
@@ -116,9 +115,19 @@ export default function GoalTypesScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Goal Type</Text>
-            <TextInput style={styles.input} value={newName} onChangeText={setNewName} />
-            <TouchableOpacity style={styles.saveBtn} onPress={updateGoalType}><Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text></TouchableOpacity>
-            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}><Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text></TouchableOpacity>
+            <TextInput 
+              style={styles.input} 
+              value={newName} 
+              onChangeText={setNewName} 
+              placeholder="Goal Type Name"
+              placeholderTextColor="#8BA19D"
+            />
+            <TouchableOpacity style={styles.saveBtn} onPress={updateGoalType}>
+              <Text style={{color: 'white', fontWeight: 'bold'}}>Save Changes</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setModalVisible(false)} style={{marginTop: 15}}>
+              <Text style={{color: '#8BA19D', textAlign: 'center'}}>Cancel</Text>
+            </TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -138,6 +147,6 @@ const styles = StyleSheet.create({
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 25, borderRadius: 20, width: '85%' },
   modalTitle: { fontSize: 20, fontWeight: 'bold', marginBottom: 20, color: '#1c3c36' },
-  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee' },
+  input: { backgroundColor: '#f9f9f9', padding: 15, borderRadius: 15, marginBottom: 20, borderWidth: 1, borderColor: '#eee', color: '#1c3c36' },
   saveBtn: { backgroundColor: '#3D7D6C', padding: 15, borderRadius: 15, alignItems: 'center' }
 });
