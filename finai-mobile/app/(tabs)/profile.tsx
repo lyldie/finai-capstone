@@ -1,28 +1,109 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useAuth } from '../../context/AuthContext';
 import { useRouter } from 'expo-router';
+import { useAuth } from '../../context/AuthContext';
+import { API_URL } from '../../config'; // 👈 1. IDINAGDAG NATIN ITO PARA TAWAGIN SI CONFIG.JS
 
 const GREEN = '#144A3D';
+
+// 👈 2. PINALITAN NATIN YUNG HARDCODED IP NG VARIABLE GALING SA CONFIG
+const API_BASE_URL = `${API_URL}/api`;
 
 export default function ProfileScreen() {
   const { user, logoutUser } = useAuth();
   const router = useRouter();
 
-  // Modal States
+  // --- MODAL STATES ---
   const [isIncomeModalVisible, setIncomeModalVisible] = useState(false);
   const [newIncome, setNewIncome] = useState('');
 
-  const handleUpdateIncome = () => {
+  const [isPinModalVisible, setPinModalVisible] = useState(false);
+  const [oldPin, setOldPin] = useState('');
+  const [newPin, setNewPin] = useState('');
+
+  const [isPasswordModalVisible, setPasswordModalVisible] = useState(false);
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+
+  // --- HANDLERS ---
+  const handleUpdateIncome = async () => {
     if (!newIncome || isNaN(Number(newIncome))) {
       Alert.alert('Oops!', 'Maglagay ng tamang amount paps.');
       return;
     }
-    // TODO: Ikokonekta natin ito sa backend next session!
-    Alert.alert('Success', `Monthly income updated to ₱${newIncome}!`);
-    setIncomeModalVisible(false);
-    setNewIncome('');
+    
+    try {
+      const response = await fetch(`${API_BASE_URL}/${user?.id}/update-income`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ monthly_income: parseFloat(newIncome) })
+      });
+      
+      if (response.ok) {
+        Alert.alert('Success', `Monthly income updated to ₱${newIncome}!`);
+        setIncomeModalVisible(false);
+        setNewIncome('');
+      } else {
+        Alert.alert('Error', 'Hindi ma-update ang income. Subukan ulit.');
+      }
+    } catch (error) {
+      Alert.alert('Connection Error', 'Check your backend server.');
+    }
+  };
+
+  const handleChangePin = async () => {
+    if (!oldPin || !newPin || newPin.length < 4) {
+      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang PIN dapat ay at least 4 digits.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/${user?.id}/change-pin`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_pin: oldPin, new_pin: newPin })
+      });
+      
+      const data = await response.json();
+      if (response.ok) {
+        Alert.alert('Success', 'App PIN changed successfully!');
+        setPinModalVisible(false);
+        setOldPin('');
+        setNewPin('');
+      } else {
+        Alert.alert('Error', data.detail || 'Mali ang nilagay mong lumang PIN.');
+      }
+    } catch (error) {
+      Alert.alert('Connection Error', 'Check your backend server.');
+    }
+  };
+
+  const handleChangePassword = async () => {
+    if (!oldPassword || !newPassword || newPassword.length < 6) {
+      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang bagong password ay dapat 6 characters pataas.');
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/${user?.id}/change-password`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
+      });
+      
+      const data = await response.json();
+      if (response.ok) {
+        Alert.alert('Success', 'Password changed successfully!');
+        setPasswordModalVisible(false);
+        setOldPassword('');
+        setNewPassword('');
+      } else {
+        Alert.alert('Error', data.detail || 'Mali ang nilagay mong lumang password.');
+      }
+    } catch (error) {
+      Alert.alert('Connection Error', 'Check your backend server.');
+    }
   };
 
   const handleLogout = () => {
@@ -71,11 +152,11 @@ export default function ProfileScreen() {
             onPress={() => setIncomeModalVisible(true)} 
           />
           <View style={styles.divider} />
-          <MenuOption 
+         <MenuOption 
             icon="grid-outline" 
             title="Custom Categories & Accounts" 
             subtitle="Manage your personal presets"
-            onPress={() => Alert.alert('Coming Soon', 'Dito natin ilalagay ang Custom Categories UI next session!')} 
+            onPress={() => router.push('/custom-presets' as any)}
           />
         </View>
 
@@ -86,14 +167,14 @@ export default function ProfileScreen() {
             icon="keypad-outline" 
             title="Change App PIN" 
             subtitle="Update your 4-digit lock code"
-            onPress={() => Alert.alert('Security', 'Navigate to Change PIN Screen')} 
+            onPress={() => setPinModalVisible(true)} 
           />
           <View style={styles.divider} />
           <MenuOption 
             icon="lock-closed-outline" 
             title="Change Password" 
             subtitle="Update your account password"
-            onPress={() => Alert.alert('Security', 'Navigate to Change Password Screen')} 
+            onPress={() => setPasswordModalVisible(true)} 
           />
         </View>
 
@@ -105,7 +186,7 @@ export default function ProfileScreen() {
 
       </ScrollView>
 
-      {/* INCOME UPDATE MODAL */}
+      {/* 1. INCOME UPDATE MODAL */}
       <Modal visible={isIncomeModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -115,7 +196,7 @@ export default function ProfileScreen() {
             <View style={styles.inputWrapper}>
               <Text style={styles.currencyPrefix}>₱</Text>
               <TextInput 
-                style={styles.incomeInput}
+                style={styles.inputField}
                 keyboardType="numeric"
                 placeholder="0.00"
                 value={newIncome}
@@ -129,6 +210,78 @@ export default function ProfileScreen() {
               </TouchableOpacity>
               <TouchableOpacity style={styles.saveBtn} onPress={handleUpdateIncome}>
                 <Text style={styles.saveBtnText}>Save Update</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 2. CHANGE PIN MODAL */}
+      <Modal visible={isPinModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Change App PIN</Text>
+            <Text style={styles.modalDesc}>Ilagay ang iyong kasalukuyang PIN bago mag-set ng bago.</Text>
+            
+            <TextInput 
+              style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
+              keyboardType="numeric"
+              secureTextEntry
+              placeholder="Old PIN"
+              maxLength={4}
+              value={oldPin}
+              onChangeText={setOldPin}
+            />
+            <TextInput 
+              style={[styles.inputField, { width: '100%', marginBottom: 24, paddingHorizontal: 15 }]}
+              keyboardType="numeric"
+              secureTextEntry
+              placeholder="New PIN (4 digits)"
+              maxLength={4}
+              value={newPin}
+              onChangeText={setNewPin}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setPinModalVisible(false)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePin}>
+                <Text style={styles.saveBtnText}>Update PIN</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 3. CHANGE PASSWORD MODAL */}
+      <Modal visible={isPasswordModalVisible} transparent animationType="fade">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContent}>
+            <Text style={styles.modalTitle}>Change Password</Text>
+            <Text style={styles.modalDesc}>Protektahan ang iyong FinAi account gamit ang matibay na password.</Text>
+            
+            <TextInput 
+              style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
+              secureTextEntry
+              placeholder="Old Password"
+              value={oldPassword}
+              onChangeText={setOldPassword}
+            />
+            <TextInput 
+              style={[styles.inputField, { width: '100%', marginBottom: 24, paddingHorizontal: 15 }]}
+              secureTextEntry
+              placeholder="New Password"
+              value={newPassword}
+              onChangeText={setNewPassword}
+            />
+
+            <View style={styles.modalActions}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={() => setPasswordModalVisible(false)}>
+                <Text style={styles.cancelBtnText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePassword}>
+                <Text style={styles.saveBtnText}>Update Password</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -165,7 +318,7 @@ const styles = StyleSheet.create({
   modalDesc: { fontSize: 13, color: '#7C9A95', textAlign: 'center', marginBottom: 24, lineHeight: 20 },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', width: '100%', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 16, paddingHorizontal: 20, marginBottom: 24 },
   currencyPrefix: { fontSize: 24, fontWeight: '700', color: GREEN, marginRight: 10 },
-  incomeInput: { flex: 1, height: 60, fontSize: 24, fontWeight: '700', color: '#142D2A' },
+  inputField: { flex: 1, height: 60, fontSize: 20, fontWeight: '700', color: '#142D2A', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 16 },
   modalActions: { flexDirection: 'row', width: '100%', gap: 12 },
   cancelBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: '#F0F4F2', alignItems: 'center' },
   cancelBtnText: { color: '#58706B', fontSize: 15, fontWeight: '700' },

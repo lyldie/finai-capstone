@@ -73,7 +73,11 @@ export default function TabLayout() {
           name="notifications"
           options={{ href: null }}
         />
-
+        {/* ITATAGO NATIN SI CUSTOM PRESETS SA BOTTOM BAR */}
+        <Tabs.Screen
+          name="custom-presets"
+          options={{ href: null }}
+        />
       </Tabs>
     </GestureHandlerRootView>
   );
