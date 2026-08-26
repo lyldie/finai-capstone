@@ -76,6 +76,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : [])
       ]);
 
+      // INIAKYAT NATIN ANG ACCOUNTS PARSING BAGO ANG TRANSACTIONS
+      const parsedAccounts = Array.isArray(accRes) ? accRes : (accRes.data || []);
+      const formattedAccounts = parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id }));
+      setAccounts(formattedAccounts);
+
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         setTransactions(transRes.data.map((i: any) => ({
           id: i._id || i.id, 
@@ -83,7 +88,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           category: i.category || 'General',
           note: i.title || i.note || i.item_name || i.category || '', 
           type: i.type || 'Expense',
-          account: i.account || (accounts[0]?.name || 'Cash'), 
+          // GINAMIT NATIN YUNG `formattedAccounts` KESA SA LUMANG `accounts` STATE
+          account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
           to_account: i.to_account || '', 
           date: i.date ? i.date.split('T')[0] : new Date().toISOString().split('T')[0]
         })));
@@ -94,9 +100,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       
       const parsedCategories = Array.isArray(catRes) ? catRes : (catRes.data || []);
       setCategories(parsedCategories.map((c: any) => ({ ...c, id: c._id || c.id })));
-      
-      const parsedAccounts = Array.isArray(accRes) ? accRes : (accRes.data || []);
-      setAccounts(parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id })));
       
       const parsedGoals = Array.isArray(goalsRes) ? goalsRes : (goalsRes.data || []);
       setGoals(parsedGoals.map((g: any) => ({ ...g, id: g._id || g.id })));
@@ -109,11 +112,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } finally { 
       if (showLoading) setIsLoading(false); 
     }
-  }, [accounts]);
+  }, []); // <-- TINANGGAL NATIN ANG 'accounts' DITO PARA HINDI MAG-INFINITE LOOP
 
   useEffect(() => { 
     fetchTransactions(true); 
-  }, []);
+  }, [fetchTransactions]); // Idinagdag natin ang fetchTransactions as dependency
 
   const getAccountBalance = useCallback((accountName: string) => {
     const account = accounts.find((item) => item.name === accountName && item.account_role !== 'admin')

@@ -1001,7 +1001,9 @@ async def login(user: UserLogin):
     if not db_user:
         raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
 
-   password_to_verify = user.password[:72]
+    # 👇 Inayos natin ang spacing dito para pumantay sa taas
+    password_to_verify = user.password[:72]
+    
     try:
         if not pwd_context.verify(password_to_verify, db_user["password"]):
             raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")

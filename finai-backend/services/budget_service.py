@@ -89,7 +89,12 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
         "category": category_name,
         "date": {"$gte": start_date, "$lte": end_date},
     }
-    spent = sum(float(item.get("amount", 0) or 0) async for item in db.expenses.find(query, {"amount": 1}))
+    
+    # FIX: Hintayin muna natin makuha lahat ng data bago i-compute ang sum
+    cursor = db.expenses.find(query, {"amount": 1})
+    expense_items = await cursor.to_list(length=None)
+    spent = sum(float(item.get("amount", 0) or 0) for item in expense_items)
+    
     amount = float(budget.get("amount", 0) or 0)
     percentage = (spent / amount * 100) if amount > 0 else 0.0
 

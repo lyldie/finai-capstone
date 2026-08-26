@@ -43,7 +43,7 @@ export default function Dashboard() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchTransactions();
+      fetchTransactions(false); // 👈 Nilagyan natin ng 'false' para SILENT REFRESH na lang tuwing babalik ka sa Home tab!
     }, [fetchTransactions])
   );
 
