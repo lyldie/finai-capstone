@@ -1,10 +1,11 @@
 import React, { useState, useMemo } from 'react';
-import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTransactions } from '../../context/TransactionContext';
 import DepositModal from '../../components/DepositModal';
+import { BarChart } from 'react-native-gifted-charts';
 
 // FINAI OFFICIAL COLOR PALETTE
 const FINAI_DEEP_GREEN = '#144A3D';
@@ -14,13 +15,15 @@ const FINAI_CARD_BG = '#FFFFFF';
 const ALERT_YELLOW = '#F59E0B';
 const CRITICAL_RED = '#EF4444';
 
-// HELPER: Currency Formatter (Exact amount, comma-separated)
+// HELPER: Currency Formatter
 const formatCurrency = (amount: number) => {
   return '₱' + Number(amount || 0).toLocaleString('en-US', {
     minimumFractionDigits: 0,
     maximumFractionDigits: 2,
   });
 };
+
+const screenWidth = Dimensions.get('window').width;
 
 export default function InsightsScreen() {
   const router = useRouter();
@@ -31,7 +34,6 @@ export default function InsightsScreen() {
   const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState<any>(null);
 
-  // DYNAMIC Context (Sama natin si goalTypes/presetTypes kung mayroon sa context)
   const transactionContext = useTransactions();
   const {
     budgets = [], 
@@ -54,13 +56,9 @@ export default function InsightsScreen() {
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
   ), [budgets, todayKey]);
   
-  // Safe extraction ng goalTypes list mula sa context kung available
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
-  // DYNAMIC COMPUTATIONS
   const stats = useMemo(() => {
-    // Budget summaries arrive pre-filtered by their own period from the backend.
-    // For the selected KPI timeframe, compare only matching weekly/monthly/annual budgets.
     const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
     const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
     const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
@@ -71,7 +69,7 @@ export default function InsightsScreen() {
       const amount = Number(t.amount) || 0;
       if (t.type === 'Income') return acc + amount;
       if (t.type === 'Expense') return acc - amount;
-      return acc; // Transfers move money between personal accounts only.
+      return acc; 
     }, 0);
 
     const safeGoals = goals || [];
@@ -82,11 +80,91 @@ export default function InsightsScreen() {
     return { totalBudget, totalSpent, usage, netCashFlow, totalTarget, totalSavings, overallGoalProgress };
   }, [activeBudgets, selectedPeriodType, transactions, goals]);
 
+  // 📊 DYNAMIC CHART DATA COMPUTATION (UPDATED WITH INITIALS AND LABEL FIX)
+  const chartData = useMemo(() => {
+    const data: any[] = [];
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    const barColor = subTab === 'Income' ? FINAI_DEEP_GREEN : CRITICAL_RED;
+
+    if (timeframe === 'Year') {
+      const months = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
+      const monthlyTotals = new Array(12).fill(0);
+      
+      transactions.forEach(t => {
+        if (t.type === subTab) {
+          const d = new Date(t.date);
+          if (d.getFullYear() === currentYear) {
+            monthlyTotals[d.getMonth()] += Number(t.amount) || 0;
+          }
+        }
+      });
+      
+      months.forEach((m, index) => {
+        data.push({ 
+          value: monthlyTotals[index], 
+          label: m, 
+          frontColor: barColor,
+          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 20 }
+        });
+      });
+    } else if (timeframe === 'Month') {
+      const weeklyTotals = new Array(5).fill(0);
+      
+      transactions.forEach(t => {
+        if (t.type === subTab) {
+          const d = new Date(t.date);
+          if (d.getFullYear() === currentYear && d.getMonth() === currentMonth) {
+            const weekIndex = Math.min(Math.floor(d.getDate() / 7), 4);
+            weeklyTotals[weekIndex] += Number(t.amount) || 0;
+          }
+        }
+      });
+      
+      ['W1', 'W2', 'W3', 'W4', 'W5'].forEach((w, index) => {
+        data.push({ 
+          value: weeklyTotals[index], 
+          label: w, 
+          frontColor: barColor,
+          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 24 }
+        });
+      });
+    } else if (timeframe === 'Week') {
+      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const dailyTotals = new Array(7).fill(0);
+      const startOfWeek = new Date(today);
+      startOfWeek.setDate(today.getDate() - today.getDay());
+      startOfWeek.setHours(0,0,0,0);
+
+      transactions.forEach(t => {
+        if (t.type === subTab) {
+          const d = new Date(t.date);
+          if (d >= startOfWeek) {
+            dailyTotals[d.getDay()] += Number(t.amount) || 0;
+          }
+        }
+      });
+      
+      days.forEach((d, index) => {
+        data.push({ 
+          value: dailyTotals[index], 
+          label: d, 
+          frontColor: barColor,
+          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 30 }
+        });
+      });
+    }
+
+    return data;
+  }, [transactions, timeframe, subTab]);
+
+  const chartMaxValue = Math.max(...chartData.map(d => d.value), 100);
+
   const getAlertColor = (percentage: number) => {
-    if (percentage >= 100) return CRITICAL_RED;     // Over budget
-    if (percentage >= 90) return CRITICAL_RED;      // Critical alert
-    if (percentage >= 70) return ALERT_YELLOW;      // Warning
-    return '#10B981';                               // Success/On Track
+    if (percentage >= 100) return CRITICAL_RED; 
+    if (percentage >= 90) return CRITICAL_RED;  
+    if (percentage >= 70) return ALERT_YELLOW;  
+    return '#10B981';                           
   };
 
   const getAlertIcon = (percentage: number) => {
@@ -106,9 +184,7 @@ export default function InsightsScreen() {
     }
   };
 
-  // SMART RESOLUTION FOR PRESET / GOAL TYPE NAME ("Travel", "Gadgets", etc.)
   const resolvePresetName = (goal: any) => {
-    // 1. Direct name properties mula sa object
     if (goal.goal_type_name) return goal.goal_type_name;
     if (goal.preset_name) return goal.preset_name;
     if (goal.type_name) return goal.type_name;
@@ -116,14 +192,11 @@ export default function InsightsScreen() {
     if (typeof goal.goal_type === 'string' && isNaN(Number(goal.goal_type)) && goal.goal_type.length < 20) {
       return goal.goal_type;
     }
-
-    // 2. Fallback: Kuhanin via ID lookup sa goalTypes array (mula sa context)
     const typeId = goal.goal_type_id || goal.preset_id || (typeof goal.goal_type === 'string' ? goal.goal_type : null);
     if (typeId && goalTypes.length > 0) {
       const foundType = goalTypes.find((gt: any) => gt.id === typeId || gt._id === typeId);
       if (foundType?.name) return foundType.name;
     }
-
     return null;
   };
 
@@ -183,7 +256,6 @@ export default function InsightsScreen() {
               </View>
             </View>
 
-            {/* Total Savings Progress Card */}
             <View style={styles.finaiFullKpiCard}>
               <View style={styles.fullCardHeader}>
                 <View>
@@ -203,15 +275,30 @@ export default function InsightsScreen() {
                 <Text style={styles.chartTitle}>Overview Chart</Text>
                 <Ionicons name="trending-up" size={18} color={FINAI_DEEP_GREEN} />
               </View>
+              
+              {/* 📈 REAL BAR CHART INTEGRATION - UPDATED WIDTHS & DISABLED ANIMATION */}
               <View style={styles.chartVisualArea}>
-                <Ionicons name="bar-chart" size={54} color="#E2EAF4" />
-                <Text style={styles.chartStatusText}>Interactive FinAI chart visualization will hook here paps</Text>
+                <BarChart
+                  data={chartData}
+                  barWidth={timeframe === 'Year' ? 14 : 24}
+                  spacing={timeframe === 'Year' ? 13 : 20}
+                  roundedTop
+                  hideRules
+                  xAxisThickness={0}
+                  yAxisThickness={0}
+                  yAxisTextStyle={{ color: FINAI_SAGE, fontSize: 10 }}
+                  noOfSections={4}
+                  maxValue={chartMaxValue}
+                  isAnimated={false} 
+                  initialSpacing={10}
+                  width={screenWidth - 80}
+                  height={150}
+                />
               </View>
             </View>
           </View>
         ) : (
           <View style={styles.viewContainer}>
-            {/* HERO BUDGET CARD */}
             <View style={styles.finaiBudgetHeroCard}>
               <View style={styles.heroHeader}>
                 <View>
@@ -303,7 +390,6 @@ export default function InsightsScreen() {
               })
             )}
             
-            {/* DYNAMIC: ACTIVE FINANCIAL GOALS */}
             <View style={[styles.sectionHeaderRow, { marginTop: 12 }]}>
               <Text style={styles.sectionLabel}>Active Financial Goals</Text>
               <TouchableOpacity style={styles.finaiAddBtn} onPress={() => router.push('/create-goal')}>
@@ -323,8 +409,6 @@ export default function InsightsScreen() {
                 const target = Number(goal.target_amount) || 0;
                 const saved = Number(goal.current_savings) || 0;
                 const progress = target > 0 ? (saved / target) * 100 : 0;
-
-                // 👉 SMART PRESET / GOAL TYPE BADGE RESOLUTION
                 const presetName = resolvePresetName(goal);
 
                 return (
@@ -342,19 +426,15 @@ export default function InsightsScreen() {
                         <View style={styles.targetIconCircle}><Text style={{fontSize: 18}}>🎯</Text></View>
                         <View style={{marginLeft: 10}}>
                           <Text style={styles.finaiGoalTitle}>{goal.target_name}</Text>
-                          
-                          {/* PRESET BADGE: Pinapakita ang "Travel", "Gadgets", etc. */}
                           {presetName ? (
                             <View style={styles.presetBadge}>
                               <Text style={styles.presetBadgeText}>{presetName}</Text>
                             </View>
                           ) : null}
-
                           <Text style={styles.finaiGoalDate}>Target: {goal.target_date || 'N/A'}</Text>
                         </View>
                       </View>
 
-                      {/* EDIT & DELETE ACTION BUTTONS */}
                       <View style={styles.goalActionsRow}>
                         <TouchableOpacity 
                           style={styles.actionIconButton}
@@ -395,7 +475,6 @@ export default function InsightsScreen() {
                       </View>
                     </View>
 
-                    {/* STATS & PROGRESS BAR */}
                     <View style={styles.goalProgressInfoRow}>
                       <Text style={styles.goalProgressStats}>
                         {formatCurrency(saved)} / {formatCurrency(target)}
@@ -410,7 +489,6 @@ export default function InsightsScreen() {
                 );
               })
             )}
-
           </View>
         )}
       </ScrollView>
@@ -467,8 +545,7 @@ const styles = StyleSheet.create({
   finaiChartCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', marginTop: 8 },
   chartHeaderLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   chartTitle: { fontSize: 14, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  chartVisualArea: { height: 160, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAFBFB', borderRadius: 12, padding: 16 },
-  chartStatusText: { fontSize: 11, color: FINAI_SAGE, textAlign: 'center', marginTop: 8 },
+  chartVisualArea: { height: 180, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAFBFB', borderRadius: 12, paddingVertical: 16 },
   finaiBudgetHeroCard: { backgroundColor: FINAI_DEEP_GREEN, borderRadius: 20, padding: 20, elevation: 4, shadowColor: FINAI_DEEP_GREEN, shadowOpacity: 0.2, shadowRadius: 8, marginBottom: 24 },
   heroHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   heroMetaText: { fontSize: 12, color: '#A9BDB7', fontWeight: '600' },

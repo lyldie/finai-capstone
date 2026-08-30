@@ -2,7 +2,7 @@ import React, { useMemo, useState, useCallback } from 'react';
 import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator, Modal } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
-import { useAuth } from '../../context/AuthContext'; // 👈 1. Import Auth Context
+import { useAuth } from '../../context/AuthContext'; 
 import { useRouter, useFocusEffect } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable'; 
 
@@ -14,7 +14,7 @@ const transactionDate = (value: string) => {
 const isIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
 
 export default function Dashboard() {
-  const { user } = useAuth(); // 👈 2. Kunin ang user data
+  const { user } = useAuth(); 
   const { 
     transactions, 
     totalIncome, 
@@ -43,7 +43,7 @@ export default function Dashboard() {
 
   useFocusEffect(
     useCallback(() => {
-      fetchTransactions(false); // 👈 Nilagyan natin ng 'false' para SILENT REFRESH na lang tuwing babalik ka sa Home tab!
+      fetchTransactions(false); 
     }, [fetchTransactions])
   );
 
@@ -213,20 +213,21 @@ export default function Dashboard() {
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor="#F9FAFB" />
       
+      {/* UPDATED: Nav Tabs and Notification Layout */}
       <View style={styles.topNav}>
-        {['Daily', 'Monthly'].map((tab) => (
-          <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)} style={[styles.navTab, activeTab === tab && styles.activeNavTab]}>
-            <Text style={[styles.navTabText, activeTab === tab && styles.activeNavTabText]}>{tab === 'Daily' ? 'Daily History' : 'Monthly Overview'}</Text>
-          </TouchableOpacity>
-        ))}
-        {/* Route types are generated at Expo start; the cast keeps this new hidden tab usable before regeneration. */}
+        <View style={styles.tabContainer}>
+          {['Daily', 'Monthly'].map((tab) => (
+            <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)} style={[styles.navTab, activeTab === tab && styles.activeNavTab]}>
+              <Text style={[styles.navTabText, activeTab === tab && styles.activeNavTabText]}>{tab === 'Daily' ? 'Daily History' : 'Monthly Overview'}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
         <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
           <Ionicons name="notifications-outline" size={22} color="#2b5f56" />
           {unreadNotifications > 0 && <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications > 9 ? '9+' : unreadNotifications}</Text></View>}
         </TouchableOpacity>
       </View>
 
-      {/* Greeting Header (Fixed Single Line) */}
       <View style={styles.greetingContainer}>
         <Text style={styles.greetingText}>
           {greetingMessage}, <Text style={styles.greetingName}>{user?.name || 'User'}!</Text>
@@ -370,8 +371,10 @@ export default function Dashboard() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F9FAFB' },
-  topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, justifyContent: 'space-around', borderBottomWidth: 1, borderBottomColor: '#E2E8F0', position: 'relative' },
-  notificationButton: { position: 'absolute', right: 18, top: 53, width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#F3F4F6' },
+  // UPDATED NAV STYLES
+  topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, paddingHorizontal: 20, justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
+  tabContainer: { flexDirection: 'row', gap: 10 },
+  notificationButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#F3F4F6' },
   notificationBadge: { position: 'absolute', top: -3, right: -4, minWidth: 17, height: 17, borderRadius: 9, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
   notificationBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: '800' },
   navTab: { paddingVertical: 8, paddingHorizontal: 20, borderRadius: 20, backgroundColor: '#F3F4F6' },

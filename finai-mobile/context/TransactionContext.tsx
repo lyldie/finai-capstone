@@ -76,7 +76,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : [])
       ]);
 
-      // INIAKYAT NATIN ANG ACCOUNTS PARSING BAGO ANG TRANSACTIONS
       const parsedAccounts = Array.isArray(accRes) ? accRes : (accRes.data || []);
       const formattedAccounts = parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id }));
       setAccounts(formattedAccounts);
@@ -88,7 +87,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           category: i.category || 'General',
           note: i.title || i.note || i.item_name || i.category || '', 
           type: i.type || 'Expense',
-          // GINAMIT NATIN YUNG `formattedAccounts` KESA SA LUMANG `accounts` STATE
           account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
           to_account: i.to_account || '', 
           date: i.date ? i.date.split('T')[0] : new Date().toISOString().split('T')[0]
@@ -112,11 +110,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } finally { 
       if (showLoading) setIsLoading(false); 
     }
-  }, []); // <-- TINANGGAL NATIN ANG 'accounts' DITO PARA HINDI MAG-INFINITE LOOP
+  }, []);
 
   useEffect(() => { 
     fetchTransactions(true); 
-  }, [fetchTransactions]); // Idinagdag natin ang fetchTransactions as dependency
+  }, [fetchTransactions]);
 
   const getAccountBalance = useCallback((accountName: string) => {
     const account = accounts.find((item) => item.name === accountName && item.account_role !== 'admin')
@@ -254,35 +252,35 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // --- 🚨 INAYOS NA ENDPOINT PARA SA GOAL DEPOSITS ---
+  // --- 🚨 INAYOS NA GOAL DEPOSITS LOGIC & ENDPOINT ---
   const depositToGoal = async (goalId: string, amount: number, account: string): Promise<boolean> => {
     try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) throw new Error("User session not found.");
+      // 1. SMART BALANCE CHECKER: Si-sinilip muna kung kasya ang pera sa napiling account
+      const currentBalance = getAccountBalance(account);
+      if (amount > currentBalance) {
+        Alert.alert(
+          "Kulang ang Balance! ⚠️",
+          `Mayroon ka lamang ₱${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} sa ${account}. Hindi kasya ang ₱${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} na gustong ihulog.`
+        );
+        return false;
+      }
 
-      const payload = {
-        user_id: userId,
-        amount: amount,
-        category: "Goal Contribution",
-        type: "Transfer",
-        account: account,
-        goal_id: goalId,
-        date: new Date().toISOString().split('T')[0],
-        title: "Paghulog sa Alkansya"
-      };
-
-      const response = await fetch(`${API_URL}/add-goal-contribution`, {
-        method: 'POST',
+      // 2. TUGMA SA ROUTERS/GOALS.PY PATCH ENDPOINT
+      const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
+        method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        body: JSON.stringify({
+          amount: amount,
+          account: account
+        })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || 'Failed to process deposit');
       }
       
-      await fetchTransactions(false); 
+      await fetchTransactions(false); // Silent refresh ng dashboard
       return true;
     } catch (error: any) {
       console.error("depositToGoal Error:", error);
@@ -294,19 +292,16 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   
-  // --- 🚨 INAYOS NA BALANCE COMPUTATION ---
+  // --- BALANCE COMPUTATION ---
   const balance = useMemo(() => {
     const accountNames = [...new Set(accounts.map((account) => account.name))];
     
-    // 1. Kunin ang total mula sa regular accounts (Cash, Bank, GCash)
     const totalFromAccounts = accountNames.length
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
       : totalIncome - totalExpense;
 
-    // 2. Kunin ang kabuuang ipon mula sa lahat ng Goals/Alkansya
     const totalGoalSavings = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
 
-    // 3. I-add sila para makuha ang totoong Net Worth ng user
     return totalFromAccounts + totalGoalSavings;
   }, [accounts, getAccountBalance, totalExpense, totalIncome, goals]); 
 
