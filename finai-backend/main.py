@@ -29,7 +29,7 @@ import uvicorn
 from database import db
 
 # I-IMPORT ANG ROUTERS
-from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs
+from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor
 from services.budget_service import create_crossed_threshold_notifications
 
 app = FastAPI(title="FinAi Backend", version="1.0")
@@ -832,7 +832,7 @@ def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_catego
         contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
     response = ai_client.models.generate_content(
-        model="gemini-3.5-flash",
+        model="gemini-3.6-flash",
         contents=contents_payload,
         config=types.GenerateContentConfig(response_mime_type="application/json")
     )
@@ -1319,6 +1319,7 @@ app.include_router(goals.router)
 app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(logs.router)
+app.include_router(advisor.router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

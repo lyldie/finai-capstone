@@ -7,6 +7,10 @@ import { useTransactions } from '../../context/TransactionContext';
 import DepositModal from '../../components/DepositModal';
 import { BarChart } from 'react-native-gifted-charts';
 
+// --- ADDED IMPORTS PARA SA AI ADVISOR ---
+import { useAuth } from '../../context/AuthContext';
+import ChatModal from '../../components/ChatModal'; 
+
 // FINAI OFFICIAL COLOR PALETTE
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
@@ -27,6 +31,11 @@ const screenWidth = Dimensions.get('window').width;
 
 export default function InsightsScreen() {
   const router = useRouter();
+  
+  // --- ADDED STATE PARA SA AI ADVISOR ---
+  const { user } = useAuth();
+  const [isChatVisible, setIsChatVisible] = useState(false);
+
   const [activeTab, setActiveTab] = useState<'Stats' | 'Budget'>('Stats');
   const [timeframe, setTimeframe] = useState<'Week' | 'Month' | 'Year'>('Month');
   const [subTab, setSubTab] = useState<'Income' | 'Expense'>('Expense');
@@ -164,7 +173,7 @@ export default function InsightsScreen() {
     if (percentage >= 100) return CRITICAL_RED; 
     if (percentage >= 90) return CRITICAL_RED;  
     if (percentage >= 70) return ALERT_YELLOW;  
-    return '#10B981';                           
+    return '#10B981';                               
   };
 
   const getAlertIcon = (percentage: number) => {
@@ -493,6 +502,21 @@ export default function InsightsScreen() {
         )}
       </ScrollView>
 
+      {/* --- FINAI AI ADVISOR COMPONENTS --- */}
+      <TouchableOpacity 
+        style={styles.fabChat} 
+        onPress={() => setIsChatVisible(true)}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="sparkles" size={24} color="#FFF" />
+      </TouchableOpacity>
+
+      <ChatModal 
+        visible={isChatVisible} 
+        onClose={() => setIsChatVisible(false)} 
+        userId={user?.id || "6a1fd7e66f7a166fc7f29d74"} // Testing fallback
+      />
+
       <DepositModal 
         visible={isDepositModalVisible} 
         onClose={() => setIsDepositModalVisible(false)} 
@@ -517,7 +541,10 @@ const styles = StyleSheet.create({
   finaiSegmentActiveBtn: { backgroundColor: FINAI_DEEP_GREEN, elevation: 3, shadowColor: FINAI_DEEP_GREEN, shadowOpacity: 0.15, shadowRadius: 4 },
   finaiSegmentText: { fontSize: 13, fontWeight: '600', color: FINAI_SAGE },
   finaiSegmentActiveText: { color: '#FFFFFF', fontWeight: '700' },
-  scrollContent: { paddingBottom: 40 },
+  
+  // Adjusted scroll padding para di matakpan ng floating button yung babang content
+  scrollContent: { paddingBottom: 80 }, 
+  
   viewContainer: { paddingHorizontal: 20 },
   timeframeRow: { flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
   timeframePill: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#E2EAF4', marginHorizontal: 4, backgroundColor: '#FFF' },
@@ -588,4 +615,22 @@ const styles = StyleSheet.create({
   goalProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
   analyticsProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
   analyticsProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
+
+  // --- ADDED STYLE PARA SA AI ADVISOR FLOATING BUTTON ---
+  fabChat: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    backgroundColor: FINAI_DEEP_GREEN,
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 6,
+    shadowColor: FINAI_DEEP_GREEN,
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 }
+  },
 });

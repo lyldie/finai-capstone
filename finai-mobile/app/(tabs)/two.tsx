@@ -19,15 +19,12 @@ const dateFromIso = (value: string) => {
   return year && month && day ? new Date(year, month - 1, day) : new Date();
 };
 
-// Strict numeric check: rejects '', '.', 'NaN', and anything parseFloat would
-// silently coerce. This is the gate that closes the amount-bypass loophole.
 const isValidAmount = (value: string) => {
   if (!value) return false;
   const num = Number(value);
   return value !== '.' && !Number.isNaN(num) && num > 0;
 };
 
-// Calendar-valid ISO date check (catches things like 2026-02-30, not just the shape).
 const isValidIsoDate = (value: string) => {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
   const d = dateFromIso(value);
@@ -72,11 +69,6 @@ export default function TabTwoScreen() {
     AsyncStorage.getItem('user_id').then((id) => setScannerUserId(id || undefined));
   }, []);
 
-  // Keeps `account` / `toAccount` in sync with the real accounts list.
-  // toAccount's updater is nested inside account's so it always reads the
-  // just-computed value instead of a stale one from the previous render —
-  // this removes the one-tick window where both could resolve to the same
-  // account before self-correcting.
   useEffect(() => {
     if (params?.id || accounts.length === 0) return;
     setAccount((current) => {
@@ -131,7 +123,7 @@ export default function TabTwoScreen() {
   };
 
   const handleSave = async () => {
-    if (isSaving) return; // double-submit guard
+    if (isSaving) return;
 
     if (!account) { Alert.alert('Account required', 'Mag-register o pumili muna ng payment account.'); return; }
     if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Pumili ng destination payment account.'); return; }
@@ -149,7 +141,7 @@ export default function TabTwoScreen() {
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
     if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert("Wait lang!", "Pili ka muna ng category paps."); return; }
 
-    const numericAmount = Number(amount).toFixed(2); // normalized amount string, guaranteed parseable
+    const numericAmount = Number(amount).toFixed(2);
 
     setIsSaving(true);
     try {
@@ -181,9 +173,6 @@ export default function TabTwoScreen() {
     </TouchableOpacity>
   );
 
-  // Accounts shown for the side being picked, excluding whichever account
-  // is currently selected on the *other* side of a Transfer. This closes
-  // the same-account gap in the UI instead of only catching it on save.
   const accountOptionsFor = (target: 'from' | 'to') => {
     if (type !== 'Transfer') return accounts;
     const exclude = target === 'from' ? toAccount : account;
@@ -196,7 +185,8 @@ export default function TabTwoScreen() {
         <TouchableOpacity onPress={() => router.back()}><Ionicons name="close" size={28} color="#142D2A" /></TouchableOpacity>
         <Text style={styles.headerTitle}>{params && params.id ? 'Edit Transaction' : 'New Transaction'}</Text>
         <View style={styles.headerRightActions}>
-          {!params?.id && (
+          {/* Ipinapakita lang ang scan button kung hindi edit mode AT nasa Expense tab */}
+          {!params?.id && type === 'Expense' && (
             <TouchableOpacity onPress={() => setIsScannerVisible(true)} style={styles.scanHeaderButton} activeOpacity={0.7}>
               <Ionicons name="scan-outline" size={22} color={getActiveColor()} />
             </TouchableOpacity>
@@ -264,7 +254,6 @@ export default function TabTwoScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Category Selection Modal */}
       <Modal visible={isCatModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -282,7 +271,6 @@ export default function TabTwoScreen() {
         </View>
       </Modal>
 
-      {/* Account Selection Modal */}
       <Modal visible={isAccModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -304,7 +292,6 @@ export default function TabTwoScreen() {
         </View>
       </Modal>
 
-      {/* EasyOCR Receipt Scanner Modal Integration */}
       <ReceiptScannerModal 
         visible={isScannerVisible}
         onClose={() => setIsScannerVisible(false)}

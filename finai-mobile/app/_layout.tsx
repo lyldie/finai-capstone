@@ -1,5 +1,4 @@
 import FontAwesome from '@expo/vector-icons/FontAwesome';
-import { DefaultTheme, ThemeProvider } from '@react-navigation/native';
 import { useFonts } from 'expo-font';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
@@ -35,20 +34,18 @@ export default function RootLayout() {
   return (
     <AuthProvider>
       <TransactionProvider>
-        <ThemeProvider value={DefaultTheme}>
-          {/* Ginawa nating getstarted ang pinaka-unang screen */}
-          <Stack screenOptions={{ headerShown: false }} initialRouteName="getstarted">
-            <Stack.Screen name="index" />
-            <Stack.Screen name="getstarted" />
-            <Stack.Screen name="login" />
-            <Stack.Screen name="signup" />
-            <Stack.Screen name="setup-pin" />
-            <Stack.Screen name="verify-pin" />
-            <Stack.Screen name="pin-login" /> {/* 👈 Idinagdag natin ito! */}
-            <Stack.Screen name="(tabs)" />
-            <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
-          </Stack>
-        </ThemeProvider>
+        {/* Tinanggal na natin yung ThemeProvider galing react-navigation */}
+        <Stack screenOptions={{ headerShown: false }} initialRouteName="getstarted">
+          <Stack.Screen name="index" />
+          <Stack.Screen name="getstarted" />
+          <Stack.Screen name="login" />
+          <Stack.Screen name="signup" />
+          <Stack.Screen name="setup-pin" />
+          <Stack.Screen name="verify-pin" />
+          <Stack.Screen name="pin-login" /> 
+          <Stack.Screen name="(tabs)" />
+          <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
+        </Stack>
       </TransactionProvider>
     </AuthProvider>
   );

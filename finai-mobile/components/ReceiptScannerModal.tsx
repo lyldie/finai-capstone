@@ -5,7 +5,6 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 
-// I-ignore ang OCR logs kung sakaling mag-trigger pa sa Expo LogBox
 LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Hindi valid na resibo']);
 
 interface ReceiptScannerModalProps {
@@ -16,8 +15,6 @@ interface ReceiptScannerModalProps {
   userId?: string;
 }
 
-// Dapat tumugma ito sa visual proportions ng styles.scanFrame sa ibaba
-// (width: '82%', height: '85%', centered) — dito kino-crop ang aktwal na litrato.
 const MAX_MULTI_PHOTOS = 4;
 
 type ReviewField = { value: string; confidence: number; status: string; engines: string[] };
@@ -36,10 +33,9 @@ export default function ReceiptScannerModal({
 }: ReceiptScannerModalProps) {
   const [permission, requestPermission] = useCameraPermissions();
   
-  // State management
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
-  const [isMultiMode, setIsMultiMode] = useState(false); // Default: Single Photo Scan
-  const [isPreviewing, setIsPreviewing] = useState(false); // Freeze Frame State
+  const [isMultiMode, setIsMultiMode] = useState(false);
+  const [isPreviewing, setIsPreviewing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [isFlashing, setIsFlashing] = useState(false);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
@@ -61,16 +57,11 @@ export default function ReceiptScannerModal({
     setReviewData(null);
   };
 
-  // Tinatanggal lang yung pinaka-huling kuha, hindi lahat — para sa "Retake"
-  // sa multi-photo flow kung sablay lang yung pinaka-bagong shot.
   const handleRetakeLast = () => {
     setCapturedPhotos((prev) => prev.slice(0, -1));
     setIsPreviewing(false);
   };
 
-  // Balik sa live camera para kumuha pa ng dagdag na section, pero
-  // panatilihin yung mga nakuha na — para sa mahahabang resibo na
-  // kailangan ng 3+ segments.
   const handleAddAnother = () => {
     setIsPreviewing(false);
   };
@@ -80,8 +71,6 @@ export default function ReceiptScannerModal({
       const dimensions = await new Promise<{ width: number; height: number }>((resolve, reject) => {
         Image.getSize(uri, (width, height) => resolve({ width, height }), reject);
       });
-      // Keep a small safety margin around the visual guide, then let the
-      // backend straighten and isolate the document edges.
       const cropWidth = Math.max(1, Math.round(dimensions.width * 0.86));
       const cropHeight = Math.max(1, Math.round(dimensions.height * 0.89));
       const cropped = await ImageManipulator.manipulateAsync(
@@ -96,15 +85,11 @@ export default function ReceiptScannerModal({
       );
       return cropped.uri;
     } catch (error) {
-      // A failed crop should never discard a valid receipt capture.
       console.log('Guide crop fallback:', error);
       return uri;
     }
   };
 
-  // I-crop papunta sa proportions ng berdeng guide frame bago i-upload,
-  // para hindi masayang ang resolution sa background/paligid ng resibo.
-  // Direct Submission Logic to FastAPI Endpoint
   const submitPhotosToBackend = async (photos: string[]) => {
     if (!photos || photos.length === 0) {
       Alert.alert("FinAi Scanner", "Walang larawan ang natanggap. Kunan ulit ang resibo.");
@@ -113,7 +98,6 @@ export default function ReceiptScannerModal({
 
     try {
       setIsProcessing(true);
-
       const formData = new FormData();
 
       photos.forEach((uri, index) => {
@@ -160,8 +144,6 @@ export default function ReceiptScannerModal({
       if (foundCat) {
         matchedCategory = foundCat.name;
       } else {
-        // Do not silently assign an unrelated first category. The review
-        // screen keeps General editable when the suggestion is unsupported.
         matchedCategory = 'General';
       }
 
@@ -182,26 +164,18 @@ export default function ReceiptScannerModal({
     if (!cameraRef.current || isProcessing) return;
 
     try {
-      // 1. Shutter Flash Feedback
       setIsFlashing(true);
       setTimeout(() => setIsFlashing(false), 150);
 
-      // 2. High Quality Image Capture
       const photo = await cameraRef.current.takePictureAsync({
         quality: 0.9,
         skipProcessing: false,
         exif: false,
       });
 
-      // 3. I-crop papunta sa guide frame area para hindi masayang ang
-      // resolution sa background — ito yung pangunahing fix sa "malaking
-      // frame" issue lalo na sa multi-photo mode.
       const croppedUri = await cropPhotoToGuide(photo.uri);
       const updatedPhotos = [...capturedPhotos, croppedUri];
       setCapturedPhotos(updatedPhotos);
-
-      // Palaging mag-freeze preview pagkatapos ng bawat kuha (single o multi),
-      // para makapag-decide ang user: retake / add another / analyze na.
       setIsPreviewing(true);
 
     } catch (error: any) {
@@ -323,11 +297,11 @@ export default function ReceiptScannerModal({
         {isPreviewing && capturedPhotos.length > 0 ? (
           <Image 
             source={{ uri: capturedPhotos[capturedPhotos.length - 1] }} 
-            style={StyleSheet.absoluteFillObject} 
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }} 
             resizeMode="cover"
           />
         ) : (
-          <CameraView ref={cameraRef} style={StyleSheet.absoluteFillObject} facing="back" />
+          <CameraView ref={cameraRef} style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%' }} facing="back" />
         )}
 
         {/* 2. White Flash Overlay Animation Effect */}
@@ -342,7 +316,6 @@ export default function ReceiptScannerModal({
               <Ionicons name="close" size={24} color="#FFFFFF" />
             </TouchableOpacity>
             
-            {/* Mode Selector Toggle Button */}
             {!isPreviewing && (
               <TouchableOpacity 
                 style={[styles.modeToggle, isMultiMode && styles.modeToggleActive]}
@@ -391,7 +364,6 @@ export default function ReceiptScannerModal({
           {/* Footer Controls & Actions */}
           <View style={styles.overlayFooter}>
             
-            {/* Case A: FREEZE PREVIEW MODE (Retake, Add Another, or Analyze) */}
             {isPreviewing ? (
               <View style={styles.previewActionsContainer}>
                 {isProcessing ? (
@@ -428,7 +400,6 @@ export default function ReceiptScannerModal({
                 )}
               </View>
             ) : (
-              /* Case B: LIVE CAMERA SHUTTER MODE */
               <View style={{ alignItems: 'center' }}>
                 {isMultiMode && capturedPhotos.length >= 1 && (
                   <View style={styles.stepIndicator}>
@@ -470,14 +441,28 @@ const styles = StyleSheet.create({
   reviewConfidence: { color: '#7C9A95', fontSize: 11, marginTop: 8 },
   confirmButton: { backgroundColor: '#10B981', borderRadius: 15, minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   confirmButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
-  container: { flex: 1, backgroundColor: '#000000' },
+  container: { flex: 1, backgroundColor: '#000000', width: '100%', height: '100%' },
   flashOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
     backgroundColor: '#FFFFFF',
     opacity: 0.85,
     zIndex: 99,
   },
-  overlayContainer: { ...StyleSheet.absoluteFillObject, justifyContent: 'space-between', zIndex: 100 },
+  overlayContainer: { 
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'space-between', 
+    zIndex: 100,
+    width: '100%',
+    height: '100%'
+  },
   overlayHeader: { 
     flexDirection: 'row', 
     justifyContent: 'space-between', 
