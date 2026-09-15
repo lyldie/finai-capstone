@@ -120,32 +120,65 @@ async def list_budget_usage(user_id: str) -> List[Dict[str, Any]]:
 
 
 async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str, Any]]:
-    """Create one in-app notification per crossed threshold/budget/period."""
+    """Create at most one in-app notification per budget/period: the highest threshold
+    currently crossed. Prevents "notification flooding" where a single large purchase
+    that jumps spending past multiple thresholds at once (e.g. 0% -> 95%) used to create
+    a separate notification for every threshold crossed (70% AND 90%) instead of just one."""
     created = []
+    today_key = datetime.utcnow().date().isoformat()
     for summary in await list_budget_usage(user_id):
+        # FIX: Skip budgets whose period has already ended. Without this, a backdated
+        # transaction (any past date is allowed when logging expenses) could trigger a
+        # fresh notification for a closed-period budget that no longer appears anywhere
+        # in the Insights "Budget" tab (which only lists budgets where end_date >= today),
+        # leaving the user with an alert they have no way to find or verify.
+        if summary["end_date"] < today_key:
+            continue
+
+        percentage = summary["percentage_used"]
+        crossed = [t for t in THRESHOLDS if percentage >= t]
+
+        # Clean up any notification for a threshold no longer crossed (spending dropped,
+        # e.g. the transaction was edited/deleted or the budget limit was raised).
         for threshold in THRESHOLDS:
-            if summary["percentage_used"] < threshold:
+            if threshold not in crossed:
                 await db.notifications.delete_many({
                     "user_id": user_id, "budget_id": summary["id"], "period_key": summary["period_key"],
                     "threshold": threshold, "channel": "in_app",
                 })
-                continue
-            existing = await db.notifications.find_one({
+
+        if not crossed:
+            continue
+
+        highest = max(crossed)
+
+        # If a lower threshold's notification already exists from an earlier, smaller
+        # purchase, remove it now that a higher one applies -- avoids stacking 70% + 90%
+        # notifications together for what the user experiences as a single event.
+        lower_crossed = [t for t in crossed if t != highest]
+        if lower_crossed:
+            await db.notifications.delete_many({
                 "user_id": user_id, "budget_id": summary["id"], "period_key": summary["period_key"],
-                "threshold": threshold, "channel": "in_app",
+                "threshold": {"$in": lower_crossed}, "channel": "in_app",
             })
-            if existing:
-                continue
-            level = "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget"
-            message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
-                       f"{summary['period_type']} budget (₱{summary['spent']:.2f} of ₱{summary['amount']:.2f}).")
-            notification = {
-                "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
-                "period_key": summary["period_key"], "threshold": threshold, "channel": "in_app",
-                "level": level, "message": message, "is_read": False, "created_at": datetime.utcnow(),
-            }
-            result = await db.notifications.insert_one(notification)
-            notification["id"] = str(result.inserted_id)
-            notification.pop("_id", None)
-            created.append(notification)
+
+        existing = await db.notifications.find_one({
+            "user_id": user_id, "budget_id": summary["id"], "period_key": summary["period_key"],
+            "threshold": highest, "channel": "in_app",
+        })
+        if existing:
+            continue
+
+        level = "warning" if highest == 70 else "critical" if highest == 90 else "over_budget"
+        message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
+                   f"{summary['period_type']} budget (₱{summary['spent']:.2f} of ₱{summary['amount']:.2f}).")
+        notification = {
+            "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
+            "period_key": summary["period_key"], "threshold": highest, "channel": "in_app",
+            "level": level, "message": message, "is_read": False, "created_at": datetime.utcnow(),
+        }
+        result = await db.notifications.insert_one(notification)
+        notification["id"] = str(result.inserted_id)
+        notification.pop("_id", None)
+        created.append(notification)
     return created

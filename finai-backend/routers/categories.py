@@ -72,6 +72,13 @@ async def update_category(category_id: str, category: CategoryCreate):
     except:
         raise HTTPException(status_code=400, detail="Invalid Category ID format")
 
+    # Kunin muna ang lumang pangalan bago i-overwrite, para malaman natin kung
+    # kailangan i-cascade ang rename papunta sa existing transactions.
+    existing_cat = await db.categories.find_one({"_id": oid})
+    if not existing_cat:
+        raise HTTPException(status_code=404, detail="Category not found")
+    old_name = existing_cat.get("name")
+
     updated_cat = await db.categories.find_one_and_update(
         {"_id": oid}, 
         {"$set": category.model_dump()},
@@ -79,6 +86,14 @@ async def update_category(category_id: str, category: CategoryCreate):
     )
     if not updated_cat:
         raise HTTPException(status_code=404, detail="Category not found")
+
+    # FIX: Budgets match transactions by category NAME (see budget_service.py). Kung
+    # hindi natin i-cascade ang bagong pangalan papunta sa existing transactions, mawawala
+    # sila sa budget tracking nila -- silent na mababawasan ang "spent" nang walang dahilan.
+    new_name = category.name
+    if new_name and new_name != old_name:
+        await db.expenses.update_many({"category": old_name}, {"$set": {"category": new_name}})
+
     updated_cat_data = {**updated_cat, "id": str(updated_cat["_id"])}
     return CategoryResponse(**updated_cat_data)
 
@@ -88,6 +103,16 @@ async def delete_category(category_id: str):
         oid = ObjectId(category_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid Category ID format")
+
+    # FIX: Huwag payagan ang pag-delete kung may active budget pa na naka-link dito.
+    # Dati, wala nitong check kaya nag-oorphan ang budget (permanenteng 0% used, walang
+    # error, walang paalala) -- parehong pattern na sinusunod na ng delete_budget().
+    linked_budget = await db.budgets.find_one({"category_id": category_id})
+    if linked_budget:
+        raise HTTPException(
+            status_code=400,
+            detail="This category has an active budget. Delete or reassign that budget first."
+        )
 
     result = await db.categories.delete_one({"_id": oid})
     if result.deleted_count == 0:

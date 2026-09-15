@@ -26,13 +26,26 @@ from email_utils import send_threshold_alert # I-import ang email sender natin
 import uvicorn
 
 # I-IMPORT ANG DB MULA SA DATABASE.PY
-from database import db
+from database import db, ensure_indexes
 
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor
 from services.budget_service import create_crossed_threshold_notifications
 
 app = FastAPI(title="FinAi Backend", version="1.0")
+
+
+# 0. Startup — ensure required DB indexes exist (e.g. the unique index on budgets that
+# prevents duplicate user/category/period budgets from a double-tapped save). Wrapped in
+# try/except so a startup-time issue (like leftover duplicate data from before the index
+# existed) logs an error instead of blocking the entire app from booting.
+@app.on_event("startup")
+async def on_startup():
+    try:
+        await ensure_indexes()
+        print("[Startup] Database indexes ready.")
+    except Exception as e:
+        print(f"[Startup] Could not create indexes (check for duplicate data): {e}")
 
 
 # 1. Terminal Truth - Error Debugger
@@ -199,9 +212,22 @@ def detect_and_straighten_receipt(img_np: np.ndarray) -> tuple[np.ndarray, bool]
     return img_np, False
 
 
-def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
+def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int, today: Optional[datetime] = None):
     """Subukan lahat ng posibleng pagkakaayos (YMD, MDY, DMY) at tignan alin
-    ang valid na buwan/araw/taon. Returns (year, month, day) o None."""
+    ang valid na buwan/araw/taon. Returns (year, month, day) o None.
+
+    STANDARD DATE-DISAMBIGUATION RULES (applied when a numeric date like
+    09/12/2025 is genuinely ambiguous between MM/DD and DD/MM):
+      1. A receipt can never be legitimately dated in the future relative to
+         `today` -> future-dated readings are rejected outright, not just
+         deprioritized.
+      2. When more than one ordering (e.g. both MDY and DMY) produces a real
+         calendar date, prefer whichever one is NOT in the future instead of
+         always defaulting to MDY.
+      3. If both orderings land in the past (still ambiguous), fall back to
+         the first valid candidate in priority order (MDY before DMY) as a
+         documented, consistent default rather than an accidental one.
+    """
     candidates = []
 
     if v1 > 1000:  # v1 = year
@@ -218,14 +244,31 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int):
         year = 2000 + v1
         candidates.append((year, v2, v3))  # YMD
 
+    valid_candidates = []
     for year, month, day in candidates:
-        if 2000 <= year <= (current_year + 1):
+        # Rule 1: never accept a year beyond the current year. A purchase
+        # receipt cannot be dated next year, so the old "current_year + 1"
+        # leniency is what let future-dated misreads slip through.
+        if 2000 <= year <= current_year:
             try:
-                datetime(year, month, day)  # Reject impossible dates such as February 31.
-                return year, month, day
+                parsed = datetime(year, month, day)  # Reject impossible dates such as February 31.
+                valid_candidates.append((year, month, day, parsed))
             except ValueError:
                 continue
-    return None
+
+    if not valid_candidates:
+        return None
+
+    # Rule 2: prefer the non-future interpretation when ambiguous.
+    reference = today or datetime.now()
+    non_future = [c for c in valid_candidates if c[3].date() <= reference.date()]
+    if non_future:
+        year, month, day, _ = non_future[0]
+        return year, month, day
+
+    # Rule 3: consistent, documented fallback (first candidate in priority order).
+    year, month, day, _ = valid_candidates[0]
+    return year, month, day
 
 
 def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool = False) -> Optional[str]:
@@ -237,6 +280,7 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
     month_day_without_year_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2})\b"
     month_day_year_pattern = r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{2,4})\b"
     current_year = datetime.now().year
+    today = datetime.now()
 
     search_pool = [text.strip() for text in extracted_texts if text and text.strip()]
     search_pool.append(" ".join(search_pool))
@@ -250,7 +294,7 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
                 v1, v2, v3 = int(p1), int(p2), int(p3)
             except ValueError:
                 continue
-            result = _try_parse_date_parts(v1, v2, v3, current_year)
+            result = _try_parse_date_parts(v1, v2, v3, current_year, today=today)
             if result:
                 year, month, day = result
                 return f"{year:04d}-{month:02d}-{day:02d}"
@@ -1003,7 +1047,7 @@ async def login(user: UserLogin):
 
     # 👇 Inayos natin ang spacing dito para pumantay sa taas
     password_to_verify = user.password[:72]
-    
+
     try:
         if not pwd_context.verify(password_to_verify, db_user["password"]):
             raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
@@ -1170,38 +1214,38 @@ async def add_expense(transaction: TransactionSchema, background_tasks: Backgrou
     validate_transaction_for_storage(transaction)
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
-    
+
     if transaction_dict.get("goal_id"):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
-        
+
     result = await db.expenses.insert_one(transaction_dict)
 
     notifications_created = []
     if transaction.type.lower() == "expense":
         # 1. Che-check ng system kung may na-hit na budget limit
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
-        
+
         # 2. 🚨 EMAIL ALERT INTEGRATION 🚨
         if notifications_created:
             # Kunin ang email ng user mula sa database
             user = await db.users.find_one({"_id": ObjectId(transaction.user_id)})
-            
+
             if user and user.get("email"):
                 target_email = user["email"]
-                
+
                 # I-check lahat ng na-generate na notifications
                 for notif in notifications_created:
                     # Kadalasan ang notif ay dictionary na may "threshold" value
                     threshold = notif.get("threshold", 0)
-                    
+
                     # Kung 90% (Critical) o 100% (Over Budget), magsesend tayo ng email!
                     if threshold >= 90:
                         category = transaction.category
                         # Papadaanin natin sa BackgroundTasks para hindi mag-lag ang phone ni user
                         background_tasks.add_task(
-                            send_threshold_alert, 
-                            target_email, 
-                            category, 
+                            send_threshold_alert,
+                            target_email,
+                            category,
                             f"{threshold}% used"
                         )
 
@@ -1230,7 +1274,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
         difference = new_amount - old_amount
         if difference != 0:
             await db.goals.update_one(
-                {"_id": ObjectId(old_goal)}, 
+                {"_id": ObjectId(old_goal)},
                 {"$inc": {"current_savings": difference}}
             )
     elif old_goal != new_goal:
@@ -1251,7 +1295,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
     if result.matched_count == 1:
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
         return {"status": "Success", "notifications": notifications_created}
-    
+
     raise HTTPException(status_code=404, detail="Failed to update transaction.")
 
 
@@ -1280,7 +1324,7 @@ async def delete_expense(expense_id: str):
     if goal_id:
         try:
             await db.goals.update_one(
-                {"_id": ObjectId(goal_id)}, 
+                {"_id": ObjectId(goal_id)},
                 {"$inc": {"current_savings": -float(expense["amount"])}}
             )
         except Exception as e:
@@ -1290,7 +1334,7 @@ async def delete_expense(expense_id: str):
     if result.deleted_count == 1:
         await create_crossed_threshold_notifications(str(expense.get("user_id", "")))
         return {"status": "Success", "message": "Transaction deleted successfully"}
-        
+
     raise HTTPException(status_code=500, detail="Failed to delete transaction")
 
 

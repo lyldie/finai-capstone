@@ -1,453 +1,392 @@
-import React, { useMemo, useState, useCallback } from 'react';
-import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator, Modal } from 'react-native';
+import React, { useState, useCallback, useMemo } from 'react';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useTransactions, Transaction } from '../../context/TransactionContext';
-import { useAuth } from '../../context/AuthContext'; 
+import { useTransactions } from '../../context/TransactionContext';
+import { useAuth } from '../../context/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
-import Swipeable from 'react-native-gesture-handler/Swipeable'; 
 
-const transactionDate = (value: string) => {
-  const [year, month, day] = value.split('-').map(Number);
-  return year && month && day ? new Date(year, month - 1, day) : new Date(value);
-};
+// ---- FINAI BRAND TOKENS (shared with transactions.tsx) ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#7C9A95';
+const CREAM = '#FAF7F2';
+const INCOME = '#10B981';
+const EXPENSE = '#FF6259';
 
-const isIsoDate = (value: string) => /^\d{4}-\d{2}-\d{2}$/.test(value);
-
-export default function Dashboard() {
-  const { user } = useAuth(); 
-  const { 
-    transactions, 
-    totalIncome, 
-    totalExpense, 
-    balance, 
-    deleteTransaction, 
+export default function HomeDashboard() {
+  const { user } = useAuth();
+  const {
+    transactions,
+    balance,
+    totalIncome,
+    totalExpense,
     fetchTransactions,
-    isLoading,
-    categories,
     accounts,
-    notifications
+    getAccountBalance,
+    isLoading
   } = useTransactions();
 
-  const [activeTab, setActiveTab] = useState('Daily'); 
-  const [searchQuery, setSearchQuery] = useState('');
-  const [selectedFilter, setSelectedFilter] = useState('All'); 
-  const [selectedCategory, setSelectedCategory] = useState('All');
-  const [selectedAccount, setSelectedAccount] = useState('All');
-  const [startDate, setStartDate] = useState('');
-  const [endDate, setEndDate] = useState('');
-  const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
-  const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
-  const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth()); 
   const router = useRouter();
-  const unreadNotifications = notifications.filter((notification) => !notification.is_read).length;
 
   useFocusEffect(
     useCallback(() => {
-      fetchTransactions(false); 
+      fetchTransactions(false);
     }, [fetchTransactions])
   );
 
-  const monthsNames = [
-    "January", "February", "March", "April", "May", "June", 
-    "July", "August", "September", "October", "November", "December"
-  ];
-
   const greetingMessage = useMemo(() => {
     const hour = new Date().getHours();
-    if (hour < 12) return "Good Morning 👋";
-    if (hour < 18) return "Good Afternoon 👋";
-    return "Good Evening 👋";
+    if (hour < 12) return "Magandang Umaga";
+    if (hour < 18) return "Magandang Hapon";
+    return "Magandang Gabi";
   }, []);
 
-  const handlePrevMonth = useCallback(() => {
-    if (selectedMonth === 0) {
-      setSelectedMonth(11);
-      setSelectedYear(prev => prev - 1);
+  const dynamicAiTip = useMemo(() => {
+    if (totalExpense > totalIncome && totalIncome > 0) {
+      return "Paps, medyo alanganin tayo ngayon. Mas malaki ang gastos mo kaysa sa kinita mo. Preno-preno muna sa luho!";
+    } else if (balance <= 500 && balance >= 0) {
+      return "Kulang na lang sa pambili ng kape ang balanse mo, paps. Magtipid-tipid muna habang naghihintay ng sweldo!";
+    } else if (totalIncome > 0 && totalExpense <= totalIncome * 0.5) {
+      return "Ang galing ng pag-budget mo ngayon, paps! Malaki ang natira sa kita mo. Keep it up!";
     } else {
-      setSelectedMonth(prev => prev - 1);
+      return "Huwag mong hintaying maubos ang sweldo bago magtipid, paps. Konting pigil sa luho, malaking tulong sa bulsa!";
     }
-  }, [selectedMonth]);
+  }, [totalIncome, totalExpense, balance]);
 
-  const handleNextMonth = useCallback(() => {
-    if (selectedMonth === 11) {
-      setSelectedMonth(0);
-      setSelectedYear(prev => prev + 1);
-    } else {
-      setSelectedMonth(prev => prev + 1);
-    }
-  }, [selectedMonth]);
-
-  const sections = useMemo(() => {
-    const groups: { [key: string]: { title: string; data: Transaction[]; income: number; expense: number } } = {};
-    const filteredTransactions = transactions.filter(t => {
-      const transDate = transactionDate(t.date);
-      if (activeTab === 'Daily' && !startDate && !endDate) {
-        if (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear) return false;
-      }
-      const matchesType = selectedFilter === 'All' || t.type === selectedFilter;
-      const matchesCategory = selectedCategory === 'All' || t.category === selectedCategory;
-      const matchesAccount = selectedAccount === 'All' || t.account === selectedAccount || t.to_account === selectedAccount;
-      const matchesDateRange = (!startDate || t.date >= startDate) && (!endDate || t.date <= endDate);
-      const query = searchQuery.toLowerCase().trim();
-      const matchesSearch = query === '' || 
-        (t.category && t.category.toLowerCase().includes(query)) || 
-        (t.note && t.note.toLowerCase().includes(query));
-      return matchesType && matchesCategory && matchesAccount && matchesDateRange && matchesSearch;
-    });
-
-    filteredTransactions.forEach(t => {
-      const date = t.date;
-      if (!groups[date]) groups[date] = { title: date, data: [], income: 0, expense: 0 };
-      groups[date].data.push(t);
-      const amt = parseFloat(t.amount) || 0;
-      if (t.type === 'Income') groups[date].income += amt;
-      else if (t.type === 'Expense') groups[date].expense += amt;
-    });
-    return Object.values(groups).sort((a, b) => transactionDate(b.title).getTime() - transactionDate(a.title).getTime());
-  }, [transactions, searchQuery, selectedFilter, selectedCategory, selectedAccount, startDate, endDate, activeTab, selectedMonth, selectedYear]);
-
-  const localStats = useMemo(() => {
-    let incMonthSum = 0, expMonthSum = 0, incYearSum = 0, expYearSum = 0;
-    transactions.forEach(t => {
-      const transDate = transactionDate(t.date);
-      const amt = parseFloat(t.amount) || 0;
-      if (transDate.getMonth() === selectedMonth && transDate.getFullYear() === selectedYear) {
-        if (t.type === 'Income') incMonthSum += amt;
-        if (t.type === 'Expense') expMonthSum += amt;
-      }
-      if (transDate.getFullYear() === selectedYear) {
-        if (t.type === 'Income') incYearSum += amt;
-        if (t.type === 'Expense') expYearSum += amt;
-      }
-    });
-    return { monthIncome: incMonthSum, monthExpense: expMonthSum, monthNet: incMonthSum - expMonthSum, yearIncome: incYearSum, yearExpense: expYearSum, yearNet: incYearSum - expYearSum };
-  }, [transactions, selectedMonth, selectedYear]);
-
-  const confirmDelete = useCallback((id: string, swipeableInstance: Swipeable | null) => {
-    Alert.alert("Delete Record", "Sigurado ka ba paps?", [
-      { text: "Cancel", style: "cancel", onPress: () => swipeableInstance?.close() },
-      { text: "Delete", style: "destructive", onPress: () => { deleteTransaction(id); swipeableInstance?.close(); } }
-    ]);
-  }, [deleteTransaction]);
-
-  const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
-    swipeableInstance?.close();
-    router.push({
-      pathname: '/(tabs)/two',
-      params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date }
-    });
-  }, [router]);
-
-  const renderRightActions = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => (
-    <View style={styles.actionsContainer}>
-      <TouchableOpacity style={[styles.actionButton, styles.editActionButton]} onPress={() => handleEditPress(item, swipeableInstance)}>
-        <Ionicons name="pencil-sharp" size={20} color="#FFFFFF" />
-        <Text style={styles.actionButtonText}>Edit</Text>
-      </TouchableOpacity>
-      <TouchableOpacity style={[styles.actionButton, styles.deleteActionButton]} onPress={() => confirmDelete(item.id, swipeableInstance)}>
-        <Ionicons name="trash-outline" size={20} color="#FFFFFF" />
-        <Text style={styles.actionButtonText}>Delete</Text>
-      </TouchableOpacity>
-    </View>
-  ), [handleEditPress, confirmDelete]);
-
-  const renderTransactionItem = useCallback(({ item }: { item: Transaction }) => {
-    let swipeableRef: Swipeable | null = null;
-    let iconName: any = "arrow-down-circle", iconColor = '#EF4444', amountColor = '#EF4444', prefix = '-';
-    if (item.type === 'Income') { iconName = "arrow-up-circle"; iconColor = '#10B981'; amountColor = '#10B981'; prefix = '+'; }
-    else if (item.type === 'Transfer') { iconName = "swap-horizontal"; iconColor = '#6B7280'; amountColor = '#374151'; prefix = ''; }
-    return (
-      <Swipeable ref={(ref) => { swipeableRef = ref; }} renderRightActions={() => renderRightActions(item, swipeableRef)}>
-        <View style={styles.itemCard}>
-          <View style={styles.iconPlaceholder}><Ionicons name={iconName} size={26} color={iconColor} /></View>
-          <View style={styles.itemInfo}>
-            <Text style={styles.itemCategory}>{item.type === 'Transfer' ? `${item.account} ➡️ ${item.to_account || 'Other'}` : item.category}</Text>
-            <Text style={styles.itemNote} numberOfLines={1}>{item.note || 'No description'}</Text>
-          </View>
-          <Text style={[styles.itemAmount, { color: amountColor }]}>{prefix}₱{(parseFloat(item.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
-        </View>
-      </Swipeable>
-    );
-  }, [renderRightActions]);
-
-  const renderSectionHeader = useCallback(({ section: { title, income, expense } }: any) => (
-    <View style={styles.dateHeader}>
-      <Text style={styles.dateText}>{title}</Text>
-      <View style={styles.dateSummary}>
-        <Text style={styles.dayIncome}>+₱{(income || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</Text>
-        <Text style={styles.dayExpense}>-₱{(expense || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}</Text>
-      </View>
-    </View>
-  ), []);
-
-  const hasAdvancedFilters = selectedCategory !== 'All' || selectedAccount !== 'All' || !!startDate || !!endDate;
-
-  const applyAdvancedFilters = () => {
-    if ((startDate && !isIsoDate(startDate)) || (endDate && !isIsoDate(endDate))) {
-      Alert.alert('Invalid date', 'Use YYYY-MM-DD for the date range.');
-      return;
-    }
-    if (startDate && endDate && startDate > endDate) {
-      Alert.alert('Invalid date range', 'The start date must be before the end date.');
-      return;
-    }
-    setIsFilterModalVisible(false);
-  };
-
-  const clearAdvancedFilters = () => {
-    setSelectedCategory('All');
-    setSelectedAccount('All');
-    setStartDate('');
-    setEndDate('');
-  };
+  const budgetHealthStatus = useMemo(() => {
+    if (totalIncome === 0) return { label: "No Income Recorded", color: SAGE, percentage: 0 };
+    const ratio = totalExpense / totalIncome;
+    if (ratio > 0.85) return { label: "Critical Budget Warning", color: EXPENSE, percentage: Math.min(ratio * 100, 100) };
+    if (ratio > 0.6) return { label: "Moderate Spending", color: GOLD, percentage: ratio * 100 };
+    return { label: "Budget on Track", color: INCOME, percentage: ratio * 100 };
+  }, [totalIncome, totalExpense]);
 
   if (isLoading) {
     return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#F9FAFB' }}>
-        <ActivityIndicator size="large" color="#2b5f56" />
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={DEEP_GREEN} />
       </View>
     );
   }
 
+  const recentTransactions = transactions.slice(0, 3);
+
+  const formatDate = (dateString: string) => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F9FAFB" />
-      
-      {/* UPDATED: Nav Tabs and Notification Layout */}
-      <View style={styles.topNav}>
-        <View style={styles.tabContainer}>
-          {['Daily', 'Monthly'].map((tab) => (
-            <TouchableOpacity key={tab} onPress={() => setActiveTab(tab)} style={[styles.navTab, activeTab === tab && styles.activeNavTab]}>
-              <Text style={[styles.navTabText, activeTab === tab && styles.activeNavTabText]}>{tab === 'Daily' ? 'Daily History' : 'Monthly Overview'}</Text>
-            </TouchableOpacity>
-          ))}
+      <StatusBar barStyle="dark-content" backgroundColor={CREAM} />
+
+      {/* Header */}
+      <View style={styles.header}>
+        <View>
+          <Text style={styles.greetingText}>{greetingMessage}</Text>
+          <Text style={styles.userName}>{user?.name || 'User'}!</Text>
         </View>
-        <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
-          <Ionicons name="notifications-outline" size={22} color="#2b5f56" />
-          {unreadNotifications > 0 && <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications > 9 ? '9+' : unreadNotifications}</Text></View>}
-        </TouchableOpacity>
+        <View style={styles.headerRightActions}>
+          <TouchableOpacity
+            style={styles.peanutButton}
+            onPress={() => router.push('/chat' as never)}
+            activeOpacity={0.8}
+          >
+            <Text style={{ fontSize: 18 }}>🥜</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.notificationButton}
+            onPress={() => router.push('/notifications' as never)}
+          >
+            <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.greetingContainer}>
-        <Text style={styles.greetingText}>
-          {greetingMessage}, <Text style={styles.greetingName}>{user?.name || 'User'}!</Text>
-        </Text>
-      </View>
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-      <View style={styles.headerCard}>
-        {activeTab === 'Daily' ? (
-          <>
-            <Text style={styles.balanceLabel}>Current Balance</Text>
-            <Text style={styles.balanceValue}>₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Income ({monthsNames[selectedMonth]})</Text>
-                <Text style={[styles.statValue, { color: '#10B981' }]}>+₱{localStats.monthIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+        {/* AI Advisor tip */}
+        <View style={styles.aiTipCard}>
+          <View style={styles.aiTipHeader}>
+            <View style={styles.aiBadge}>
+              <Ionicons name="sparkles" size={11} color={DEEP_GREEN} />
+              <Text style={styles.aiBadgeText}>FINAI ADVISOR</Text>
+            </View>
+          </View>
+          <Text style={styles.aiTipText}>"{dynamicAiTip}"</Text>
+          <TouchableOpacity onPress={() => router.push('/chat' as never)} style={styles.aiTipAction}>
+            <Text style={styles.aiTipActionText}>Magtanong kay FinAi</Text>
+            <Ionicons name="arrow-forward" size={14} color={TEAL} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Hero balance card */}
+        <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.balanceCard}>
+          <Text style={styles.balanceLabel}>Total Balance</Text>
+          <Text style={styles.balanceValue}>
+            ₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+          </Text>
+
+          <View style={styles.statsRow}>
+            <View style={styles.statItem}>
+              <View style={[styles.miniIconContainer, { backgroundColor: 'rgba(16, 185, 129, 0.22)' }]}>
+                <Ionicons name="arrow-up" size={14} color="#5FE3B3" />
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Expenses ({monthsNames[selectedMonth]})</Text>
-                <Text style={[styles.statValue, { color: '#EF4444' }]}>-₱{localStats.monthExpense.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+              <View>
+                <Text style={styles.statLabel}>Income</Text>
+                <Text style={[styles.statValue, { color: '#5FE3B3' }]}>
+                  +₱{(totalIncome || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </Text>
               </View>
             </View>
-          </>
-        ) : (
-          <>
-            <Text style={styles.balanceLabel}>Yearly Cash Flow ({selectedYear})</Text>
-            <Text style={styles.balanceValue}>₱{localStats.yearNet.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
-            <View style={styles.statsRow}>
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Total Income</Text>
-                <Text style={[styles.statValue, { color: '#10B981' }]}>+₱{localStats.yearIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+
+            <View style={styles.statDivider} />
+
+            <View style={styles.statItem}>
+              <View style={[styles.miniIconContainer, { backgroundColor: 'rgba(255, 98, 89, 0.22)' }]}>
+                <Ionicons name="arrow-down" size={14} color="#FF9B93" />
               </View>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statLabel}>Total Expenses</Text>
-                <Text style={[styles.statValue, { color: '#EF4444' }]}>-₱{localStats.yearExpense.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text>
+              <View>
+                <Text style={styles.statLabel}>Expenses</Text>
+                <Text style={[styles.statValue, { color: '#FF9B93' }]}>
+                  -₱{(totalExpense || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                </Text>
               </View>
             </View>
-          </>
-        )}
-      </View>
+          </View>
 
-      {activeTab === 'Daily' && (
-        <View style={styles.searchFilterWrapper}>
-          <View style={styles.dateNavigatorRow}>
-            <TouchableOpacity onPress={handlePrevMonth} style={styles.dateNavButton}><Ionicons name="chevron-back" size={20} color="#2b5f56" /></TouchableOpacity>
-            <Text style={styles.dateNavDisplay}>{monthsNames[selectedMonth]} {selectedYear}</Text>
-            <TouchableOpacity onPress={handleNextMonth} style={styles.dateNavButton}><Ionicons name="chevron-forward" size={20} color="#2b5f56" /></TouchableOpacity>
+          <View style={styles.healthContainer}>
+            <View style={styles.healthHeaderRow}>
+              <Text style={styles.healthTitle}>Budget Health Status</Text>
+              <Text style={[styles.healthStatusText, { color: budgetHealthStatus.color === SAGE ? 'rgba(255,255,255,0.7)' : budgetHealthStatus.color }]}>
+                {budgetHealthStatus.label}
+              </Text>
+            </View>
+            <View style={styles.progressBarBackground}>
+              <View
+                style={[
+                  styles.progressBarFill,
+                  { width: `${Math.min(budgetHealthStatus.percentage, 100)}%`, backgroundColor: budgetHealthStatus.color === SAGE ? 'rgba(255,255,255,0.4)' : budgetHealthStatus.color }
+                ]}
+              />
+            </View>
           </View>
-          <View style={styles.searchBar}>
-            <Ionicons name="search-outline" size={20} color="#7C9A95" style={styles.searchIcon} />
-            <TextInput placeholder="Search..." placeholderTextColor="#7C9A95" style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} />
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-            {['All', 'Income', 'Expense', 'Transfer'].map((filter) => (
-              <TouchableOpacity key={filter} onPress={() => setSelectedFilter(filter)} style={[styles.filterChip, selectedFilter === filter && styles.activeFilterChip]}>
-                <Text style={[styles.filterChipText, selectedFilter === filter && styles.activeFilterChipText]}>{filter}</Text>
-              </TouchableOpacity>
-            ))}
-            <TouchableOpacity onPress={() => setIsFilterModalVisible(true)} style={[styles.filterChip, hasAdvancedFilters && styles.activeFilterChip]}>
-              <Ionicons name="options-outline" size={14} color={hasAdvancedFilters ? '#FFFFFF' : '#56736E'} />
-              <Text style={[styles.filterChipText, hasAdvancedFilters && styles.activeFilterChipText]}>More filters</Text>
-            </TouchableOpacity>
+        </LinearGradient>
+
+        {/* Wallets */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionTitle}>My Wallets</Text>
+          <TouchableOpacity style={styles.pillButton} onPress={() => router.push('/accounts' as never)}>
+            <Text style={styles.pillButtonText}>Manage</Text>
+          </TouchableOpacity>
+        </View>
+
+        {accounts && accounts.length > 0 ? (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.accountsScrollRow}>
+            {accounts.map((acc, idx) => {
+              const liveBalance = getAccountBalance(acc.name);
+              return (
+                <View key={acc.id || idx} style={styles.accountCard}>
+                  <View style={styles.accountCardHeader}>
+                    <View style={styles.accountIconBox}>
+                      <Ionicons name={(acc.icon || "wallet") as any} size={20} color={DEEP_GREEN} />
+                    </View>
+                    <Ionicons name="ellipsis-horizontal" size={16} color={SAGE} />
+                  </View>
+                  <View style={styles.accountCardBody}>
+                    <Text style={styles.accountName} numberOfLines={1}>{acc.name}</Text>
+                    <Text style={[styles.accountBalance, liveBalance < 0 && { color: EXPENSE }]}>
+                      ₱{liveBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
           </ScrollView>
-        </View>
-      )}
-
-      {activeTab === 'Daily' ? (
-        <View style={{ flex: 1 }}>
-          {sections.length > 0 ? (
-            <SectionList sections={sections} keyExtractor={(item) => item.id} stickySectionHeadersEnabled={true} contentContainerStyle={styles.listContent} renderSectionHeader={renderSectionHeader} renderItem={renderTransactionItem} />
-          ) : (
-            <View style={styles.emptyContainer}><Ionicons name="calendar-outline" size={40} color="#7C9A95" /><Text style={styles.comingSoonText}>Walang transaksyon paps.</Text></View>
-          )}
-        </View>
-      ) : (
-        <ScrollView contentContainerStyle={styles.listContent}>
-          <View style={styles.yearlyCard}>
-            <View style={styles.yearlyHeaderRow}><Ionicons name="analytics" size={16} color="#2b5f56" style={{ marginRight: 6 }} /><Text style={styles.yearlyTitle}>Yearly Breakdown ({selectedYear})</Text></View>
-            <View style={styles.yearlyStatsRow}>
-              <View style={styles.yearlyStatBadge}><Text style={styles.yearlyBadgeLabel}>INCOME</Text><Text style={styles.yearlyBadgeValue}>+₱{localStats.yearIncome.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text></View>
-              <View style={styles.yearlyStatBadge}><Text style={[styles.yearlyBadgeLabel, { color: '#EF4444' }]}>EXPENSE</Text><Text style={[styles.yearlyBadgeValue, { color: '#EF4444' }]}>-₱{localStats.yearExpense.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Text></View>
-            </View>
+        ) : (
+          <View style={styles.emptyAccountsCard}>
+            <Ionicons name="card-outline" size={32} color={SAGE} />
+            <Text style={styles.emptyAccountsText}>Wala pang naka-setup na accounts.</Text>
           </View>
-          {monthsNames.map((mName, idx) => {
-            const filtered = transactions.filter(t => transactionDate(t.date).getMonth() === idx && transactionDate(t.date).getFullYear() === selectedYear);
-            const inc = filtered.filter(t => t.type === 'Income').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
-            const exp = filtered.filter(t => t.type === 'Expense').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
-            if (filtered.length === 0) return null;
-            return (
-              <View key={idx} style={styles.monthRowCard}>
-                <View style={styles.monthLeftBlock}>
-                    <Text style={styles.monthMainName}>{mName}</Text>
-                    <Text style={styles.transactionCountSub}>{filtered.length} transactions</Text>
-                </View>
-                <View style={styles.monthRightBlock}>
-                  <Text style={[styles.monthlyStatText, { color: '#10B981' }]}>{inc > 0 ? `+₱${inc.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '₱0.00'}</Text>
-                  <Text style={[styles.monthlyStatText, { color: '#EF4444' }]}>{exp > 0 ? `-₱${exp.toLocaleString(undefined, { minimumFractionDigits: 2 })}` : '₱0.00'}</Text>
-                </View>
-              </View>
-            );
-          }).reverse()}
-        </ScrollView>
-      )}
+        )}
 
-      <Modal visible={isFilterModalVisible} transparent animationType="slide" onRequestClose={() => setIsFilterModalVisible(false)}>
-        <View style={styles.filterModalOverlay}>
-          <View style={styles.filterModalContent}>
-            <View style={styles.filterModalHeader}>
-              <Text style={styles.filterModalTitle}>Filter transactions</Text>
-              <TouchableOpacity onPress={() => setIsFilterModalVisible(false)}><Ionicons name="close" size={24} color="#142D2A" /></TouchableOpacity>
-            </View>
-            <Text style={styles.filterLabel}>Category</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
-              {['All', ...categories.map((category) => category.name)].map((name) => (
-                <TouchableOpacity key={name} onPress={() => setSelectedCategory(name)} style={[styles.filterChip, selectedCategory === name && styles.activeFilterChip]}><Text style={[styles.filterChipText, selectedCategory === name && styles.activeFilterChipText]}>{name}</Text></TouchableOpacity>
-              ))}
-            </ScrollView>
-            <Text style={styles.filterLabel}>Payment account</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
-              {['All', ...accounts.map((account) => account.name)].map((name) => (
-                <TouchableOpacity key={name} onPress={() => setSelectedAccount(name)} style={[styles.filterChip, selectedAccount === name && styles.activeFilterChip]}><Text style={[styles.filterChipText, selectedAccount === name && styles.activeFilterChipText]}>{name}</Text></TouchableOpacity>
-              ))}
-            </ScrollView>
-            <Text style={styles.filterLabel}>Date range (optional)</Text>
-            <View style={styles.dateRangeRow}>
-              <TextInput value={startDate} onChangeText={setStartDate} placeholder="Start YYYY-MM-DD" placeholderTextColor="#7C9A95" style={styles.dateRangeInput} maxLength={10} />
-              <TextInput value={endDate} onChangeText={setEndDate} placeholder="End YYYY-MM-DD" placeholderTextColor="#7C9A95" style={styles.dateRangeInput} maxLength={10} />
-            </View>
-            <View style={styles.filterModalActions}>
-              <TouchableOpacity onPress={clearAdvancedFilters} style={styles.clearFilterButton}><Text style={styles.clearFilterText}>Clear</Text></TouchableOpacity>
-              <TouchableOpacity onPress={applyAdvancedFilters} style={styles.applyFilterButton}><Text style={styles.applyFilterText}>Apply filters</Text></TouchableOpacity>
-            </View>
-          </View>
+        {/* Recent transactions */}
+        <View style={[styles.sectionHeaderRow, { marginTop: 24 }]}>
+          <Text style={styles.sectionTitle}>Recent Transactions</Text>
+          <TouchableOpacity style={styles.pillButton} onPress={() => router.push('/(tabs)/transactions' as never)}>
+            <Text style={styles.pillButtonText}>See All</Text>
+          </TouchableOpacity>
         </View>
-      </Modal>
-      <TouchableOpacity style={styles.fab} onPress={() => router.push('/(tabs)/two')}><Ionicons name="add" size={32} color="#FFFFFF" /></TouchableOpacity>
+
+        {recentTransactions.length > 0 ? (
+          <View style={styles.recentListContainer}>
+            {recentTransactions.map((item, index) => {
+              const isIncome = item.type === 'Income';
+              const isTransfer = item.type === 'Transfer';
+              const color = isTransfer ? TEAL : isIncome ? INCOME : EXPENSE;
+              const bgColor = isTransfer ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
+              const iconName = isTransfer ? 'swap-horizontal' : isIncome ? 'arrow-up-outline' : 'arrow-down-outline';
+              const prefix = isTransfer ? '' : isIncome ? '+' : '-';
+              return (
+                <View key={item.id || index} style={styles.recentFloatingCard}>
+                  <View style={styles.recentLeft}>
+                    <View style={[styles.recentIconBox, { backgroundColor: bgColor }]}>
+                      <Ionicons name={iconName as any} size={18} color={color} />
+                    </View>
+                    <View style={styles.recentInfo}>
+                      <Text style={styles.recentCategory} numberOfLines={1}>
+                        {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : item.category}
+                      </Text>
+                      <Text style={styles.recentNote} numberOfLines={1}>{item.note || 'No description'}</Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.recentRight}>
+                    <Text style={[styles.recentAmount, { color: isTransfer ? DEEP_GREEN : color }]}>
+                      {prefix}₱{(parseFloat(item.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </Text>
+                    <Text style={styles.recentDate}>{formatDate(item.date)}</Text>
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        ) : (
+          <View style={styles.emptyRecentCard}>
+            <View style={styles.emptyIconCircle}>
+              <Ionicons name="receipt-outline" size={28} color={GOLD} />
+            </View>
+            <Text style={styles.emptyRecentText}>Wala pang recent transactions.</Text>
+          </View>
+        )}
+
+      </ScrollView>
+
+      {/* FAB */}
+      <TouchableOpacity
+        style={styles.fabWrapper}
+        onPress={() => router.push('/(tabs)/two' as never)}
+        activeOpacity={0.85}
+      >
+        <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.fab}>
+          <Ionicons name="add" size={30} color="#FFFFFF" />
+        </LinearGradient>
+      </TouchableOpacity>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F9FAFB' },
-  // UPDATED NAV STYLES
-  topNav: { flexDirection: 'row', backgroundColor: '#FFFFFF', paddingTop: 55, paddingBottom: 15, paddingHorizontal: 20, justifyContent: 'space-between', alignItems: 'center', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
-  tabContainer: { flexDirection: 'row', gap: 10 },
-  notificationButton: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', borderRadius: 18, backgroundColor: '#F3F4F6' },
-  notificationBadge: { position: 'absolute', top: -3, right: -4, minWidth: 17, height: 17, borderRadius: 9, backgroundColor: '#EF4444', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 3 },
-  notificationBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: '800' },
-  navTab: { paddingVertical: 8, paddingHorizontal: 20, borderRadius: 20, backgroundColor: '#F3F4F6' },
-  activeNavTab: { backgroundColor: '#2b5f56', elevation: 2 }, 
-  navTabText: { color: '#56736E', fontSize: 13, fontWeight: '700' },
-  activeNavTabText: { color: '#FFFFFF' }, 
-  greetingContainer: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 2 },
-  greetingText: { fontSize: 18, color: '#7C9A95', fontWeight: '600' },
-  greetingName: { color: '#142D2A', fontWeight: '800' },
-  headerCard: { backgroundColor: '#FFFFFF', marginHorizontal: 15, marginTop: 12, padding: 20, borderRadius: 25, borderWidth: 1, borderColor: '#2b5f56', elevation: 4, marginBottom: 5 },
-  balanceLabel: { color: '#56736E', fontSize: 13, textAlign: 'center', fontWeight: '600' },
-  balanceValue: { fontSize: 34, fontWeight: '800', textAlign: 'center', marginVertical: 8, color: '#142D2A' },
-  statsRow: { flexDirection: 'row', justifyContent: 'space-around', marginTop: 15, alignItems: 'center' },
-  statItem: { alignItems: 'center' },
-  statLabel: { color: '#7C9A95', fontSize: 11, marginBottom: 2, textTransform: 'uppercase', fontWeight: '700' },
-  statValue: { fontSize: 15, fontWeight: '700' },
-  statDivider: { width: 1, height: 25, backgroundColor: '#E2E8F0' },
-  searchFilterWrapper: { paddingHorizontal: 15, marginVertical: 10 },
-  dateNavigatorRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 15, paddingVertical: 10, paddingHorizontal: 15, marginBottom: 10, borderWidth: 1, borderColor: '#E2E8F0' },
-  dateNavButton: { padding: 5 },
-  dateNavDisplay: { color: '#142D2A', fontSize: 15, fontWeight: '700' },
-  searchBar: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 15, height: 45, paddingHorizontal: 12, borderWidth: 1, borderColor: '#E2E8F0' },
-  searchIcon: { marginRight: 8 },
-  searchInput: { flex: 1, color: '#142D2A', fontSize: 14 },
-  filterRow: { flexDirection: 'row', paddingTop: 10, gap: 8 },
-  filterChip: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: '#F3F4F6', paddingVertical: 6, paddingHorizontal: 16, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0' },
-  activeFilterChip: { backgroundColor: '#2b5f56', borderColor: '#2b5f56' },
-  filterChipText: { color: '#56736E', fontSize: 12, fontWeight: '600' },
-  activeFilterChipText: { color: '#FFFFFF' },
-  listContent: { paddingBottom: 120 },
-  dateHeader: { flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20, paddingVertical: 10, backgroundColor: '#F9FAFB', borderBottomWidth: 0.5, borderColor: '#E2E8F0' },
-  dateText: { color: '#2b5f56', fontSize: 12, fontWeight: 'bold' }, 
-  dateSummary: { flexDirection: 'row' },
-  dayIncome: { color: '#10B981', fontSize: 11, fontWeight: '700' },
-  dayExpense: { color: '#EF4444', fontSize: 11, fontWeight: '700', marginLeft: 10 },
-  itemCard: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 20, backgroundColor: '#FFFFFF', borderBottomWidth: 0.5, borderBottomColor: '#F3F4F6' },
-  iconPlaceholder: { width: 40, alignItems: 'center' },
-  itemInfo: { flex: 1, marginLeft: 10 },
-  itemCategory: { color: '#142D2A', fontSize: 16, fontWeight: '600' }, 
-  itemNote: { color: '#7C9A95', fontSize: 13, marginTop: 2 }, 
-  itemAmount: { fontSize: 16, fontWeight: '700' },
-  actionsContainer: { flexDirection: 'row', width: 140, height: '100%' },
-  actionButton: { flex: 1, justifyContent: 'center', alignItems: 'center', height: '100%', flexDirection: 'column', gap: 2 },
-  editActionButton: { backgroundColor: '#2b5f56' },
-  deleteActionButton: { backgroundColor: '#EF4444' },
-  actionButtonText: { fontSize: 11, fontWeight: '700', color: '#FFFFFF' },
-  emptyContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingVertical: 40 },
-  comingSoonText: { color: '#7C9A95', marginTop: 10, fontWeight: '500' },
-  fab: { position: 'absolute', bottom: 30, right: 25, backgroundColor: '#2b5f56', width: 60, height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', elevation: 6 },
-  yearlyCard: { backgroundColor: '#FFFFFF', marginHorizontal: 15, marginTop: 15, padding: 16, borderRadius: 20, borderWidth: 1, borderColor: '#E2E8F0', gap: 12 },
-  yearlyHeaderRow: { flexDirection: 'row', alignItems: 'center', borderBottomWidth: 0.5, borderColor: '#E2E8F0', paddingBottom: 8 },
-  yearlyTitle: { color: '#2b5f56', fontWeight: '700', fontSize: 13, textTransform: 'uppercase' },
-  yearlyStatsRow: { flexDirection: 'row', gap: 10 },
-  yearlyStatBadge: { flex: 1, backgroundColor: '#F9FAFB', padding: 10, borderRadius: 12, borderWidth: 0.5, borderColor: '#E2E8F0' },
-  yearlyBadgeLabel: { color: '#7C9A95', fontSize: 9, fontWeight: '700' },
-  yearlyBadgeValue: { fontSize: 13, fontWeight: '700', color: '#10B981' },
-  monthRowCard: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', backgroundColor: '#FFFFFF', marginHorizontal: 15, marginVertical: 6, paddingVertical: 16, paddingHorizontal: 18, borderRadius: 16, borderWidth: 1, borderColor: '#E2E8F0' },
-  monthMainName: { color: '#142D2A', fontSize: 16, fontWeight: '700' },
-  transactionCountSub: { color: '#7C9A95', fontSize: 12, marginTop: 3 },
-  monthLeftBlock: { flexDirection: 'column', flex: 1 },
-  monthRightBlock: { alignItems: 'flex-end', minWidth: 120 },
-  monthlyStatText: { fontSize: 14, fontWeight: '700', textAlign: 'right', lineHeight: 20 },
-  filterModalOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(20, 45, 42, 0.45)' },
-  filterModalContent: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 26, borderTopRightRadius: 26, padding: 20, paddingBottom: 30, maxHeight: '82%' },
-  filterModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18 },
-  filterModalTitle: { color: '#142D2A', fontSize: 18, fontWeight: '800' },
-  filterLabel: { color: '#56736E', fontSize: 13, fontWeight: '700', marginTop: 12, marginBottom: 8 },
-  modalChipRow: { gap: 8, paddingRight: 20 },
-  dateRangeRow: { flexDirection: 'row', gap: 10 },
-  dateRangeInput: { flex: 1, borderWidth: 1, borderColor: '#E2E8F0', color: '#142D2A', borderRadius: 12, paddingHorizontal: 12, paddingVertical: 11, fontSize: 13 },
-  filterModalActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 10, marginTop: 24 },
-  clearFilterButton: { paddingHorizontal: 16, paddingVertical: 12, borderRadius: 12, backgroundColor: '#F3F4F6' },
-  clearFilterText: { color: '#56736E', fontWeight: '700' },
-  applyFilterButton: { paddingHorizontal: 18, paddingVertical: 12, borderRadius: 12, backgroundColor: '#2b5f56' },
-  applyFilterText: { color: '#FFFFFF', fontWeight: '700' }
+  container: { flex: 1, backgroundColor: CREAM },
+  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: CREAM },
+
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingTop: 55,
+    paddingBottom: 10,
+    backgroundColor: CREAM,
+  },
+  greetingText: { fontSize: 13, color: SAGE, fontWeight: '600', letterSpacing: 0.3 },
+  userName: { fontSize: 22, color: DEEP_GREEN, fontWeight: '800', marginTop: 2 },
+  headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  peanutButton: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2
+  },
+  notificationButton: {
+    width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    justifyContent: 'center', alignItems: 'center',
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2
+  },
+  scrollContent: { padding: 20, paddingBottom: 110 },
+
+  // AI tip
+  aiTipCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 20,
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
+  },
+  aiTipHeader: { flexDirection: 'row', marginBottom: 10 },
+  aiBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(237, 178, 50, 0.16)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
+  aiBadgeText: { color: DEEP_GREEN, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
+  aiTipText: { color: DEEP_GREEN, fontSize: 14, fontStyle: 'italic', lineHeight: 20, marginBottom: 12 },
+  aiTipAction: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  aiTipActionText: { color: TEAL, fontSize: 13, fontWeight: '700' },
+
+  // Balance hero
+  balanceCard: {
+    borderRadius: 26, padding: 24, marginBottom: 26,
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 8
+  },
+  balanceLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: '600', letterSpacing: 0.4 },
+  balanceValue: { color: '#FFFFFF', fontSize: 38, fontWeight: '900', marginVertical: 8, letterSpacing: -0.5 },
+  statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' },
+  statItem: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
+  miniIconContainer: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
+  statLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
+  statValue: { fontSize: 14, fontWeight: '800', marginTop: 2 },
+  statDivider: { width: 1, height: 35, backgroundColor: 'rgba(255,255,255,0.14)', marginHorizontal: 15 },
+
+  healthContainer: { marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' },
+  healthHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  healthTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', letterSpacing: 0.4 },
+  healthStatusText: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
+  progressBarBackground: { height: 6, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 3, overflow: 'hidden' },
+  progressBarFill: { height: '100%', borderRadius: 3 },
+
+  // Section headers
+  sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  sectionTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800' },
+  pillButton: { backgroundColor: 'rgba(237, 178, 50, 0.18)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
+  pillButtonText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
+
+  // Wallet cards
+  accountsScrollRow: { gap: 16, paddingBottom: 15, paddingTop: 5, paddingHorizontal: 2 },
+  accountCard: {
+    backgroundColor: '#FFFFFF', borderRadius: 22, padding: 18, width: 155, height: 130,
+    justifyContent: 'space-between',
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
+  },
+  accountCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  accountIconBox: { width: 42, height: 42, borderRadius: 14, backgroundColor: 'rgba(28, 60, 54, 0.08)', justifyContent: 'center', alignItems: 'center' },
+  accountCardBody: { marginTop: 10 },
+  accountName: { color: SAGE, fontSize: 13, fontWeight: '600', marginBottom: 4 },
+  accountBalance: { color: DEEP_GREEN, fontSize: 19, fontWeight: '900', letterSpacing: -0.5 },
+
+  emptyAccountsCard: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#ECE7DD', borderStyle: 'dashed', gap: 12 },
+  emptyAccountsText: { color: SAGE, fontSize: 13, fontWeight: '600' },
+
+  // Recent transactions
+  recentListContainer: { paddingBottom: 10 },
+  recentFloatingCard: {
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
+    backgroundColor: '#FFFFFF', padding: 16, borderRadius: 20, marginBottom: 12,
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2
+  },
+  recentLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  recentIconBox: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+  recentInfo: { flex: 1, justifyContent: 'center' },
+  recentCategory: { color: DEEP_GREEN, fontSize: 15, fontWeight: '700', marginBottom: 3 },
+  recentNote: { color: SAGE, fontSize: 12, fontWeight: '500' },
+
+  recentRight: { alignItems: 'flex-end', justifyContent: 'center' },
+  recentAmount: { fontSize: 16, fontWeight: '800', marginBottom: 3 },
+  recentDate: { color: SAGE, fontSize: 11, fontWeight: '600' },
+
+  emptyRecentCard: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 30, alignItems: 'center', borderWidth: 1, borderColor: '#ECE7DD', borderStyle: 'dashed', gap: 12 },
+  emptyIconCircle: { width: 56, height: 56, borderRadius: 28, backgroundColor: CREAM, justifyContent: 'center', alignItems: 'center' },
+  emptyRecentText: { color: SAGE, fontSize: 14, fontWeight: '600' },
+
+  // FAB
+  fabWrapper: {
+    position: 'absolute', bottom: 25, right: 25, borderRadius: 32,
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 8
+  },
+  fab: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center' }
 });

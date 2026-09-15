@@ -100,13 +100,13 @@ export default function ReceiptScannerModal({
       setIsProcessing(true);
       const formData = new FormData();
 
-      photos.forEach((uri, index) => {
-        formData.append('files', {
-          uri,
-          name: `receipt_frame_${index + 1}.jpg`,
-          type: 'image/jpeg',
-        } as any);
-      });
+      // FIXED: Converted to async loop to fetch and append Blob instead of old URI object layout
+      for (let index = 0; index < photos.length; index++) {
+        const uri = photos[index];
+        const responseFile = await fetch(uri);
+        const blob = await responseFile.blob();
+        formData.append('files', blob, `receipt_frame_${index + 1}.jpg`);
+      }
 
       if (userId) {
         formData.append('user_id', userId);

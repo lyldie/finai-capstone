@@ -147,7 +147,7 @@ const styles = StyleSheet.create({
   scrollContent: { flexGrow: 1, justifyContent: 'center', paddingBottom: 40 },
   logoSection: { alignItems: 'center', marginBottom: 30 },
   logoCircle: { width: 120, height: 120, backgroundColor: 'white', borderRadius: 60, justifyContent: 'center', alignItems: 'center', elevation: 10, shadowColor: '#000', shadowOpacity: 0.2, shadowRadius: 10 },
-  logo: { width: 80, height: 80 },
+  logo: { width: 120, height: 120 },
   loginCard: { backgroundColor: 'white', marginHorizontal: 30, borderRadius: 45, padding: 35, alignItems: 'center', elevation: 5, shadowColor: '#000', shadowOpacity: 0.1, shadowRadius: 15 },
   helloText: { fontSize: 48, fontWeight: '900', color: '#edb232', marginBottom: 30, fontStyle: 'italic' },
   inputGroup: { width: '100%', marginBottom: 30 },

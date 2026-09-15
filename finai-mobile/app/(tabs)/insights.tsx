@@ -1,25 +1,30 @@
 import React, { useState, useMemo } from 'react';
 import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, Dimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTransactions } from '../../context/TransactionContext';
 import DepositModal from '../../components/DepositModal';
-import { BarChart } from 'react-native-gifted-charts';
+import { BarChart, PieChart } from 'react-native-gifted-charts';
 
-// --- ADDED IMPORTS PARA SA AI ADVISOR ---
 import { useAuth } from '../../context/AuthContext';
-import ChatModal from '../../components/ChatModal'; 
+import ChatModal from '../../components/ChatModal';
 
-// FINAI OFFICIAL COLOR PALETTE
-const FINAI_DEEP_GREEN = '#144A3D';
-const FINAI_SAGE = '#8A9A86';
-const FINAI_LIGHT_BG = '#F7F9F8';
+// ---- FINAI BRAND TOKENS (standardized to match transactions.tsx / index.tsx) ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#7C9A95';
+const CREAM = '#FAF7F2';
 const FINAI_CARD_BG = '#FFFFFF';
 const ALERT_YELLOW = '#F59E0B';
-const CRITICAL_RED = '#EF4444';
+const CRITICAL_RED = '#FF6259';
+const INCOME_GREEN = '#10B981';
 
-// HELPER: Currency Formatter
+// Rotating palette for category breakdown slices (kept distinct from semantic income/expense colors)
+const CATEGORY_PALETTE = [DEEP_GREEN, GOLD, TEAL, '#B5563C', '#4A7FB5', '#8B5FBF', '#5FA8A0', '#C77DA0'];
+
 const formatCurrency = (amount: number) => {
   return '₱' + Number(amount || 0).toLocaleString('en-US', {
     minimumFractionDigits: 0,
@@ -31,30 +36,29 @@ const screenWidth = Dimensions.get('window').width;
 
 export default function InsightsScreen() {
   const router = useRouter();
-  
-  // --- ADDED STATE PARA SA AI ADVISOR ---
+
   const { user } = useAuth();
   const [isChatVisible, setIsChatVisible] = useState(false);
 
   const [activeTab, setActiveTab] = useState<'Stats' | 'Budget'>('Stats');
   const [timeframe, setTimeframe] = useState<'Week' | 'Month' | 'Year'>('Month');
   const [subTab, setSubTab] = useState<'Income' | 'Expense'>('Expense');
-  
+
   const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState<any>(null);
 
   const transactionContext = useTransactions();
   const {
-    budgets = [], 
-    transactions = [], 
-    isLoading = false, 
-    categories = [], 
-    deleteBudget, 
-    goals = [], 
-    deleteGoal, 
-    accounts = [], 
+    budgets = [],
+    transactions = [],
+    isLoading = false,
+    categories = [],
+    deleteBudget,
+    goals = [],
+    deleteGoal,
+    accounts = [],
     getAccountBalance,
-    depositToGoal 
+    depositToGoal
   } = transactionContext;
 
   const periodTypeForTimeframe = { Week: 'weekly', Month: 'monthly', Year: 'annual' } as const;
@@ -64,21 +68,21 @@ export default function InsightsScreen() {
   const activeBudgets = useMemo(() => budgets.filter((budget) =>
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
   ), [budgets, todayKey]);
-  
+
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
   const stats = useMemo(() => {
     const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
     const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
     const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
-    
+
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
-    
+
     const netCashFlow = transactions.reduce((acc, t) => {
       const amount = Number(t.amount) || 0;
       if (t.type === 'Income') return acc + amount;
       if (t.type === 'Expense') return acc - amount;
-      return acc; 
+      return acc;
     }, 0);
 
     const safeGoals = goals || [];
@@ -89,17 +93,29 @@ export default function InsightsScreen() {
     return { totalBudget, totalSpent, usage, netCashFlow, totalTarget, totalSavings, overallGoalProgress };
   }, [activeBudgets, selectedPeriodType, transactions, goals]);
 
-  // 📊 DYNAMIC CHART DATA COMPUTATION (UPDATED WITH INITIALS AND LABEL FIX)
+  // Shared time-window predicate so the bar chart and the new category chart agree on what "this period" means
+  const isInSelectedWindow = (dateString: string) => {
+    const d = new Date(dateString);
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    if (timeframe === 'Year') return d.getFullYear() === currentYear;
+    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+    return d >= startOfWeek;
+  };
+
   const chartData = useMemo(() => {
     const data: any[] = [];
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
-    const barColor = subTab === 'Income' ? FINAI_DEEP_GREEN : CRITICAL_RED;
+    const barColor = subTab === 'Income' ? INCOME_GREEN : CRITICAL_RED;
 
     if (timeframe === 'Year') {
       const months = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
       const monthlyTotals = new Array(12).fill(0);
-      
+
       transactions.forEach(t => {
         if (t.type === subTab) {
           const d = new Date(t.date);
@@ -108,18 +124,19 @@ export default function InsightsScreen() {
           }
         }
       });
-      
+
       months.forEach((m, index) => {
-        data.push({ 
-          value: monthlyTotals[index], 
-          label: m, 
+        data.push({
+          value: monthlyTotals[index],
+          label: m,
           frontColor: barColor,
-          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 20 }
+          gradientColor: subTab === 'Income' ? '#5FE3B3' : '#FF9B93',
+          labelTextStyle: { color: SAGE, fontSize: 11, textAlign: 'center', width: 20 }
         });
       });
     } else if (timeframe === 'Month') {
       const weeklyTotals = new Array(5).fill(0);
-      
+
       transactions.forEach(t => {
         if (t.type === subTab) {
           const d = new Date(t.date);
@@ -129,13 +146,14 @@ export default function InsightsScreen() {
           }
         }
       });
-      
+
       ['W1', 'W2', 'W3', 'W4', 'W5'].forEach((w, index) => {
-        data.push({ 
-          value: weeklyTotals[index], 
-          label: w, 
+        data.push({
+          value: weeklyTotals[index],
+          label: w,
           frontColor: barColor,
-          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 24 }
+          gradientColor: subTab === 'Income' ? '#5FE3B3' : '#FF9B93',
+          labelTextStyle: { color: SAGE, fontSize: 11, textAlign: 'center', width: 24 }
         });
       });
     } else if (timeframe === 'Week') {
@@ -143,7 +161,7 @@ export default function InsightsScreen() {
       const dailyTotals = new Array(7).fill(0);
       const startOfWeek = new Date(today);
       startOfWeek.setDate(today.getDate() - today.getDay());
-      startOfWeek.setHours(0,0,0,0);
+      startOfWeek.setHours(0, 0, 0, 0);
 
       transactions.forEach(t => {
         if (t.type === subTab) {
@@ -153,13 +171,14 @@ export default function InsightsScreen() {
           }
         }
       });
-      
+
       days.forEach((d, index) => {
-        data.push({ 
-          value: dailyTotals[index], 
-          label: d, 
+        data.push({
+          value: dailyTotals[index],
+          label: d,
           frontColor: barColor,
-          labelTextStyle: { color: FINAI_SAGE, fontSize: 11, textAlign: 'center', width: 30 }
+          gradientColor: subTab === 'Income' ? '#5FE3B3' : '#FF9B93',
+          labelTextStyle: { color: SAGE, fontSize: 11, textAlign: 'center', width: 30 }
         });
       });
     }
@@ -169,11 +188,39 @@ export default function InsightsScreen() {
 
   const chartMaxValue = Math.max(...chartData.map(d => d.value), 100);
 
+  // NEW: Category breakdown for the selected type + timeframe (no backend changes needed —
+  // every transaction already carries `category`, this is a pure client-side aggregation).
+  const categoryChartData = useMemo(() => {
+    const totals: { [key: string]: number } = {};
+
+    transactions.forEach(t => {
+      if (t.type !== subTab) return;
+      if (!isInSelectedWindow(t.date)) return;
+      const cat = t.category || 'General';
+      totals[cat] = (totals[cat] || 0) + (Number(t.amount) || 0);
+    });
+
+    const entries = Object.entries(totals).filter(([, v]) => v > 0).sort((a, b) => b[1] - a[1]);
+    const total = entries.reduce((sum, [, v]) => sum + v, 0);
+
+    return entries.map(([category, value], index) => ({
+      value,
+      category,
+      percentage: total > 0 ? (value / total) * 100 : 0,
+      color: CATEGORY_PALETTE[index % CATEGORY_PALETTE.length],
+    }));
+  }, [transactions, timeframe, subTab]);
+
+  const categoryChartTotal = useMemo(
+    () => categoryChartData.reduce((sum, d) => sum + d.value, 0),
+    [categoryChartData]
+  );
+
   const getAlertColor = (percentage: number) => {
-    if (percentage >= 100) return CRITICAL_RED; 
-    if (percentage >= 90) return CRITICAL_RED;  
-    if (percentage >= 70) return ALERT_YELLOW;  
-    return '#10B981';                               
+    if (percentage >= 100) return CRITICAL_RED;
+    if (percentage >= 90) return CRITICAL_RED;
+    if (percentage >= 70) return ALERT_YELLOW;
+    return INCOME_GREEN;
   };
 
   const getAlertIcon = (percentage: number) => {
@@ -219,11 +266,11 @@ export default function InsightsScreen() {
       <View style={styles.tabOuterContainer}>
         <View style={styles.finaiSegmentControl}>
           <TouchableOpacity style={[styles.finaiSegmentBtn, activeTab === 'Stats' && styles.finaiSegmentActiveBtn]} onPress={() => setActiveTab('Stats')}>
-            <Ionicons name="pie-chart-outline" size={16} color={activeTab === 'Stats' ? '#FFF' : FINAI_SAGE} style={{marginRight: 6}} />
+            <Ionicons name="pie-chart-outline" size={16} color={activeTab === 'Stats' ? '#FFF' : SAGE} style={{ marginRight: 6 }} />
             <Text style={[styles.finaiSegmentText, activeTab === 'Stats' && styles.finaiSegmentActiveText]}>Analytics</Text>
           </TouchableOpacity>
           <TouchableOpacity style={[styles.finaiSegmentBtn, activeTab === 'Budget' && styles.finaiSegmentActiveBtn]} onPress={() => setActiveTab('Budget')}>
-            <Ionicons name="wallet-outline" size={16} color={activeTab === 'Budget' ? '#FFF' : FINAI_SAGE} style={{marginRight: 6}} />
+            <Ionicons name="wallet-outline" size={16} color={activeTab === 'Budget' ? '#FFF' : SAGE} style={{ marginRight: 6 }} />
             <Text style={[styles.finaiSegmentText, activeTab === 'Budget' && styles.finaiSegmentActiveText]}>Limits & Goals</Text>
           </TouchableOpacity>
         </View>
@@ -258,7 +305,7 @@ export default function InsightsScreen() {
               </View>
               <View style={styles.finaiKpiCard}>
                 <Text style={styles.kpiMetaText}>Net Cash Flow</Text>
-                <Text style={[styles.kpiMainValue, { color: stats.netCashFlow >= 0 ? FINAI_DEEP_GREEN : CRITICAL_RED }]}>
+                <Text style={[styles.kpiMainValue, { color: stats.netCashFlow >= 0 ? DEEP_GREEN : CRITICAL_RED }]}>
                   {stats.netCashFlow >= 0 ? '+' : ''}{formatCurrency(stats.netCashFlow)}
                 </Text>
                 <View style={styles.miniBadgeNeutral}><Text style={styles.badgeText}>{stats.netCashFlow >= 0 ? 'Positive' : 'Deficit'}</Text></View>
@@ -269,7 +316,7 @@ export default function InsightsScreen() {
               <View style={styles.fullCardHeader}>
                 <View>
                   <Text style={styles.kpiMetaText}>Total Savings Progress (All Goals)</Text>
-                  <Text style={[styles.kpiMainValue, { color: FINAI_DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
+                  <Text style={[styles.kpiMainValue, { color: DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
                 </View>
                 <View style={styles.fullCardRightSide}>
                   <Text style={styles.goalPercentageText}>{stats.overallGoalProgress.toFixed(0)}% Total Saved</Text>
@@ -282,10 +329,9 @@ export default function InsightsScreen() {
             <View style={styles.finaiChartCard}>
               <View style={styles.chartHeaderLayout}>
                 <Text style={styles.chartTitle}>Overview Chart</Text>
-                <Ionicons name="trending-up" size={18} color={FINAI_DEEP_GREEN} />
+                <Ionicons name="trending-up" size={18} color={DEEP_GREEN} />
               </View>
-              
-              {/* 📈 REAL BAR CHART INTEGRATION - UPDATED WIDTHS & DISABLED ANIMATION */}
+
               <View style={styles.chartVisualArea}>
                 <BarChart
                   data={chartData}
@@ -295,20 +341,62 @@ export default function InsightsScreen() {
                   hideRules
                   xAxisThickness={0}
                   yAxisThickness={0}
-                  yAxisTextStyle={{ color: FINAI_SAGE, fontSize: 10 }}
+                  yAxisTextStyle={{ color: SAGE, fontSize: 10 }}
                   noOfSections={4}
                   maxValue={chartMaxValue}
-                  isAnimated={false} 
+                  isAnimated={false}
+                  showGradient
                   initialSpacing={10}
                   width={screenWidth - 80}
                   height={150}
                 />
               </View>
             </View>
+
+            {/* NEW: Category breakdown donut */}
+            <View style={styles.finaiChartCard}>
+              <View style={styles.chartHeaderLayout}>
+                <Text style={styles.chartTitle}>{subTab} by Category ({timeframe})</Text>
+                <Ionicons name="pie-chart" size={18} color={GOLD} />
+              </View>
+
+              {categoryChartData.length === 0 ? (
+                <View style={styles.emptyCategoryState}>
+                  <Text style={styles.emptyCategoryText}>Walang {subTab.toLowerCase()} record para sa {timeframe.toLowerCase()} na ito.</Text>
+                </View>
+              ) : (
+                <View style={styles.donutRow}>
+                  <PieChart
+                    data={categoryChartData.map(d => ({ value: d.value, color: d.color }))}
+                    donut
+                    radius={68}
+                    innerRadius={44}
+                    innerCircleColor={FINAI_CARD_BG}
+                    centerLabelComponent={() => (
+                      <View style={{ alignItems: 'center' }}>
+                        <Text style={styles.donutCenterLabel}>Total</Text>
+                        <Text style={styles.donutCenterValue}>{formatCurrency(categoryChartTotal)}</Text>
+                      </View>
+                    )}
+                  />
+                  <View style={styles.legendColumn}>
+                    {categoryChartData.slice(0, 6).map((entry) => (
+                      <View key={entry.category} style={styles.legendRow}>
+                        <View style={[styles.legendDot, { backgroundColor: entry.color }]} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.legendCategory} numberOfLines={1}>{entry.category}</Text>
+                          <Text style={styles.legendAmount}>{formatCurrency(entry.value)} · {entry.percentage.toFixed(0)}%</Text>
+                        </View>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              )}
+            </View>
           </View>
         ) : (
           <View style={styles.viewContainer}>
-            <View style={styles.finaiBudgetHeroCard}>
+            <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.finaiBudgetHeroCard}>
               <View style={styles.heroHeader}>
                 <View>
                   <Text style={styles.heroMetaText}>Remaining Total Allowance</Text>
@@ -318,32 +406,32 @@ export default function InsightsScreen() {
                 </View>
                 <TouchableOpacity style={styles.finaiGearBtn}><Ionicons name="options-outline" size={16} color="#FFF" /><Text style={styles.gearBtnText}>Pool Setup</Text></TouchableOpacity>
               </View>
-              
+
               <View style={styles.progressBarWrapper}>
                 <View style={[styles.progressBarFill, { width: `${Math.min(stats.usage, 100)}%`, backgroundColor: getAlertColor(stats.usage) }]} />
               </View>
-              
+
               <View style={styles.heroFooter}>
                 <Text style={styles.heroFooterText}>Total Pool: {formatCurrency(stats.totalBudget)}</Text>
-                <Text style={[styles.alertBadgeText, { color: getAlertColor(stats.usage) }]}>
+                <Text style={[styles.alertBadgeText, { color: getAlertColor(stats.usage) === INCOME_GREEN ? '#5FE3B3' : getAlertColor(stats.usage) }]}>
                   {getAlertIcon(stats.usage)} {stats.usage.toFixed(0)}% Used
                 </Text>
               </View>
-            </View>
+            </LinearGradient>
 
             <View style={styles.sectionHeaderRow}>
               <Text style={styles.sectionLabel}>Category Spending Limits</Text>
               <TouchableOpacity style={styles.finaiAddBtn} onPress={() => router.push('/setbudget')}>
-                <Ionicons name="add-circle" size={20} color={FINAI_DEEP_GREEN} />
+                <Ionicons name="add-circle" size={20} color={DEEP_GREEN} />
                 <Text style={styles.finaiAddBtnText}>Set Limit</Text>
               </TouchableOpacity>
             </View>
 
             {isLoading ? (
-              <ActivityIndicator size="small" color={FINAI_DEEP_GREEN} style={{ marginVertical: 20 }} />
+              <ActivityIndicator size="small" color={DEEP_GREEN} style={{ marginVertical: 20 }} />
             ) : activeBudgets.length === 0 ? (
               <View style={styles.categoryBudgetCard}>
-                <Text style={{ color: FINAI_SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
+                <Text style={{ color: SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
                   Walang nakaset na budget limit paps. Pindutin ang "Set Limit" sa itaas para mag-add! 🐿️
                 </Text>
               </View>
@@ -357,8 +445,8 @@ export default function InsightsScreen() {
                 const periodLabel = `${item.period_type[0].toUpperCase()}${item.period_type.slice(1)} · ${item.period_key}`;
 
                 return (
-                  <TouchableOpacity 
-                    key={item.id || index} 
+                  <TouchableOpacity
+                    key={item.id || index}
                     style={styles.categoryBudgetCard}
                     onPress={() => router.push({
                       pathname: '/setbudget',
@@ -373,8 +461,8 @@ export default function InsightsScreen() {
                   >
                     <View style={styles.categoryMainRow}>
                       <View style={styles.categoryLeftPart}>
-                        <View style={[styles.categoryIconCircle, { backgroundColor: 'rgba(20, 74, 61, 0.08)' }]}>
-                          <Ionicons name={getCategoryIcon(categoryName)} size={18} color={FINAI_DEEP_GREEN} />
+                        <View style={[styles.categoryIconCircle, { backgroundColor: 'rgba(28, 60, 54, 0.08)' }]}>
+                          <Ionicons name={getCategoryIcon(categoryName)} size={18} color={DEEP_GREEN} />
                         </View>
                         <View style={{ marginLeft: 12 }}>
                           <Text style={styles.categoryTitle}>{categoryName}</Text>
@@ -389,27 +477,27 @@ export default function InsightsScreen() {
                       </View>
                     </View>
                     <View style={styles.catProgressBarWrapper}>
-                      <View style={[styles.catProgressBarFill, { 
-                        width: `${Math.min(percentageUsed, 100)}%`, 
-                        backgroundColor: getAlertColor(percentageUsed) 
+                      <View style={[styles.catProgressBarFill, {
+                        width: `${Math.min(percentageUsed, 100)}%`,
+                        backgroundColor: getAlertColor(percentageUsed)
                       }]} />
                     </View>
                   </TouchableOpacity>
                 );
               })
             )}
-            
+
             <View style={[styles.sectionHeaderRow, { marginTop: 12 }]}>
               <Text style={styles.sectionLabel}>Active Financial Goals</Text>
               <TouchableOpacity style={styles.finaiAddBtn} onPress={() => router.push('/create-goal')}>
-                <Ionicons name="add-circle" size={20} color={FINAI_DEEP_GREEN} />
+                <Ionicons name="add-circle" size={20} color={DEEP_GREEN} />
                 <Text style={styles.finaiAddBtnText}>Create Goal</Text>
               </TouchableOpacity>
             </View>
-            
+
             {(!goals || goals.length === 0) ? (
               <View style={styles.finaiGoalCard}>
-                <Text style={{ color: FINAI_SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
+                <Text style={{ color: SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
                   Walang nakaset na financial goals paps. Gumawa na para sa capstone! 🎯
                 </Text>
               </View>
@@ -421,9 +509,9 @@ export default function InsightsScreen() {
                 const presetName = resolvePresetName(goal);
 
                 return (
-                  <TouchableOpacity 
-                    key={goal.id || index} 
-                    style={[styles.finaiGoalCard, { marginBottom: 12 }]} 
+                  <TouchableOpacity
+                    key={goal.id || index}
+                    style={[styles.finaiGoalCard, { marginBottom: 12 }]}
                     activeOpacity={0.8}
                     onPress={() => {
                       setSelectedGoal(goal);
@@ -432,8 +520,8 @@ export default function InsightsScreen() {
                   >
                     <View style={styles.goalMainLayout}>
                       <View style={styles.goalLeftColumn}>
-                        <View style={styles.targetIconCircle}><Text style={{fontSize: 18}}>🎯</Text></View>
-                        <View style={{marginLeft: 10}}>
+                        <View style={styles.targetIconCircle}><Text style={{ fontSize: 18 }}>🎯</Text></View>
+                        <View style={{ marginLeft: 10 }}>
                           <Text style={styles.finaiGoalTitle}>{goal.target_name}</Text>
                           {presetName ? (
                             <View style={styles.presetBadge}>
@@ -445,35 +533,35 @@ export default function InsightsScreen() {
                       </View>
 
                       <View style={styles.goalActionsRow}>
-                        <TouchableOpacity 
+                        <TouchableOpacity
                           style={styles.actionIconButton}
                           onPress={() => router.push({
                             pathname: '/create-goal',
-                            params: { 
-                              id: goal.id, 
-                              target_name: goal.target_name, 
-                              target_amount: goal.target_amount, 
-                              target_date: goal.target_date, 
+                            params: {
+                              id: goal.id,
+                              target_name: goal.target_name,
+                              target_amount: goal.target_amount,
+                              target_date: goal.target_date,
                               current_savings: goal.current_savings,
                               goal_type_id: (goal as any).goal_type_id || (goal as any).preset_id || (goal as any).goal_type,
                             }
                           })}
                         >
-                          <Ionicons name="pencil" size={14} color={FINAI_DEEP_GREEN} />
+                          <Ionicons name="pencil" size={14} color={DEEP_GREEN} />
                         </TouchableOpacity>
 
-                        <TouchableOpacity 
-                          style={[styles.actionIconButton, { backgroundColor: '#FEE2E2', marginLeft: 6 }]}
+                        <TouchableOpacity
+                          style={[styles.actionIconButton, { backgroundColor: 'rgba(255, 98, 89, 0.14)', marginLeft: 6 }]}
                           onPress={() => {
                             Alert.alert(
                               "Burahin ang Goal?",
                               `Sigurado ka bang buburahin ang target na "${goal.target_name}"?`,
                               [
                                 { text: "Cancel", style: "cancel" },
-                                { 
-                                  text: "Delete", 
-                                  style: "destructive", 
-                                  onPress: () => deleteGoal ? deleteGoal(goal.id) : null 
+                                {
+                                  text: "Delete",
+                                  style: "destructive",
+                                  onPress: () => deleteGoal ? deleteGoal(goal.id) : null
                                 }
                               ]
                             );
@@ -502,135 +590,149 @@ export default function InsightsScreen() {
         )}
       </ScrollView>
 
-      {/* --- FINAI AI ADVISOR COMPONENTS --- */}
-      <TouchableOpacity 
-        style={styles.fabChat} 
+      <TouchableOpacity
+        style={styles.fabChatWrapper}
         onPress={() => setIsChatVisible(true)}
-        activeOpacity={0.8}
+        activeOpacity={0.85}
       >
-        <Ionicons name="sparkles" size={24} color="#FFF" />
+        <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.fabChat}>
+          <Ionicons name="sparkles" size={24} color="#FFF" />
+        </LinearGradient>
       </TouchableOpacity>
 
-      <ChatModal 
-        visible={isChatVisible} 
-        onClose={() => setIsChatVisible(false)} 
-        userId={user?.id || "6a1fd7e66f7a166fc7f29d74"} // Testing fallback
+      <ChatModal
+        visible={isChatVisible}
+        onClose={() => setIsChatVisible(false)}
+        userId={user?.id || "6a1fd7e66f7a166fc7f29d74"}
       />
 
-      <DepositModal 
-        visible={isDepositModalVisible} 
-        onClose={() => setIsDepositModalVisible(false)} 
+      <DepositModal
+        visible={isDepositModalVisible}
+        onClose={() => setIsDepositModalVisible(false)}
         selectedGoal={selectedGoal}
         accounts={accounts || []}
         getAccountBalance={getAccountBalance}
         depositToGoal={depositToGoal}
       />
-      
+
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: FINAI_LIGHT_BG },
+  container: { flex: 1, backgroundColor: CREAM },
   headerContainer: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 6 },
-  headerTitle: { fontSize: 22, fontWeight: '800', color: FINAI_DEEP_GREEN },
-  headerSubtitle: { fontSize: 12, color: FINAI_SAGE, marginTop: 2 },
+  headerTitle: { fontSize: 22, fontWeight: '800', color: DEEP_GREEN },
+  headerSubtitle: { fontSize: 12, color: SAGE, marginTop: 2 },
   tabOuterContainer: { paddingHorizontal: 20, marginVertical: 12 },
-  finaiSegmentControl: { flexDirection: 'row', backgroundColor: '#E6ECE9', borderRadius: 12, padding: 4 },
+  finaiSegmentControl: { flexDirection: 'row', backgroundColor: '#ECE7DD', borderRadius: 12, padding: 4 },
   finaiSegmentBtn: { flex: 1, flexDirection: 'row', paddingVertical: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 10 },
-  finaiSegmentActiveBtn: { backgroundColor: FINAI_DEEP_GREEN, elevation: 3, shadowColor: FINAI_DEEP_GREEN, shadowOpacity: 0.15, shadowRadius: 4 },
-  finaiSegmentText: { fontSize: 13, fontWeight: '600', color: FINAI_SAGE },
+  finaiSegmentActiveBtn: { backgroundColor: DEEP_GREEN, elevation: 3, shadowColor: DEEP_GREEN, shadowOpacity: 0.15, shadowRadius: 4 },
+  finaiSegmentText: { fontSize: 13, fontWeight: '600', color: SAGE },
   finaiSegmentActiveText: { color: '#FFFFFF', fontWeight: '700' },
-  
-  // Adjusted scroll padding para di matakpan ng floating button yung babang content
-  scrollContent: { paddingBottom: 80 }, 
-  
+
+  scrollContent: { paddingBottom: 80 },
+
   viewContainer: { paddingHorizontal: 20 },
   timeframeRow: { flexDirection: 'row', justifyContent: 'center', marginBottom: 16 },
-  timeframePill: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#E2EAF4', marginHorizontal: 4, backgroundColor: '#FFF' },
-  timeframePillActive: { backgroundColor: '#E6ECE9', borderColor: FINAI_DEEP_GREEN },
-  timeframePillText: { fontSize: 12, color: FINAI_SAGE, fontWeight: '600' },
-  timeframePillTextActive: { color: FINAI_DEEP_GREEN, fontWeight: '700' },
-  incExpToggleContainer: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 12, padding: 4, borderWidth: 1, borderColor: '#E2EAF4', marginBottom: 20 },
+  timeframePill: { paddingHorizontal: 16, paddingVertical: 6, borderRadius: 20, borderWidth: 1, borderColor: '#ECE7DD', marginHorizontal: 4, backgroundColor: '#FFF' },
+  timeframePillActive: { backgroundColor: 'rgba(237, 178, 50, 0.18)', borderColor: GOLD },
+  timeframePillText: { fontSize: 12, color: SAGE, fontWeight: '600' },
+  timeframePillTextActive: { color: DEEP_GREEN, fontWeight: '700' },
+  incExpToggleContainer: { flexDirection: 'row', backgroundColor: '#FFF', borderRadius: 12, padding: 4, borderWidth: 1, borderColor: '#ECE7DD', marginBottom: 20 },
   incExpBtn: { flex: 1, paddingVertical: 8, alignItems: 'center', borderRadius: 8 },
-  incomeActiveBtn: { backgroundColor: 'rgba(16, 185, 129, 0.1)' },
-  expenseActiveBtn: { backgroundColor: 'rgba(239, 68, 68, 0.1)' },
-  incExpText: { fontSize: 13, fontWeight: '600', color: FINAI_SAGE },
-  incExpTextActive: { color: FINAI_DEEP_GREEN, fontWeight: '700' },
-  sectionLabel: { fontSize: 14, fontWeight: '700', color: FINAI_DEEP_GREEN, marginBottom: 12 },
+  incomeActiveBtn: { backgroundColor: 'rgba(16, 185, 129, 0.12)' },
+  expenseActiveBtn: { backgroundColor: 'rgba(255, 98, 89, 0.12)' },
+  incExpText: { fontSize: 13, fontWeight: '600', color: SAGE },
+  incExpTextActive: { color: DEEP_GREEN, fontWeight: '700' },
+  sectionLabel: { fontSize: 14, fontWeight: '700', color: DEEP_GREEN, marginBottom: 12 },
   kpiGridRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
-  finaiKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '48%', borderWidth: 1, borderColor: '#EBF0EE', elevation: 2, shadowColor: '#000', shadowOpacity: 0.02, shadowRadius: 5 },
-  finaiFullKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '100%', borderWidth: 1, borderColor: '#EBF0EE', elevation: 2, shadowColor: '#000', shadowOpacity: 0.02, shadowRadius: 5, marginBottom: 16 },
+  finaiKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '48%', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  finaiFullKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '100%', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2, marginBottom: 16 },
   fullCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   fullCardRightSide: { alignItems: 'flex-end' },
-  miniGoalTarget: { fontSize: 11, color: FINAI_SAGE, marginTop: 2 },
-  kpiMetaText: { fontSize: 11, color: FINAI_SAGE, fontWeight: '600' },
+  miniGoalTarget: { fontSize: 11, color: SAGE, marginTop: 2 },
+  kpiMetaText: { fontSize: 11, color: SAGE, fontWeight: '600' },
   kpiMainValue: { fontSize: 18, fontWeight: '800', marginVertical: 4 },
-  miniBadgeSuccess: { backgroundColor: 'rgba(16, 185, 129, 0.1)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  miniBadgeNeutral: { backgroundColor: 'rgba(20, 74, 61, 0.1)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
-  badgeText: { fontSize: 10, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  finaiChartCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 20, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', marginTop: 8 },
+  miniBadgeSuccess: { backgroundColor: 'rgba(16, 185, 129, 0.12)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  miniBadgeNeutral: { backgroundColor: 'rgba(237, 178, 50, 0.16)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  badgeText: { fontSize: 10, fontWeight: '700', color: DEEP_GREEN },
+  finaiChartCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 20, padding: 16, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2, marginTop: 8, marginBottom: 16 },
   chartHeaderLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  chartTitle: { fontSize: 14, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  chartVisualArea: { height: 180, justifyContent: 'center', alignItems: 'center', backgroundColor: '#FAFBFB', borderRadius: 12, paddingVertical: 16 },
-  finaiBudgetHeroCard: { backgroundColor: FINAI_DEEP_GREEN, borderRadius: 20, padding: 20, elevation: 4, shadowColor: FINAI_DEEP_GREEN, shadowOpacity: 0.2, shadowRadius: 8, marginBottom: 24 },
+  chartTitle: { fontSize: 14, fontWeight: '700', color: DEEP_GREEN },
+  chartVisualArea: { height: 180, justifyContent: 'center', alignItems: 'center', backgroundColor: CREAM, borderRadius: 12, paddingVertical: 16 },
+
+  // Donut / category breakdown
+  donutRow: { flexDirection: 'row', alignItems: 'center', gap: 16 },
+  legendColumn: { flex: 1, gap: 10 },
+  legendRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  legendDot: { width: 9, height: 9, borderRadius: 4.5 },
+  legendCategory: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
+  legendAmount: { color: SAGE, fontSize: 11, fontWeight: '500', marginTop: 1 },
+  donutCenterLabel: { color: SAGE, fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  donutCenterValue: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800', marginTop: 2 },
+  emptyCategoryState: { paddingVertical: 30, alignItems: 'center' },
+  emptyCategoryText: { color: SAGE, fontSize: 13, fontWeight: '500', textAlign: 'center' },
+
+  finaiBudgetHeroCard: { borderRadius: 20, padding: 20, elevation: 4, shadowColor: DEEP_GREEN, shadowOpacity: 0.2, shadowRadius: 10, marginBottom: 24 },
   heroHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  heroMetaText: { fontSize: 12, color: '#A9BDB7', fontWeight: '600' },
+  heroMetaText: { fontSize: 12, color: 'rgba(255,255,255,0.65)', fontWeight: '600' },
   heroAmountValue: { fontSize: 26, fontWeight: '800', color: '#FFFFFF', marginTop: 2 },
   finaiGearBtn: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.15)', paddingHorizontal: 10, paddingVertical: 6, borderRadius: 8 },
   gearBtnText: { fontSize: 11, color: '#FFF', fontWeight: '700', marginLeft: 4 },
   progressBarWrapper: { height: 10, backgroundColor: 'rgba(255,255,255,0.2)', borderRadius: 5, overflow: 'hidden', marginVertical: 16 },
   progressBarFill: { height: '100%', borderRadius: 5 },
   heroFooter: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 4 },
-  heroFooterText: { fontSize: 11, color: '#A9BDB7', fontWeight: '500' },
+  heroFooterText: { fontSize: 11, color: 'rgba(255,255,255,0.65)', fontWeight: '500' },
   alertBadgeText: { fontSize: 11, fontWeight: '700' },
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
   finaiAddBtn: { flexDirection: 'row', alignItems: 'center' },
-  finaiAddBtnText: { fontSize: 12, fontWeight: '700', color: FINAI_DEEP_GREEN, marginLeft: 4 },
-  categoryBudgetCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: '#EBF0EE', marginBottom: 12 },
+  finaiAddBtnText: { fontSize: 12, fontWeight: '700', color: DEEP_GREEN, marginLeft: 4 },
+  categoryBudgetCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1, marginBottom: 12 },
   categoryMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   categoryLeftPart: { flexDirection: 'row', alignItems: 'center' },
   categoryIconCircle: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-  categoryTitle: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  categoryPeriodText: { fontSize: 10, color: FINAI_SAGE, marginTop: 1 },
+  categoryTitle: { fontSize: 13, fontWeight: '700', color: DEEP_GREEN },
+  categoryPeriodText: { fontSize: 10, color: SAGE, marginTop: 1 },
   categoryRightPart: { alignItems: 'flex-end' },
-  categoryUsageStats: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN },
+  categoryUsageStats: { fontSize: 13, fontWeight: '700', color: DEEP_GREEN },
   categoryRemainingText: { fontSize: 11, color: '#10B981', fontWeight: '600', marginTop: 1 },
-  catProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
+  catProgressBarWrapper: { height: 6, backgroundColor: '#ECE7DD', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
   catProgressBarFill: { height: '100%', borderRadius: 3 },
-  finaiGoalCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, borderWidth: 1, borderColor: '#EBF0EE', flexDirection: 'column' },
+  finaiGoalCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1, flexDirection: 'column' },
   goalMainLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
   goalLeftColumn: { flexDirection: 'row', alignItems: 'center', flex: 1 },
-  targetIconCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#F0F4F2', justifyContent: 'center', alignItems: 'center' },
-  finaiGoalTitle: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN },
-  finaiGoalDate: { fontSize: 10, color: FINAI_SAGE, marginTop: 2 },
-  presetBadge: { backgroundColor: '#EAF5F0', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginVertical: 3 },
-  presetBadgeText: { fontSize: 10, fontWeight: '700', color: FINAI_DEEP_GREEN },
+  targetIconCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(237, 178, 50, 0.16)', justifyContent: 'center', alignItems: 'center' },
+  finaiGoalTitle: { fontSize: 13, fontWeight: '700', color: DEEP_GREEN },
+  finaiGoalDate: { fontSize: 10, color: SAGE, marginTop: 2 },
+  presetBadge: { backgroundColor: 'rgba(61, 125, 108, 0.12)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginVertical: 3 },
+  presetBadgeText: { fontSize: 10, fontWeight: '700', color: DEEP_GREEN },
   goalActionsRow: { flexDirection: 'row', alignItems: 'center' },
-  actionIconButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(20, 74, 61, 0.08)', justifyContent: 'center', alignItems: 'center' },
+  actionIconButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(28, 60, 54, 0.08)', justifyContent: 'center', alignItems: 'center' },
   goalProgressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  goalProgressStats: { fontSize: 12, fontWeight: '700', color: FINAI_DEEP_GREEN },
+  goalProgressStats: { fontSize: 12, fontWeight: '700', color: DEEP_GREEN },
   goalPercentageText: { fontSize: 11, color: '#10B981', fontWeight: '600' },
-  goalProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 8, width: '100%' },
+  goalProgressBarWrapper: { height: 6, backgroundColor: '#ECE7DD', borderRadius: 3, overflow: 'hidden', marginTop: 8, width: '100%' },
   goalProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
-  analyticsProgressBarWrapper: { height: 6, backgroundColor: '#E6ECE9', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
+  analyticsProgressBarWrapper: { height: 6, backgroundColor: '#ECE7DD', borderRadius: 3, overflow: 'hidden', marginTop: 10, width: '100%' },
   analyticsProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },
 
-  // --- ADDED STYLE PARA SA AI ADVISOR FLOATING BUTTON ---
-  fabChat: {
+  fabChatWrapper: {
     position: 'absolute',
     bottom: 24,
     right: 24,
-    backgroundColor: FINAI_DEEP_GREEN,
+    borderRadius: 30,
+    elevation: 6,
+    shadowColor: DEEP_GREEN,
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 }
+  },
+  fabChat: {
     width: 60,
     height: 60,
     borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 6,
-    shadowColor: FINAI_DEEP_GREEN,
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    shadowOffset: { width: 0, height: 4 }
   },
 });

@@ -191,14 +191,24 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const updateBudget = async (id: string, amount: number) => {
     try {
-      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount }) });
+      // FIX: the backend now requires and verifies user_id (ownership check on
+      // PUT /api/budgets/update/{id}) so only the budget's owner can edit it.
+      // Without sending this, every update request would now be rejected.
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount, user_id: userId }) });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to update budget.");
     } catch (e) { console.error(e); }
   };
 
   const deleteBudget = async (id: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/budgets/delete/${id}`, { method: 'DELETE' });
+      // FIX: the backend now requires and verifies user_id (ownership check on
+      // DELETE /api/budgets/delete/{id}) so only the budget's owner can delete it.
+      // Sent as a query param since DELETE requests here carry no body.
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete budget.");
     } catch (e) { console.error(e); }
   };

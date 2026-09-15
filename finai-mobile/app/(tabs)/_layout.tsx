@@ -51,9 +51,20 @@ export default function TabLayout() {
           }} 
         />
 
-        {/* 2. FINAI INSIGHTS MODULE */}
+        {/* 2. TRANSACTIONS MODULE (HISTORY) */}
         <Tabs.Screen 
-          name="insights" // Hahanapin nito si app/(tabs)/insights.tsx
+          name="transactions" 
+          options={{ 
+            title: 'Transactions', 
+            tabBarIcon: ({ color, focused }) => (
+              <TabBarIcon name={focused ? "receipt" : "receipt-outline"} color={focused ? PREMIUM_GOLD : MATTE_SAGE_INACTIVE} />
+            ), 
+          }} 
+        />
+
+        {/* 3. FINAI INSIGHTS MODULE */}
+        <Tabs.Screen 
+          name="insights" 
           options={{ 
             title: 'Insights', 
             tabBarIcon: ({ color, focused }) => (
@@ -66,7 +77,7 @@ export default function TabLayout() {
         <Tabs.Screen 
           name="two"
           options={{
-            href: null, // Magic line para mawala yung 'two' sa bottom bar navigation!
+            href: null, 
           }}
         />
         <Tabs.Screen
