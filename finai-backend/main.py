@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form
 from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
@@ -138,6 +139,13 @@ MERCHANT_BLACKLIST_TOKENS = [
     "salamat", "date", "time", "qty", "particulars", "articles"
 ]
 
+# FIX: FinAI is a Philippines-only app. datetime.now() reflects whatever timezone the
+# SERVER's operating system is configured with -- almost always UTC on a cloud host, which
+# is 8 hours behind Philippine time. Explicitly computing PH time here means date logic
+# (e.g. "is this receipt date in the future") is correct regardless of server deployment,
+# instead of only working by accident on a machine whose clock happens to be set to PH time.
+PH_TZ = ZoneInfo("Asia/Manila")
+
 MONTH_NAME_MAP = {
     "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
     "apr": 4, "april": 4, "may": 5, "jun": 6, "june": 6, "jul": 7, "july": 7,
@@ -260,7 +268,7 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int, today: O
         return None
 
     # Rule 2: prefer the non-future interpretation when ambiguous.
-    reference = today or datetime.now()
+    reference = today or datetime.now(PH_TZ)
     non_future = [c for c in valid_candidates if c[3].date() <= reference.date()]
     if non_future:
         year, month, day, _ = non_future[0]
@@ -279,8 +287,8 @@ def sanitize_and_parse_date(extracted_texts: List[str], allow_missing_year: bool
     month_name_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2}),?\s+(\d{2,4})\b"
     month_day_without_year_pattern = r"\b(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{1,2})\b"
     month_day_year_pattern = r"\b(\d{1,2})\s+(" + "|".join(MONTH_NAME_MAP.keys()) + r")\.?\s+(\d{2,4})\b"
-    current_year = datetime.now().year
-    today = datetime.now()
+    today = datetime.now(PH_TZ)
+    current_year = today.year
 
     search_pool = [text.strip() for text in extracted_texts if text and text.strip()]
     search_pool.append(" ".join(search_pool))
@@ -967,6 +975,20 @@ def validate_transaction_for_storage(transaction: TransactionSchema):
     else:
         transaction.to_account = None
 
+    # FIX: Kung walang naipasang petsa (halimbawa, offline error o manual trigger), 
+    # automatic na ipasok ang Philippine Time ngayong araw.
+    if not transaction.date:
+        transaction.date = datetime.now(PH_TZ).strftime("%Y-%m-%d")
+
+    # FIX: Check kung future date gamit ang PH_TZ
+    if transaction.date:
+        try:
+            parsed_date = datetime.strptime(transaction.date, "%Y-%m-%d").date()
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid date format. Use YYYY-MM-DD.")
+        if parsed_date > datetime.now(PH_TZ).date():
+            raise HTTPException(status_code=422, detail="Transaction date cannot be in the future.")
+
 
 def send_otp_email(target_email: str, otp_code: str):
     try:
@@ -1001,7 +1023,7 @@ async def register(user: UserSignup):
             "name": user.name.strip(),
             "password": hashed_password,
             "otp": otp_code,
-            "timestamp": datetime.utcnow()
+            "timestamp": get_ph_time()
         }
         return {"status": "Success", "message": "OTP sent successfully!"}
     raise HTTPException(status_code=500, detail="Failed to send OTP email.")
@@ -1017,7 +1039,7 @@ async def verify_otp(data: dict):
         raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
 
     stored_data = otp_storage[clean_email]
-    if datetime.utcnow() - stored_data["timestamp"] > timedelta(minutes=10):
+    if get_ph_time() - stored_data["timestamp"] > timedelta(minutes=10):
         del otp_storage[clean_email]
         raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
 
@@ -1028,7 +1050,7 @@ async def verify_otp(data: dict):
             "password": stored_data["password"],
             "role": "user",
             "onboarding_completed": False,
-            "created_at": datetime.utcnow()
+            "created_at": get_ph_time()
         }
         result = await db.users.insert_one(new_user)
         del otp_storage[clean_email]
@@ -1191,7 +1213,7 @@ async def add_goal_contribution(transaction: TransactionSchema):
         raise HTTPException(status_code=400, detail="Kailangan ng Goal ID para makapag-hulog paps!")
 
     transaction_dict = transaction.dict()
-    transaction_dict["created_at"] = datetime.utcnow()
+    transaction_dict["created_at"] = get_ph_time()
     transaction_dict["goal_id"] = str(transaction.goal_id)
 
     # 1. Hanapin ang goal at dagdagan agad ang current_savings nito
@@ -1213,7 +1235,7 @@ async def add_goal_contribution(transaction: TransactionSchema):
 async def add_expense(transaction: TransactionSchema, background_tasks: BackgroundTasks):
     validate_transaction_for_storage(transaction)
     transaction_dict = transaction.dict()
-    transaction_dict["created_at"] = datetime.utcnow()
+    transaction_dict["created_at"] = get_ph_time()
 
     if transaction_dict.get("goal_id"):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
@@ -1263,6 +1285,11 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
     if not old_txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
 
+    # FIX: verify ownership before allowing the update. Previously any expense_id could
+    # be edited regardless of who submitted the request -- same gap fixed for budgets.
+    if str(old_txn.get("user_id", "")) != str(transaction.user_id):
+        raise HTTPException(status_code=403, detail="You don't have permission to edit this transaction.")
+
     old_goal = old_txn.get("goal_id")
     new_goal = transaction.goal_id
     old_amount = float(old_txn.get("amount", 0))
@@ -1289,7 +1316,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
     # 3. I-save yung bagong transaction data
     result = await db.expenses.update_one(
         {"_id": ObjectId(expense_id)},
-        {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
+        {"$set": {**transaction.dict(), "updated_at": get_ph_time()}}
     )
 
     if result.matched_count == 1:
@@ -1309,7 +1336,7 @@ async def get_expenses(user_id: str):
 
 
 @app.delete("/delete-expense/{expense_id}")
-async def delete_expense(expense_id: str):
+async def delete_expense(expense_id: str, user_id: str):
     try:
         exp_oid = ObjectId(expense_id)
     except Exception:
@@ -1318,6 +1345,12 @@ async def delete_expense(expense_id: str):
     expense = await db.expenses.find_one({"_id": exp_oid})
     if not expense:
         raise HTTPException(status_code=404, detail="Transaction not found")
+
+    # FIX: verify ownership before allowing the delete. Previously this endpoint took
+    # no user_id at all -- any expense_id could be deleted by anyone. Same gap fixed
+    # for delete_budget.
+    if str(expense.get("user_id", "")) != str(user_id):
+        raise HTTPException(status_code=403, detail="You don't have permission to delete this transaction.")
 
     # Bawiin ang pera sa goal savings kung naka-link ito
     goal_id = expense.get("goal_id")
@@ -1349,7 +1382,7 @@ async def initial_setup(data: InitialSetupSchema):
         "user_id": data.user_id,
         **data.dict(exclude={"pin", "user_id", "monthly_income"}),
         "current_savings": 0.0,
-        "created_at": datetime.utcnow()
+        "created_at": get_ph_time()
     })
     return {"status": "Success"}
 

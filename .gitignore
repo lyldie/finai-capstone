@@ -20,3 +20,9 @@ node_modules/
 Thumbs.db
 
 .tmp_video_review/
+
+__pycache__/
+*.pyc
+.pytest_cache/
+finai-backend/.pytest_cache/
+finai-backend/**/__pycache__/

@@ -48,6 +48,13 @@ type TransactionContextType = {
 
 const TransactionContext = createContext<TransactionContextType | undefined>(undefined);
 
+// HELPER: Philippine Time (UTC+8) para consistent sa mobile at backend
+const getPhDateString = () => {
+  const d = new Date();
+  d.setHours(d.getHours() + 8);
+  return d.toISOString().split('T')[0];
+};
+
 export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
@@ -67,21 +74,32 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         return; 
       }
 
+      // 1. OFFLINE MODE: I-load muna ang local cache bago mag-fetch sa server
+      const cachedTrans = await AsyncStorage.getItem('@offline_transactions');
+      const cachedBudgets = await AsyncStorage.getItem('@offline_budgets');
+      const cachedAccounts = await AsyncStorage.getItem('@offline_accounts');
+      
+      if (cachedTrans) setTransactions(JSON.parse(cachedTrans));
+      if (cachedBudgets) setBudgets(JSON.parse(cachedBudgets));
+      if (cachedAccounts) setAccounts(JSON.parse(cachedAccounts));
+
+      // 2. BACKGROUND SYNC: Subukan kunin ang latest sa server nang may safe fallbacks
       const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
-        fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.json()),
-        fetch(`${API_URL}/api/categories/?user_id=${userId}`).then(res => res.json()), 
-        fetch(`${API_URL}/api/accounts/user/${userId}`).then(res => res.json()),
-        fetch(`${API_URL}/api/budgets/get-all/${userId}`).then(res => res.json()),
-        fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : []),
-        fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : [])
+        fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.ok ? res.json() : { status: "Error", data: [] }).catch(() => ({ status: "Error", data: [] })),
+        fetch(`${API_URL}/api/categories/?user_id=${userId}`).then(res => res.ok ? res.json() : []).catch(() => []), 
+        fetch(`${API_URL}/api/accounts/user/${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/budgets/get-all/${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : []).catch(() => [])
       ]);
 
       const parsedAccounts = Array.isArray(accRes) ? accRes : (accRes.data || []);
       const formattedAccounts = parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id }));
       setAccounts(formattedAccounts);
+      await AsyncStorage.setItem('@offline_accounts', JSON.stringify(formattedAccounts)); // Cache
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
-        setTransactions(transRes.data.map((i: any) => ({
+        const formattedTrans = transRes.data.map((i: any) => ({
           id: i._id || i.id, 
           amount: i.amount?.toString() || '0', 
           category: i.category || 'General',
@@ -89,12 +107,16 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           type: i.type || 'Expense',
           account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
           to_account: i.to_account || '', 
-          date: i.date ? i.date.split('T')[0] : new Date().toISOString().split('T')[0]
-        })));
+          date: i.date ? i.date.split('T')[0] : getPhDateString() // Ginamit ang PH time helper
+        }));
+        setTransactions(formattedTrans);
+        await AsyncStorage.setItem('@offline_transactions', JSON.stringify(formattedTrans)); // Cache
       }
       
       const parsedBudgets = Array.isArray(budRes) ? budRes : (budRes.data || []);
-      setBudgets(parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id })));
+      const formattedBudgets = parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id }));
+      setBudgets(formattedBudgets);
+      await AsyncStorage.setItem('@offline_budgets', JSON.stringify(formattedBudgets)); // Cache
       
       const parsedCategories = Array.isArray(catRes) ? catRes : (catRes.data || []);
       setCategories(parsedCategories.map((c: any) => ({ ...c, id: c._id || c.id })));
@@ -106,7 +128,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
       
     } catch (e) { 
-      console.error("Fetch Error:", e); 
+      // Kahit mag-error, may makikita pa ring data ang user dahil sa cache
+      console.log("Offline mode active or network error:", e); 
     } finally { 
       if (showLoading) setIsLoading(false); 
     }
@@ -134,42 +157,60 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [accounts, transactions]);
 
   const addTransaction = async (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
-    const userId = await AsyncStorage.getItem('user_id');
-    if (!userId) return;
-    const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || new Date().toISOString().split('T')[0] };
-    const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (res.ok) {
-      const result = await res.json();
-      await fetchTransactions(false); // Silent refresh
-      if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+    try {
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) return;
+      
+      const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
+      
+      const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      
+      if (res.ok) {
+        const result = await res.json();
+        await fetchTransactions(false); // Silent refresh
+        if (Array.isArray(result.notifications) && result.notifications.length) {
+          Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+        }
+      } else {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.detail || 'Save failed.');
       }
-    } else {
-      const error = await res.json().catch(() => ({}));
-      throw new Error(error.detail || 'Save failed.');
+    } catch (e: any) {
+      Alert.alert("Network Error", e.message || "Failed to add transaction. You might be offline.");
     }
   };
 
   const updateTransaction = async (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
-    const userId = await AsyncStorage.getItem('user_id');
-    if (!userId) return;
-    const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || new Date().toISOString().split('T')[0] };
-    const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-    if (res.ok) {
-      const result = await res.json();
-      await fetchTransactions(false); // Silent refresh
-      if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+    try {
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) return;
+      
+      const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
+      
+      const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      if (res.ok) {
+        const result = await res.json();
+        await fetchTransactions(false); // Silent refresh
+        if (Array.isArray(result.notifications) && result.notifications.length) {
+          Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
+        }
+      } else {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.detail || 'Update failed.');
       }
-    } else {
-      const error = await res.json().catch(() => ({}));
-      throw new Error(error.detail || 'Update failed.');
+    } catch (e: any) {
+      Alert.alert("Network Error", e.message || "Failed to update transaction. You might be offline.");
     }
   };
 
   const deleteTransaction = async (id: string) => {
     try {
-      const res = await fetch(`${API_URL}/delete-expense/${id}`, { method: 'DELETE' });
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      
+      // FIX: user_id is now passed in the URL to match backend requirements
+      const res = await fetch(`${API_URL}/delete-expense/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      
       if (res.ok) {
         await fetchTransactions(false); // Silent refresh
       } else {
@@ -191,9 +232,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const updateBudget = async (id: string, amount: number) => {
     try {
-      // FIX: the backend now requires and verifies user_id (ownership check on
-      // PUT /api/budgets/update/{id}) so only the budget's owner can edit it.
-      // Without sending this, every update request would now be rejected.
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount, user_id: userId }) });
@@ -203,9 +241,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const deleteBudget = async (id: string) => {
     try {
-      // FIX: the backend now requires and verifies user_id (ownership check on
-      // DELETE /api/budgets/delete/{id}) so only the budget's owner can delete it.
-      // Sent as a query param since DELETE requests here carry no body.
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
@@ -262,10 +297,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  // --- 🚨 INAYOS NA GOAL DEPOSITS LOGIC & ENDPOINT ---
   const depositToGoal = async (goalId: string, amount: number, account: string): Promise<boolean> => {
     try {
-      // 1. SMART BALANCE CHECKER: Si-sinilip muna kung kasya ang pera sa napiling account
       const currentBalance = getAccountBalance(account);
       if (amount > currentBalance) {
         Alert.alert(
@@ -275,7 +308,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         return false;
       }
 
-      // 2. TUGMA SA ROUTERS/GOALS.PY PATCH ENDPOINT
       const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
@@ -302,7 +334,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   
-  // --- BALANCE COMPUTATION ---
   const balance = useMemo(() => {
     const accountNames = [...new Set(accounts.map((account) => account.name))];
     

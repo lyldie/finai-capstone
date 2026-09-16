@@ -55,7 +55,12 @@ export default function TabTwoScreen() {
 
   const displayedCategories = categories.filter((c: any) => c.type === type.toLowerCase());
 
-  const resetForm = () => {
+  // FIX: wrapped in useCallback with [accounts] as a dependency. Previously this was a
+  // plain function closing over `accounts`, and the useFocusEffect below only depended
+  // on params?.id -- so if `accounts` finished loading asynchronously AFTER this closure
+  // was first captured, resetForm could keep resetting to an empty/stale account list on
+  // every refocus, silently blanking the account field on a fresh "New Transaction".
+  const resetForm = useCallback(() => {
     setAmount('');
     setNote('');
     setCategory('Select Category');
@@ -63,7 +68,7 @@ export default function TabTwoScreen() {
     setToAccount(accounts.find((item) => item.name !== accounts[0]?.name)?.name || '');
     setDate(formatLocalDate(new Date()));
     setType('Expense');
-  };
+  }, [accounts]);
 
   useEffect(() => {
     AsyncStorage.getItem('user_id').then((id) => setScannerUserId(id || undefined));
@@ -103,7 +108,7 @@ export default function TabTwoScreen() {
       if (!params || !params.id) {
         resetForm();
       }
-    }, [params?.id]) 
+    }, [params?.id, resetForm])
   );
 
   const getActiveColor = () => {
@@ -209,15 +214,18 @@ export default function TabTwoScreen() {
         <ScrollView style={styles.form} showsVerticalScrollIndicator={false}>
           <View style={styles.amountSection}>
             <Text style={styles.currencyLabel}>PHP</Text>
-            <TextInput 
-              style={[styles.amountInput, { color: getActiveColor() }]} 
-              placeholder="0.00" 
-              placeholderTextColor="#A2B5B0" 
-              keyboardType="decimal-pad" 
-              autoFocus={!params?.id} 
-              value={amount} 
-              onChangeText={handleAmountChange} 
-            />
+            <View style={styles.amountInputRow}>
+              <Text style={[styles.pesoSign, { color: getActiveColor() }]}>₱</Text>
+              <TextInput 
+                style={[styles.amountInput, { color: getActiveColor() }]} 
+                placeholder="0.00" 
+                placeholderTextColor="#A2B5B0" 
+                keyboardType="decimal-pad" 
+                autoFocus={!params?.id} 
+                value={amount} 
+                onChangeText={handleAmountChange} 
+              />
+            </View>
           </View>
 
           <View style={styles.card}>
@@ -321,6 +329,8 @@ const styles = StyleSheet.create({
   form: { flex: 1 },
   amountSection: { alignItems: 'center', marginBottom: 40, marginTop: 10 },
   currencyLabel: { color: '#7C9A95', fontSize: 14, fontWeight: 'bold', marginBottom: 5, letterSpacing: 1 },
+  amountInputRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  pesoSign: { fontSize: 40, fontWeight: '300', marginTop: 8, marginRight: 4 },
   amountInput: { fontSize: 54, fontWeight: '300' },
   card: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 10, overflow: 'hidden', shadowColor: '#142D2A', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.05, shadowRadius: 5, elevation: 2 },
   inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 18, paddingHorizontal: 10, borderBottomWidth: 0.5, borderBottomColor: '#E2EAF4' },

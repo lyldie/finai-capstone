@@ -2,6 +2,7 @@
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import re
+from zoneinfo import ZoneInfo
 
 from bson import ObjectId
 
@@ -10,6 +11,20 @@ from database import db
 
 PERIOD_TYPES = {"weekly", "monthly", "annual"}
 THRESHOLDS = (70, 90, 100)
+
+# FIX: FinAI is a Philippines-only app, but datetime.utcnow() reflects whatever
+# timezone the SERVER's operating system happens to use -- almost always UTC on
+# a cloud host. PH time is UTC+8, so for the first ~8 hours of every new day in
+# the Philippines, UTC's calendar date still shows "yesterday". Anything that
+# decides "what day is today" (weekly/monthly/annual period boundaries, which
+# budgets count as still active) needs to use PH time explicitly, regardless of
+# what timezone the machine running this code is configured with.
+PH_TZ = ZoneInfo("Asia/Manila")
+
+
+def ph_today() -> date:
+    """The current calendar date in the Philippines, independent of server timezone."""
+    return datetime.now(PH_TZ).date()
 
 
 def normalize_period_type(value: Optional[str]) -> str:
@@ -23,12 +38,12 @@ def parse_transaction_date(value: Optional[str]) -> date:
     try:
         return datetime.strptime(str(value or "")[:10], "%Y-%m-%d").date()
     except ValueError:
-        return datetime.utcnow().date()
+        return ph_today()
 
 
 def period_details(period_type: Optional[str], reference_date: Optional[date] = None) -> Tuple[str, str, str, str]:
     period_type = normalize_period_type(period_type)
-    reference_date = reference_date or datetime.utcnow().date()
+    reference_date = reference_date or ph_today()
 
     if period_type == "weekly":
         start = reference_date - timedelta(days=reference_date.weekday())
@@ -74,11 +89,11 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
             reference = parse_transaction_date(f"{period_key}-01-01")
         elif period_type == "weekly":
             match = re.fullmatch(r"(\d{4})-W(\d{2})", str(period_key))
-            reference = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1) if match else datetime.utcnow().date()
+            reference = date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1) if match else ph_today()
         else:
-            reference = datetime.utcnow().date()
+            reference = ph_today()
     else:
-        reference = datetime.utcnow().date()
+        reference = ph_today()
     period_type, period_key, start_date, end_date = period_details(period_type, reference)
 
     category = await category_for_budget(str(budget.get("category_id", "")), user_id)
@@ -125,7 +140,7 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
     that jumps spending past multiple thresholds at once (e.g. 0% -> 95%) used to create
     a separate notification for every threshold crossed (70% AND 90%) instead of just one."""
     created = []
-    today_key = datetime.utcnow().date().isoformat()
+    today_key = ph_today().isoformat()
     for summary in await list_budget_usage(user_id):
         # FIX: Skip budgets whose period has already ended. Without this, a backdated
         # transaction (any past date is allowed when logging expenses) could trigger a
@@ -172,10 +187,10 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
         level = "warning" if highest == 70 else "critical" if highest == 90 else "over_budget"
         message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
                    f"{summary['period_type']} budget (₱{summary['spent']:.2f} of ₱{summary['amount']:.2f}).")
-        notification = {
+       notification = {
             "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
             "period_key": summary["period_key"], "threshold": highest, "channel": "in_app",
-            "level": level, "message": message, "is_read": False, "created_at": datetime.utcnow(),
+            "level": level, "message": message, "is_read": False, "created_at": datetime.now(PH_TZ),
         }
         result = await db.notifications.insert_one(notification)
         notification["id"] = str(result.inserted_id)
