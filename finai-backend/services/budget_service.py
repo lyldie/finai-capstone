@@ -187,7 +187,7 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
         level = "warning" if highest == 70 else "critical" if highest == 90 else "over_budget"
         message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
                    f"{summary['period_type']} budget (₱{summary['spent']:.2f} of ₱{summary['amount']:.2f}).")
-       notification = {
+        notification = {
             "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
             "period_key": summary["period_key"], "threshold": highest, "channel": "in_app",
             "level": level, "message": message, "is_read": False, "created_at": datetime.now(PH_TZ),
