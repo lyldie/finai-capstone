@@ -2,15 +2,19 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Modal, TextInput, TouchableOpacity, Keyboard, TouchableWithoutFeedback, Alert, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
-const FINAI_DEEP_GREEN = '#144A3D';
-const FINAI_SAGE = '#8A9A86';
-const FINAI_LIGHT_BG = '#F4F7F6';
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#7C9A95';
+const CREAM = '#FAF7F2';
+const EXPENSE = '#FF6259';
 
 export default function DepositModal({ 
   visible, 
   onClose, 
   selectedGoal, 
   accounts, 
+  getAccountBalance,
   depositToGoal 
 }: any) {
   const [depositAmount, setDepositAmount] = useState('');
@@ -26,6 +30,14 @@ export default function DepositModal({
       setIsDropdownOpen(false);
     }
   }, [visible]);
+
+  // NEW: live preview of the selected account's balance, using the getAccountBalance
+  // function that was already being passed down but never actually used.
+  const selectedAccountBalance = selectedAccount && typeof getAccountBalance === 'function'
+    ? getAccountBalance(selectedAccount)
+    : null;
+  const parsedAmount = parseFloat(depositAmount) || 0;
+  const exceedsBalance = selectedAccountBalance !== null && parsedAmount > selectedAccountBalance;
 
   const handleConfirm = async () => {
     if (!selectedGoal || !selectedGoal.id) {
@@ -62,7 +74,7 @@ export default function DepositModal({
             <Text style={styles.modalTitle}>Deposit sa {selectedGoal?.target_name || 'Goal'}</Text>
             
             <TextInput
-              style={styles.modalInput}
+              style={[styles.modalInput, exceedsBalance && styles.modalInputWarning]}
               placeholder="₱ 0.00"
               placeholderTextColor="#A2B5B0"
               keyboardType="numeric"
@@ -88,9 +100,17 @@ export default function DepositModal({
               <Ionicons 
                 name={isDropdownOpen ? "chevron-up" : "chevron-down"} 
                 size={18} 
-                color={FINAI_DEEP_GREEN} 
+                color={DEEP_GREEN} 
               />
             </TouchableOpacity>
+
+            {/* NEW: live balance preview for whichever account is currently selected */}
+            {selectedAccount && selectedAccountBalance !== null && (
+              <Text style={[styles.balancePreview, exceedsBalance && styles.balancePreviewWarning]}>
+                Available: ₱{selectedAccountBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                {exceedsBalance ? ' — hindi sapat ang balance' : ''}
+              </Text>
+            )}
 
             {/* DROPDOWN OPTIONS LIST */}
             {isDropdownOpen && (
@@ -134,7 +154,7 @@ export default function DepositModal({
             </TouchableOpacity>
             
             <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
-              <Text style={{color: FINAI_SAGE}}>Cancel</Text>
+              <Text style={{color: SAGE}}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -144,26 +164,29 @@ export default function DepositModal({
 }
 
 const styles = StyleSheet.create({
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', padding: 20 },
-  modalContainer: { backgroundColor: '#FFF', borderRadius: 20, padding: 24, shadowColor: '#000', shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.25, shadowRadius: 4, elevation: 5 },
-  modalTitle: { fontSize: 18, fontWeight: 'bold', color: FINAI_DEEP_GREEN, marginBottom: 15 },
-  modalInput: { borderWidth: 1, borderColor: '#EBF0EE', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 15, backgroundColor: FINAI_LIGHT_BG, color: '#142D2A' },
-  label: { fontSize: 12, color: FINAI_SAGE, marginBottom: 6, fontWeight: '600' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.45)', justifyContent: 'center', padding: 20 },
+  modalContainer: { backgroundColor: '#FFF', borderRadius: 22, padding: 24, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 16, elevation: 5 },
+  modalTitle: { fontSize: 18, fontWeight: '800', color: DEEP_GREEN, marginBottom: 15 },
+  modalInput: { borderWidth: 1, borderColor: '#ECE7DD', borderRadius: 12, padding: 15, fontSize: 16, marginBottom: 6, backgroundColor: CREAM, color: DEEP_GREEN },
+  modalInputWarning: { borderColor: EXPENSE },
+  balancePreview: { fontSize: 12, color: SAGE, fontWeight: '600', marginBottom: 15 },
+  balancePreviewWarning: { color: EXPENSE, fontWeight: '700' },
+  label: { fontSize: 12, color: SAGE, marginBottom: 6, fontWeight: '600' },
   
   // Dropdown Styles
-  dropdownTrigger: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#EBF0EE', borderRadius: 12, padding: 15, backgroundColor: '#FFF', marginBottom: 4 },
-  dropdownTriggerActive: { borderColor: FINAI_DEEP_GREEN },
-  dropdownPlaceholderText: { color: FINAI_SAGE, fontSize: 15 },
-  dropdownSelectedText: { color: FINAI_DEEP_GREEN, fontWeight: 'bold', fontSize: 15 },
-  dropdownMenu: { borderWidth: 1, borderColor: '#EBF0EE', borderRadius: 12, backgroundColor: '#FFF', marginTop: 2, marginBottom: 10, overflow: 'hidden', shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.1, shadowRadius: 2, elevation: 2 },
-  dropdownItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: '#F4F7F6' },
-  dropdownItemActive: { backgroundColor: '#E8EFEF' },
-  dropdownItemText: { color: FINAI_DEEP_GREEN, fontSize: 15, fontWeight: '500' },
+  dropdownTrigger: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', borderWidth: 1, borderColor: '#ECE7DD', borderRadius: 12, padding: 15, backgroundColor: '#FFF', marginBottom: 4 },
+  dropdownTriggerActive: { borderColor: DEEP_GREEN },
+  dropdownPlaceholderText: { color: SAGE, fontSize: 15 },
+  dropdownSelectedText: { color: DEEP_GREEN, fontWeight: 'bold', fontSize: 15 },
+  dropdownMenu: { borderWidth: 1, borderColor: '#ECE7DD', borderRadius: 12, backgroundColor: '#FFF', marginTop: 2, marginBottom: 10, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.08, shadowRadius: 6, elevation: 2 },
+  dropdownItem: { padding: 14, borderBottomWidth: 1, borderBottomColor: CREAM },
+  dropdownItemActive: { backgroundColor: 'rgba(237, 178, 50, 0.12)' },
+  dropdownItemText: { color: DEEP_GREEN, fontSize: 15, fontWeight: '500' },
   dropdownItemTextActive: { fontWeight: 'bold' },
-  noAccountText: { padding: 14, color: FINAI_SAGE, fontSize: 13, fontStyle: 'italic' },
+  noAccountText: { padding: 14, color: SAGE, fontSize: 13, fontStyle: 'italic' },
   
   // Action Buttons
-  confirmBtn: { backgroundColor: FINAI_DEEP_GREEN, padding: 15, borderRadius: 12, alignItems: 'center', marginTop: 20, shadowColor: FINAI_DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 5, elevation: 3 },
+  confirmBtn: { backgroundColor: DEEP_GREEN, padding: 15, borderRadius: 14, alignItems: 'center', marginTop: 20, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 3 },
   confirmBtnText: { color: '#FFF', fontWeight: 'bold', fontSize: 16 },
   cancelBtn: { alignItems: 'center', marginTop: 15 }
 });

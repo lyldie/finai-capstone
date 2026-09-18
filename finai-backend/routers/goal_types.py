@@ -43,6 +43,7 @@ async def update_goal_type(gt_id: str, goal: GoalTypeCreate):
         
     updated_data = {**updated, "id": str(updated["_id"])}
     return GoalTypeResponse(**updated_data)
+
 # 4. DELETE Goal Type
 @router.delete("/{gt_id}")
 async def delete_goal_type(gt_id: str):
@@ -50,6 +51,17 @@ async def delete_goal_type(gt_id: str):
         oid = ObjectId(gt_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    # FIX: block deletion if any goal still references this type -- same protective
+    # pattern already applied to delete_budget/delete_category/delete_account. Without
+    # this, deleting a goal type in use silently orphans it (resolvePresetName degrades
+    # gracefully by just hiding the preset badge, but it's still a data-integrity gap).
+    linked_goal = await db.goals.find_one({"goal_type_id": gt_id})
+    if linked_goal:
+        raise HTTPException(
+            status_code=400,
+            detail="This goal type is in use by an existing goal. Reassign or delete that goal first."
+        )
 
     result = await db.goal_types.delete_one({"_id": oid})
     if result.deleted_count == 0:

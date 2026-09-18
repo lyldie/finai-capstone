@@ -48,11 +48,20 @@ type TransactionContextType = {
 
 const TransactionContext = createContext<TransactionContextType | undefined>(undefined);
 
-// HELPER: Philippine Time (UTC+8) para consistent sa mobile at backend
+// HELPER: Philippine local date, read directly from the device's local date components.
+// FIX: the previous version did `d.setHours(d.getHours() + 8)` before formatting -- but
+// .getHours() already returns the PHONE's local hour, which for a PH user's device is
+// already PHT. Adding 8 more hours on top of an already-correct local time double-shifts
+// it, rolling the date forward to tomorrow for anything roughly after 4 PM local time.
+// Reading the local Y/M/D components directly (same approach as two.tsx's formatLocalDate)
+// is both simpler and correct, since it relies on the device's own local timezone setting
+// rather than re-deriving it.
 const getPhDateString = () => {
   const d = new Date();
-  d.setHours(d.getHours() + 8);
-  return d.toISOString().split('T')[0];
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 };
 
 export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -157,49 +166,49 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [accounts, transactions]);
 
   const addTransaction = async (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
-    try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) return;
-      
-      const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
-      
-      const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      
-      if (res.ok) {
-        const result = await res.json();
-        await fetchTransactions(false); // Silent refresh
-        if (Array.isArray(result.notifications) && result.notifications.length) {
-          Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
-        }
-      } else {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.detail || 'Save failed.');
+    const userId = await AsyncStorage.getItem('user_id');
+    if (!userId) return;
+
+    const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
+
+    // FIX: previously this whole block was wrapped in its own try/catch that showed an
+    // Alert and then did NOT re-throw -- so a failed save still resolved the promise
+    // normally, and two.tsx's handleSave would proceed straight to its own "Success!"
+    // alert even though nothing was actually saved. Letting the error propagate here
+    // (matching how it worked before the offline-mode changes) means two.tsx's existing
+    // try/catch correctly shows a failure message instead of a false success.
+    const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+
+    if (res.ok) {
+      const result = await res.json();
+      await fetchTransactions(false); // Silent refresh
+      if (Array.isArray(result.notifications) && result.notifications.length) {
+        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
-    } catch (e: any) {
-      Alert.alert("Network Error", e.message || "Failed to add transaction. You might be offline.");
+    } else {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || 'Save failed.');
     }
   };
 
   const updateTransaction = async (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
-    try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) return;
-      
-      const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
-      
-      const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-      if (res.ok) {
-        const result = await res.json();
-        await fetchTransactions(false); // Silent refresh
-        if (Array.isArray(result.notifications) && result.notifications.length) {
-          Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
-        }
-      } else {
-        const error = await res.json().catch(() => ({}));
-        throw new Error(error.detail || 'Update failed.');
+    const userId = await AsyncStorage.getItem('user_id');
+    if (!userId) return;
+
+    const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
+
+    // FIX: same reasoning as addTransaction above -- let the error propagate instead of
+    // swallowing it, so two.tsx's own error handling reflects what actually happened.
+    const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (res.ok) {
+      const result = await res.json();
+      await fetchTransactions(false); // Silent refresh
+      if (Array.isArray(result.notifications) && result.notifications.length) {
+        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
       }
-    } catch (e: any) {
-      Alert.alert("Network Error", e.message || "Failed to update transaction. You might be offline.");
+    } else {
+      const error = await res.json().catch(() => ({}));
+      throw new Error(error.detail || 'Update failed.');
     }
   };
 
@@ -290,7 +299,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const deleteGoal = async (id: string) => {
     try {
-      const res = await fetch(`${API_URL}/api/goals/${id}`, { method: 'DELETE' });
+      // FIX: the backend now requires and verifies user_id (ownership check on
+      // DELETE /api/goals/{id}) so only the goal's owner can delete it.
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      const res = await fetch(`${API_URL}/api/goals/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete goal.");
     } catch (e) {
       Alert.alert("Error", "Network connection failed.");
@@ -308,10 +321,18 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         return false;
       }
 
+      // FIX: the backend now requires and verifies user_id (ownership check on
+      // PATCH /api/goals/{id}/deposit) -- previously this endpoint had NO ownership
+      // check at all, so anyone with a goal_id could deposit into a different user's
+      // goal and inject a fake transaction into their history.
+      const userId = await AsyncStorage.getItem('user_id');
+      if (!userId) { Alert.alert("Error", "User session not found."); return false; }
+
       const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          user_id: userId,
           amount: amount,
           account: account
         })
