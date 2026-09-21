@@ -5,14 +5,18 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config'; 
-import { useAuth } from '../context/AuthContext'; // 👈 [NEW] I-connect sa global state
+import { useAuth } from '../context/AuthContext';
+
+// ---- FINAI BRAND TOKENS ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
 
 export default function VerifyPinScreen() {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  // 👈 [NEW] Kunin ang user data at logout function
   const { user, logoutUser } = useAuth();
 
   // Traffic Cop - Check role agad pagka-load
@@ -24,7 +28,7 @@ export default function VerifyPinScreen() {
       }
     };
     checkRoleBypass();
-  }, [user]); // 👈 [NEW] Dependency on user para mabilis mag-update
+  }, [user]);
 
   const handlePress = (num: string) => {
     if (pin.length < 4 && !loading) setPin(prev => prev + num);
@@ -45,12 +49,11 @@ export default function VerifyPinScreen() {
     setLoading(true);
 
     try {
-      // 👈 [NEW] Mas mabilis kumuha sa Context bago sa Storage
       const email = user?.email || await AsyncStorage.getItem('user_email');
       
       if (!email) {
         Alert.alert("Error", "No user session found. Please login again.");
-        await logoutUser(); // Siguraduhing malinis bago ibalik sa login
+        await logoutUser();
         router.replace('/login');
         return;
       }
@@ -80,7 +83,6 @@ export default function VerifyPinScreen() {
         setPin(''); 
       }
     } catch (e) {
-      // 👈 [NEW] OFFLINE FALLBACK: Kung walang internet, i-check ang local PIN
       const savedPin = await AsyncStorage.getItem('user_pin');
       if (savedPin && pin === savedPin) {
         const role = user?.role || await AsyncStorage.getItem('user_role');
@@ -98,7 +100,6 @@ export default function VerifyPinScreen() {
     }
   };
 
-  // 👈 [NEW] Proper Switch Account Logic para walang overlap ng data
   const handleSwitchAccount = async () => {
     Alert.alert("Switch Account", "Gusto mo bang mag-login gamit ang ibang account?", [
       { text: "Cancel", style: "cancel" },
@@ -106,7 +107,7 @@ export default function VerifyPinScreen() {
         text: "Yes", 
         style: "destructive",
         onPress: async () => {
-          await logoutUser(); // Linisin lahat
+          await logoutUser();
           router.replace('/login');
         }
       }
@@ -114,12 +115,12 @@ export default function VerifyPinScreen() {
   };
 
   return (
-    <LinearGradient colors={['#1c3c36', '#000']} style={styles.container}>
+    <LinearGradient colors={[DEEP_GREEN, TEAL]} style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" />
 
       <View style={styles.header}>
-        <Ionicons name="shield-checkmark" size={50} color="#edb232" />
+        <Ionicons name="shield-checkmark" size={50} color={GOLD} />
         <Text style={styles.title}>Security Check</Text>
         <Text style={styles.subtitle}>Enter your 4-digit PIN</Text>
       </View>
@@ -132,7 +133,7 @@ export default function VerifyPinScreen() {
 
       {loading ? (
         <View style={styles.loadingWrapper}>
-          <ActivityIndicator size="large" color="#edb232" />
+          <ActivityIndicator size="large" color={GOLD} />
           <Text style={styles.loadingText}>Verifying PIN...</Text>
         </View>
       ) : (
@@ -153,7 +154,6 @@ export default function VerifyPinScreen() {
         </View>
       )}
 
-      {/* 👈 [NEW] Ginamit na natin yung handleSwitchAccount */}
       <TouchableOpacity 
         style={styles.switchAccountBtn}
         onPress={handleSwitchAccount}

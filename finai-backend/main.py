@@ -82,8 +82,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 # Initialize Google GenAI Client
 ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
-otp_storage = {}
-
 
 # --- 4. EASYOCR INITIALIZATION ---
 print("Initializing EasyOCR Reader for FinAi (Primary Local Engine)...")
@@ -268,7 +266,7 @@ def _try_parse_date_parts(v1: int, v2: int, v3: int, current_year: int, today: O
         return None
 
     # Rule 2: prefer the non-future interpretation when ambiguous.
-    reference = today or datetime.now(PH_TZ)
+    reference = today or datetime.now()
     non_future = [c for c in valid_candidates if c[3].date() <= reference.date()]
     if non_future:
         year, month, day, _ = non_future[0]
@@ -933,6 +931,11 @@ class UserLogin(BaseModel):
     password: str
 
 
+class OTPVerify(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+
+
 class TransactionSchema(BaseModel):
     user_id: str
     amount: float = Field(..., gt=0)
@@ -953,7 +956,12 @@ class InitialSetupSchema(BaseModel):
     monthly_income: float = Field(..., gt=0)
     target_name: str
     target_amount: float = Field(..., gt=0)
-    target_date: str
+    target_date: str = Field(..., pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+
+class PinVerify(BaseModel):
+    email: EmailStr
+    pin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
 
 
 # --- 7. HELPER FUNCTIONS ---
@@ -975,12 +983,9 @@ def validate_transaction_for_storage(transaction: TransactionSchema):
     else:
         transaction.to_account = None
 
-    # FIX: Kung walang naipasang petsa (halimbawa, offline error o manual trigger), 
-    # automatic na ipasok ang Philippine Time ngayong araw.
-    if not transaction.date:
-        transaction.date = datetime.now(PH_TZ).strftime("%Y-%m-%d")
-
-    # FIX: Check kung future date gamit ang PH_TZ
+    # FIX: two.tsx already blocks a future-dated transaction client-side, but nothing
+    # previously enforced this server-side -- a direct API call had no safeguard at all.
+    # Compared against PH time (not server local time) for the same reason as the OCR fix.
     if transaction.date:
         try:
             parsed_date = datetime.strptime(transaction.date, "%Y-%m-%d").date()
@@ -1019,41 +1024,51 @@ async def register(user: UserSignup):
     otp_code = "".join(random.choices(string.digits, k=6))
     if send_otp_email(clean_email, otp_code):
         hashed_password = pwd_context.hash(user.password[:72])
-        otp_storage[clean_email] = {
-            "name": user.name.strip(),
-            "password": hashed_password,
-            "otp": otp_code,
-            "timestamp": get_ph_time()
-        }
+        # FIX: OTPs previously lived in a plain in-memory dict (otp_storage = {}).
+        # That means: (1) every pending registration is lost if the server restarts,
+        # and (2) if this ever runs with more than one worker process, a /register
+        # request and its matching /verify-otp request can land on different workers
+        # -- each with its own separate dict -- causing verification to fail even with
+        # the correct code. Storing in MongoDB (with a TTL index, see database.py)
+        # makes this correct regardless of server restarts or worker count.
+        await db.pending_signups.update_one(
+            {"email": clean_email},
+            {"$set": {
+                "name": user.name.strip(),
+                "password": hashed_password,
+                "otp": otp_code,
+                "timestamp": datetime.utcnow()
+            }},
+            upsert=True
+        )
         return {"status": "Success", "message": "OTP sent successfully!"}
     raise HTTPException(status_code=500, detail="Failed to send OTP email.")
 
 
 @app.post("/verify-otp")
-async def verify_otp(data: dict):
-    raw_email = data.get("email", "")
-    user_otp = str(data.get("otp", "")).strip()
-    clean_email = raw_email.lower().strip()
+async def verify_otp(data: OTPVerify):
+    clean_email = data.email.lower().strip()
+    user_otp = data.otp.strip()
 
-    if not clean_email or clean_email not in otp_storage:
+    pending = await db.pending_signups.find_one({"email": clean_email})
+    if not pending:
         raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
 
-    stored_data = otp_storage[clean_email]
-    if get_ph_time() - stored_data["timestamp"] > timedelta(minutes=10):
-        del otp_storage[clean_email]
+    if datetime.utcnow() - pending["timestamp"] > timedelta(minutes=10):
+        await db.pending_signups.delete_one({"email": clean_email})
         raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
 
-    if stored_data["otp"] == user_otp:
+    if pending["otp"] == user_otp:
         new_user = {
-            "name": stored_data["name"],
+            "name": pending["name"],
             "email": clean_email,
-            "password": stored_data["password"],
+            "password": pending["password"],
             "role": "user",
             "onboarding_completed": False,
-            "created_at": get_ph_time()
+            "created_at": datetime.utcnow()
         }
         result = await db.users.insert_one(new_user)
-        del otp_storage[clean_email]
+        await db.pending_signups.delete_one({"email": clean_email})
         return {"status": "Success", "user_id": str(result.inserted_id)}
 
     raise HTTPException(status_code=400, detail="Mali ang OTP code paps.")
@@ -1083,22 +1098,41 @@ async def login(user: UserLogin):
         "name": db_user["name"],
         "email": db_user["email"],
         "role": db_user.get("role", "user"),
-        "onboarding_completed": db_user.get("onboarding_completed", False)
+        "onboarding_completed": db_user.get("onboarding_completed", False),
+        # FIX: login.tsx's routing logic checks data.has_pin / data.is_setup_complete to
+        # decide whether to send the user to /setup-pin or /verify-pin -- but neither
+        # field was ever actually returned here, so that check could never be true.
+        # Returning a real has_pin field makes that routing logic actually work.
+        "has_pin": bool(db_user.get("pin"))
     }
 
 
 @app.post("/verify-pin")
-async def verify_pin(data: dict):
-    raw_email = data.get("email", "")
-    clean_email = raw_email.lower().strip()
-    input_pin = str(data.get("pin", "")).strip()
+async def verify_pin(data: PinVerify):
+    clean_email = data.email.lower().strip()
+    input_pin = data.pin.strip()
 
     user = await db.users.find_one({"email": clean_email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if str(user.get("pin", "")) == input_pin:
-        return {"status": "Success"}
+    stored_pin = str(user.get("pin", ""))
+
+    # FIX: PINs were previously stored and compared in plaintext -- unlike passwords,
+    # which already correctly use pwd_context (bcrypt). Anyone with direct database read
+    # access would see every user's PIN in cleartext. New PINs are hashed at
+    # /initial-setup; this verifies against that hash. The plaintext fallback below only
+    # matters for PINs saved before this fix -- it upgrades them to a hash transparently
+    # on first successful verification so no user has to re-enter their PIN.
+    try:
+        if pwd_context.verify(input_pin, stored_pin):
+            return {"status": "Success"}
+    except Exception:
+        # stored_pin isn't a valid hash -- almost certainly a legacy plaintext PIN.
+        if stored_pin and stored_pin == input_pin:
+            await db.users.update_one({"_id": user["_id"]}, {"$set": {"pin": pwd_context.hash(input_pin)}})
+            return {"status": "Success"}
+
     raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
 
 
@@ -1213,7 +1247,7 @@ async def add_goal_contribution(transaction: TransactionSchema):
         raise HTTPException(status_code=400, detail="Kailangan ng Goal ID para makapag-hulog paps!")
 
     transaction_dict = transaction.dict()
-    transaction_dict["created_at"] = get_ph_time()
+    transaction_dict["created_at"] = datetime.utcnow()
     transaction_dict["goal_id"] = str(transaction.goal_id)
 
     # 1. Hanapin ang goal at dagdagan agad ang current_savings nito
@@ -1235,7 +1269,7 @@ async def add_goal_contribution(transaction: TransactionSchema):
 async def add_expense(transaction: TransactionSchema, background_tasks: BackgroundTasks):
     validate_transaction_for_storage(transaction)
     transaction_dict = transaction.dict()
-    transaction_dict["created_at"] = get_ph_time()
+    transaction_dict["created_at"] = datetime.utcnow()
 
     if transaction_dict.get("goal_id"):
         transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
@@ -1316,7 +1350,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema):
     # 3. I-save yung bagong transaction data
     result = await db.expenses.update_one(
         {"_id": ObjectId(expense_id)},
-        {"$set": {**transaction.dict(), "updated_at": get_ph_time()}}
+        {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
     )
 
     if result.matched_count == 1:
@@ -1374,16 +1408,40 @@ async def delete_expense(expense_id: str, user_id: str):
 # --- 11. ONBOARDING ---
 @app.post("/initial-setup")
 async def initial_setup(data: InitialSetupSchema):
+    try:
+        user_oid = ObjectId(data.user_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user ID format")
+
+    # FIX: previously proceeded regardless of whether the user_id matched a real user --
+    # update_one silently no-ops on zero matches, so a bogus user_id would still result
+    # in an orphaned goal being inserted for a ghost user. Verify existence first.
+    existing_user = await db.users.find_one({"_id": user_oid})
+    if not existing_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # FIX: PIN was previously stored in plaintext (paired with the /verify-pin fix above).
     await db.users.update_one(
-        {"_id": ObjectId(data.user_id)},
-        {"$set": {"pin": data.pin, "monthly_income": data.monthly_income, "onboarding_completed": True}}
+        {"_id": user_oid},
+        {"$set": {"pin": pwd_context.hash(data.pin), "monthly_income": data.monthly_income, "onboarding_completed": True}}
     )
-    await db.goals.insert_one({
+
+    # FIX: this goal is inserted directly, bypassing the goals.py router/GoalCreate
+    # schema entirely -- which requires goal_type_id. Without this, every user's very
+    # first goal (created here, during onboarding) would permanently lack a goal type,
+    # unlike every goal created afterward via create-goal.tsx. Best-effort: use whichever
+    # goal type exists first; if none exist yet, proceed without one (no worse than before).
+    default_goal_type = await db.goal_types.find_one({})
+    goal_document = {
         "user_id": data.user_id,
         **data.dict(exclude={"pin", "user_id", "monthly_income"}),
         "current_savings": 0.0,
-        "created_at": get_ph_time()
-    })
+        "created_at": datetime.utcnow()
+    }
+    if default_goal_type:
+        goal_document["goal_type_id"] = str(default_goal_type["_id"])
+
+    await db.goals.insert_one(goal_document)
     return {"status": "Success"}
 
 

@@ -8,7 +8,14 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
-import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Gagamitin natin ito para hindi na manghula ang screen kung sino ang user
+import { useAuth } from '../context/AuthContext';
+
+// ---- FINAI BRAND TOKENS ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#8BA19D';
+const CREAM = '#FAF7F2';
 
 export default function SetupPinScreen() {
   const [pin, setPin] = useState('');
@@ -21,32 +28,27 @@ export default function SetupPinScreen() {
   const inputRef = useRef<TextInput>(null); 
   const router = useRouter();
   
-  // 👈 [NEW] Kunin ang current user mula sa session natin
   const { user } = useAuth();
 
   const handleConfirmPinAndSetup = async () => {
-    Keyboard.dismiss(); // 👈 [NEW] Itago ang keyboard kapag nagsa-save
+    Keyboard.dismiss();
 
-    // 1. Validation para sa PIN length
     if (pin.length !== 4) {
       Alert.alert("Wait lang paps!", "Kailangan 4 digits ang PIN mo para safe.");
       return;
     }
 
-    // 2. Validation para sa mga Onboarding Fields
     if (!income.trim() || !goalName.trim() || !goalAmount.trim() || !goalDate.trim()) {
       Alert.alert("Kulang paps!", "Paki-sagutan ang Monthly Income at Goal details para may baseline si FinAi.");
       return;
     }
 
-    // 3. Validation sa Date Format (YYYY-MM-DD)
     const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
     if (!dateRegex.test(goalDate.trim())) {
       Alert.alert("Invalid Date", "Paki-sulat ang Target Date sa format na YYYY-MM-DD (Halimbawa: 2026-12-31).");
       return;
     }
 
-    // 👈 [NEW] Strict Date Validation (Bawal ang past tense)
     const parsedTargetDate = new Date(goalDate.trim());
     if (isNaN(parsedTargetDate.getTime())) {
       Alert.alert("Invalid Date", "Hindi yata totoong petsa 'yan paps.");
@@ -54,7 +56,7 @@ export default function SetupPinScreen() {
     }
 
     const today = new Date();
-    today.setHours(0, 0, 0, 0); // Reset time para malinis ang comparison
+    today.setHours(0, 0, 0, 0);
     if (parsedTargetDate <= today) {
       Alert.alert("Invalid Date", "Dapat sa future ang target date mo paps, lagpas sa araw na ito!");
       return;
@@ -76,7 +78,6 @@ export default function SetupPinScreen() {
     setLoading(true);
 
     try {
-      // 4. Hugutin ang user_id gamit ang AuthContext natin na ginawa kanina
       const userId = user?.id || await AsyncStorage.getItem('user_id');
       if (!userId) {
         Alert.alert("Session Error", "Hindi mahanap ang user session. Subukang mag-register ulit paps.");
@@ -84,7 +85,6 @@ export default function SetupPinScreen() {
         return;
       }
 
-      // 5. Ihanda ang Payload para sa backend
       const payload = {
         user_id: userId,
         pin: pin,
@@ -94,7 +94,6 @@ export default function SetupPinScreen() {
         target_date: goalDate.trim()
       };
 
-      // 6. Fire the network request sa FastAPI natin
       const response = await fetch(`${API_URL}/initial-setup`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -104,7 +103,6 @@ export default function SetupPinScreen() {
       const res = await response.json();
 
       if (response.ok) {
-        // I-save ang PIN locally sa phone
         await AsyncStorage.setItem('user_pin', pin);
 
         Alert.alert(
@@ -143,7 +141,6 @@ export default function SetupPinScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
-      {/* 👈 [NEW] keyboardShouldPersistTaps */}
       <ScrollView 
         contentContainerStyle={{ flexGrow: 1 }} 
         bounces={true} 
@@ -152,7 +149,7 @@ export default function SetupPinScreen() {
       >
         
         <LinearGradient
-          colors={['#4c8479', '#2b5f56']}
+          colors={[DEEP_GREEN, TEAL]}
           style={styles.header}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
@@ -193,7 +190,7 @@ export default function SetupPinScreen() {
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. 25000"
-              placeholderTextColor="#999"
+              placeholderTextColor={SAGE}
               keyboardType="numeric"
               value={income}
               onChangeText={setIncome}
@@ -208,7 +205,7 @@ export default function SetupPinScreen() {
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. Emergency Fund / Laptop"
-              placeholderTextColor="#999"
+              placeholderTextColor={SAGE}
               value={goalName}
               onChangeText={setGoalName}
               editable={!loading}
@@ -218,7 +215,7 @@ export default function SetupPinScreen() {
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. 15000"
-              placeholderTextColor="#999"
+              placeholderTextColor={SAGE}
               keyboardType="numeric"
               value={goalAmount}
               onChangeText={setGoalAmount}
@@ -229,7 +226,7 @@ export default function SetupPinScreen() {
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. 2026-12-31"
-              placeholderTextColor="#999"
+              placeholderTextColor={SAGE}
               value={goalDate}
               onChangeText={setGoalDate}
               editable={!loading}
@@ -241,6 +238,7 @@ export default function SetupPinScreen() {
               style={[styles.button, (!isFormComplete || loading) && { opacity: 0.5 }]}
               onPress={handleConfirmPinAndSetup}
               disabled={!isFormComplete || loading}
+              activeOpacity={0.85}
             >
               {loading ? (
                 <ActivityIndicator color="#fff" />
@@ -257,7 +255,7 @@ export default function SetupPinScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F4F7F6' },
+  container: { flex: 1, backgroundColor: CREAM },
   header: {
     height: 220,
     borderBottomRightRadius: 80,
@@ -279,13 +277,13 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     marginBottom: 20,
     elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    shadowOffset: { width: 0, height: 2 },
+    shadowColor: DEEP_GREEN,
+    shadowOpacity: 0.06,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
   },
-  sectionTitle: { fontSize: 14, fontWeight: 'bold', color: '#2b5f56', marginBottom: 15, letterSpacing: 1 },
-  instruction: { fontSize: 14, color: '#666', marginBottom: 10, fontWeight: '500' },
+  sectionTitle: { fontSize: 14, fontWeight: 'bold', color: DEEP_GREEN, marginBottom: 15, letterSpacing: 1 },
+  instruction: { fontSize: 14, color: SAGE, marginBottom: 10, fontWeight: '500' },
   pinWrapper: { paddingVertical: 10, alignItems: 'center' },
   pinContainer: { flexDirection: 'row', gap: 25 },
   dot: { 
@@ -293,18 +291,18 @@ const styles = StyleSheet.create({
     height: 20, 
     borderRadius: 10, 
     borderWidth: 2, 
-    borderColor: '#4c8479' 
+    borderColor: TEAL 
   },
   dotActive: { 
-    backgroundColor: '#edb232', 
-    borderColor: '#edb232',
+    backgroundColor: GOLD, 
+    borderColor: GOLD,
     transform: [{ scale: 1.2 }] 
   },
   hiddenInput: { position: 'absolute', opacity: 0, width: 1, height: 1 },
-  label: { fontSize: 12, color: '#555', marginBottom: 6, fontWeight: '600' },
+  label: { fontSize: 12, color: SAGE, marginBottom: 6, fontWeight: '600' },
   inputField: {
-    backgroundColor: '#F0F4F3',
-    color: '#333',
+    backgroundColor: CREAM,
+    color: DEEP_GREEN,
     paddingHorizontal: 15,
     paddingVertical: 12,
     borderRadius: 10,
@@ -313,16 +311,16 @@ const styles = StyleSheet.create({
   },
   buttonWrapper: { width: '100%', alignItems: 'center', marginTop: 10 },
   button: { 
-    backgroundColor: '#2b5f56', 
+    backgroundColor: DEEP_GREEN, 
     width: '100%', 
     paddingVertical: 18, 
     borderRadius: 35, 
     alignItems: 'center',
     elevation: 4,
-    shadowColor: '#000',
-    shadowOpacity: 0.1,
-    shadowRadius: 5,
+    shadowColor: DEEP_GREEN,
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
   },
   buttonText: { color: '#fff', fontSize: 16, fontWeight: 'bold', letterSpacing: 1 },
-  footerNote: { marginTop: 15, color: '#999', fontSize: 11, textAlign: 'center' }
+  footerNote: { marginTop: 15, color: SAGE, fontSize: 11, textAlign: 'center' }
 });

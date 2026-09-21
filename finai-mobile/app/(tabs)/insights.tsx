@@ -71,6 +71,20 @@ export default function InsightsScreen() {
 
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
+  // Shared time-window predicate so stats, the bar chart, and the category chart all
+  // agree on what "this period" means.
+  const isInSelectedWindow = (dateString: string) => {
+    const d = new Date(dateString);
+    const currentYear = today.getFullYear();
+    const currentMonth = today.getMonth();
+    if (timeframe === 'Year') return d.getFullYear() === currentYear;
+    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+    const startOfWeek = new Date(today);
+    startOfWeek.setDate(today.getDate() - today.getDay());
+    startOfWeek.setHours(0, 0, 0, 0);
+    return d >= startOfWeek;
+  };
+
   const stats = useMemo(() => {
     const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
     const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
@@ -78,7 +92,11 @@ export default function InsightsScreen() {
 
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
+    // FIX: previously summed ALL transactions ever, regardless of the Week/Month/Year
+    // toggle -- even though the card is labeled "Net Cash Flow" under "Key Metrics
+    // (Month)". Now scoped to the same window the charts already use.
     const netCashFlow = transactions.reduce((acc, t) => {
+      if (!isInSelectedWindow(t.date)) return acc;
       const amount = Number(t.amount) || 0;
       if (t.type === 'Income') return acc + amount;
       if (t.type === 'Expense') return acc - amount;
@@ -91,20 +109,7 @@ export default function InsightsScreen() {
     const overallGoalProgress = totalTarget > 0 ? (totalSavings / totalTarget) * 100 : 0;
 
     return { totalBudget, totalSpent, usage, netCashFlow, totalTarget, totalSavings, overallGoalProgress };
-  }, [activeBudgets, selectedPeriodType, transactions, goals]);
-
-  // Shared time-window predicate so the bar chart and the new category chart agree on what "this period" means
-  const isInSelectedWindow = (dateString: string) => {
-    const d = new Date(dateString);
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth();
-    if (timeframe === 'Year') return d.getFullYear() === currentYear;
-    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
-    startOfWeek.setHours(0, 0, 0, 0);
-    return d >= startOfWeek;
-  };
+  }, [activeBudgets, selectedPeriodType, transactions, goals, timeframe]);
 
   const chartData = useMemo(() => {
     const data: any[] = [];
@@ -259,19 +264,44 @@ export default function InsightsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <View style={styles.headerContainer}>
-        <Text style={styles.headerTitle}>Financial Insights</Text>
-        <Text style={styles.headerSubtitle}>AI-powered financial monitoring</Text>
+        <View style={styles.headerTitleRow}>
+          <View style={styles.headerIconBadge}>
+            <Ionicons name="sparkles" size={16} color={GOLD} />
+          </View>
+          <View>
+            <Text style={styles.headerTitle}>Financial Insights</Text>
+            <Text style={styles.headerSubtitle}>AI-powered financial monitoring</Text>
+          </View>
+        </View>
       </View>
 
       <View style={styles.tabOuterContainer}>
         <View style={styles.finaiSegmentControl}>
-          <TouchableOpacity style={[styles.finaiSegmentBtn, activeTab === 'Stats' && styles.finaiSegmentActiveBtn]} onPress={() => setActiveTab('Stats')}>
-            <Ionicons name="pie-chart-outline" size={16} color={activeTab === 'Stats' ? '#FFF' : SAGE} style={{ marginRight: 6 }} />
-            <Text style={[styles.finaiSegmentText, activeTab === 'Stats' && styles.finaiSegmentActiveText]}>Analytics</Text>
+          <TouchableOpacity style={styles.finaiSegmentBtnWrapper} onPress={() => setActiveTab('Stats')} activeOpacity={0.85}>
+            {activeTab === 'Stats' ? (
+              <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.finaiSegmentBtn}>
+                <Ionicons name="pie-chart-outline" size={16} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.finaiSegmentActiveText}>Analytics</Text>
+              </LinearGradient>
+            ) : (
+              <View style={styles.finaiSegmentBtn}>
+                <Ionicons name="pie-chart-outline" size={16} color={SAGE} style={{ marginRight: 6 }} />
+                <Text style={styles.finaiSegmentText}>Analytics</Text>
+              </View>
+            )}
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.finaiSegmentBtn, activeTab === 'Budget' && styles.finaiSegmentActiveBtn]} onPress={() => setActiveTab('Budget')}>
-            <Ionicons name="wallet-outline" size={16} color={activeTab === 'Budget' ? '#FFF' : SAGE} style={{ marginRight: 6 }} />
-            <Text style={[styles.finaiSegmentText, activeTab === 'Budget' && styles.finaiSegmentActiveText]}>Limits & Goals</Text>
+          <TouchableOpacity style={styles.finaiSegmentBtnWrapper} onPress={() => setActiveTab('Budget')} activeOpacity={0.85}>
+            {activeTab === 'Budget' ? (
+              <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.finaiSegmentBtn}>
+                <Ionicons name="wallet-outline" size={16} color="#FFF" style={{ marginRight: 6 }} />
+                <Text style={styles.finaiSegmentActiveText}>Limits & Goals</Text>
+              </LinearGradient>
+            ) : (
+              <View style={styles.finaiSegmentBtn}>
+                <Ionicons name="wallet-outline" size={16} color={SAGE} style={{ marginRight: 6 }} />
+                <Text style={styles.finaiSegmentText}>Limits & Goals</Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       </View>
@@ -295,6 +325,9 @@ export default function InsightsScreen() {
             <Text style={styles.sectionLabel}>Key Metrics ({timeframe})</Text>
             <View style={styles.kpiGridRow}>
               <View style={styles.finaiKpiCard}>
+                <View style={[styles.kpiIconBadge, { backgroundColor: getAlertColor(stats.usage) === INCOME_GREEN ? 'rgba(16, 185, 129, 0.12)' : getAlertColor(stats.usage) === ALERT_YELLOW ? 'rgba(245, 158, 11, 0.12)' : 'rgba(255, 98, 89, 0.12)' }]}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={getAlertColor(stats.usage)} />
+                </View>
                 <Text style={styles.kpiMetaText}>Budget Adherence</Text>
                 <Text style={[styles.kpiMainValue, { color: getAlertColor(stats.usage) }]}>
                   {stats.totalBudget > 0 ? Math.max(100 - stats.usage, 0).toFixed(0) : 0}%
@@ -304,6 +337,9 @@ export default function InsightsScreen() {
                 </View>
               </View>
               <View style={styles.finaiKpiCard}>
+                <View style={[styles.kpiIconBadge, { backgroundColor: stats.netCashFlow >= 0 ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)' }]}>
+                  <Ionicons name={stats.netCashFlow >= 0 ? "trending-up" : "trending-down"} size={16} color={stats.netCashFlow >= 0 ? INCOME_GREEN : CRITICAL_RED} />
+                </View>
                 <Text style={styles.kpiMetaText}>Net Cash Flow</Text>
                 <Text style={[styles.kpiMainValue, { color: stats.netCashFlow >= 0 ? DEEP_GREEN : CRITICAL_RED }]}>
                   {stats.netCashFlow >= 0 ? '+' : ''}{formatCurrency(stats.netCashFlow)}
@@ -314,9 +350,14 @@ export default function InsightsScreen() {
 
             <View style={styles.finaiFullKpiCard}>
               <View style={styles.fullCardHeader}>
-                <View>
-                  <Text style={styles.kpiMetaText}>Total Savings Progress (All Goals)</Text>
-                  <Text style={[styles.kpiMainValue, { color: DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                  <View style={[styles.kpiIconBadge, { backgroundColor: 'rgba(237, 178, 50, 0.16)', marginRight: 12, marginBottom: 0 }]}>
+                    <Ionicons name="flag-outline" size={16} color={GOLD} />
+                  </View>
+                  <View>
+                    <Text style={styles.kpiMetaText}>Total Savings Progress (All Goals)</Text>
+                    <Text style={[styles.kpiMainValue, { color: DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
+                  </View>
                 </View>
                 <View style={styles.fullCardRightSide}>
                   <Text style={styles.goalPercentageText}>{stats.overallGoalProgress.toFixed(0)}% Total Saved</Text>
@@ -328,7 +369,10 @@ export default function InsightsScreen() {
 
             <View style={styles.finaiChartCard}>
               <View style={styles.chartHeaderLayout}>
-                <Text style={styles.chartTitle}>Overview Chart</Text>
+                <View>
+                  <Text style={styles.chartTitle}>Overview Chart</Text>
+                  <Text style={styles.chartSubtitle}>{subTab} trend this {timeframe.toLowerCase()}</Text>
+                </View>
                 <Ionicons name="trending-up" size={18} color={DEEP_GREEN} />
               </View>
 
@@ -356,7 +400,10 @@ export default function InsightsScreen() {
             {/* NEW: Category breakdown donut */}
             <View style={styles.finaiChartCard}>
               <View style={styles.chartHeaderLayout}>
-                <Text style={styles.chartTitle}>{subTab} by Category ({timeframe})</Text>
+                <View>
+                  <Text style={styles.chartTitle}>{subTab} by Category</Text>
+                  <Text style={styles.chartSubtitle}>Breakdown for this {timeframe.toLowerCase()}</Text>
+                </View>
                 <Ionicons name="pie-chart" size={18} color={GOLD} />
               </View>
 
@@ -430,8 +477,11 @@ export default function InsightsScreen() {
             {isLoading ? (
               <ActivityIndicator size="small" color={DEEP_GREEN} style={{ marginVertical: 20 }} />
             ) : activeBudgets.length === 0 ? (
-              <View style={styles.categoryBudgetCard}>
-                <Text style={{ color: SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
+              <View style={styles.emptyStateCard}>
+                <View style={styles.emptyStateIconCircle}>
+                  <Ionicons name="wallet-outline" size={28} color={GOLD} />
+                </View>
+                <Text style={styles.emptyStateText}>
                   Walang nakaset na budget limit paps. Pindutin ang "Set Limit" sa itaas para mag-add! 🐿️
                 </Text>
               </View>
@@ -496,8 +546,11 @@ export default function InsightsScreen() {
             </View>
 
             {(!goals || goals.length === 0) ? (
-              <View style={styles.finaiGoalCard}>
-                <Text style={{ color: SAGE, textAlign: 'center', fontSize: 13, padding: 10 }}>
+              <View style={styles.emptyStateCard}>
+                <View style={styles.emptyStateIconCircle}>
+                  <Ionicons name="flag-outline" size={28} color={GOLD} />
+                </View>
+                <Text style={styles.emptyStateText}>
                   Walang nakaset na financial goals paps. Gumawa na para sa capstone! 🎯
                 </Text>
               </View>
@@ -622,14 +675,17 @@ export default function InsightsScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: CREAM },
   headerContainer: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 6 },
+  headerTitleRow: { flexDirection: 'row', alignItems: 'center' },
+  headerIconBadge: { width: 34, height: 34, borderRadius: 12, backgroundColor: 'rgba(237, 178, 50, 0.14)', justifyContent: 'center', alignItems: 'center', marginRight: 10 },
   headerTitle: { fontSize: 22, fontWeight: '800', color: DEEP_GREEN },
   headerSubtitle: { fontSize: 12, color: SAGE, marginTop: 2 },
   tabOuterContainer: { paddingHorizontal: 20, marginVertical: 12 },
   finaiSegmentControl: { flexDirection: 'row', backgroundColor: '#ECE7DD', borderRadius: 12, padding: 4 },
-  finaiSegmentBtn: { flex: 1, flexDirection: 'row', paddingVertical: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 10 },
+  finaiSegmentBtnWrapper: { flex: 1 },
+  finaiSegmentBtn: { flexDirection: 'row', paddingVertical: 10, justifyContent: 'center', alignItems: 'center', borderRadius: 10 },
   finaiSegmentActiveBtn: { backgroundColor: DEEP_GREEN, elevation: 3, shadowColor: DEEP_GREEN, shadowOpacity: 0.15, shadowRadius: 4 },
   finaiSegmentText: { fontSize: 13, fontWeight: '600', color: SAGE },
-  finaiSegmentActiveText: { color: '#FFFFFF', fontWeight: '700' },
+  finaiSegmentActiveText: { color: '#FFFFFF', fontWeight: '700', fontSize: 13 },
 
   scrollContent: { paddingBottom: 80 },
 
@@ -654,12 +710,14 @@ const styles = StyleSheet.create({
   miniGoalTarget: { fontSize: 11, color: SAGE, marginTop: 2 },
   kpiMetaText: { fontSize: 11, color: SAGE, fontWeight: '600' },
   kpiMainValue: { fontSize: 18, fontWeight: '800', marginVertical: 4 },
+  kpiIconBadge: { width: 30, height: 30, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   miniBadgeSuccess: { backgroundColor: 'rgba(16, 185, 129, 0.12)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   miniBadgeNeutral: { backgroundColor: 'rgba(237, 178, 50, 0.16)', alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
   badgeText: { fontSize: 10, fontWeight: '700', color: DEEP_GREEN },
   finaiChartCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 20, padding: 16, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2, marginTop: 8, marginBottom: 16 },
-  chartHeaderLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  chartHeaderLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 16 },
   chartTitle: { fontSize: 14, fontWeight: '700', color: DEEP_GREEN },
+  chartSubtitle: { fontSize: 11, color: SAGE, fontWeight: '500', marginTop: 2 },
   chartVisualArea: { height: 180, justifyContent: 'center', alignItems: 'center', backgroundColor: CREAM, borderRadius: 12, paddingVertical: 16 },
 
   // Donut / category breakdown
@@ -735,4 +793,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  emptyStateCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 20, paddingVertical: 30, paddingHorizontal: 20, alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
+  emptyStateIconCircle: { width: 60, height: 60, borderRadius: 30, backgroundColor: CREAM, justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
+  emptyStateText: { color: SAGE, textAlign: 'center', fontSize: 13, fontWeight: '500', lineHeight: 19 },
 });

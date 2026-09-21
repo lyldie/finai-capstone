@@ -5,20 +5,23 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
-import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Import natin ang AuthContext
+import { useAuth } from '../context/AuthContext';
+
+// ---- FINAI BRAND TOKENS ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
 
 export default function PinLoginScreen() {
   const [pin, setPin] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  // 👈 [NEW] Kunin ang user data at logout function
   const { user, logoutUser } = useAuth();
 
   // Traffic Cop: Direct bypass check kapag admin o kapag valid na session
   useEffect(() => {
     const checkRoleBypass = async () => {
-      // Mas magandang basahin direkta sa session para mabilis
       const role = await AsyncStorage.getItem('user_role');
       if (role === 'admin') {
         router.replace('/(admin)/admin-dashboard');
@@ -46,7 +49,6 @@ export default function PinLoginScreen() {
     setLoading(true);
 
     try {
-      // 👈 [NEW] Mas reliable: kunin muna sa context bago sa storage
       const email = user?.email || await AsyncStorage.getItem('user_email');
       const savedPin = await AsyncStorage.getItem('user_pin');
 
@@ -71,7 +73,7 @@ export default function PinLoginScreen() {
         } else {
           Alert.alert("Mali paps!", data.detail || "Hindi match ang PIN mo.");
           setPin('');
-          setLoading(false); // 👈 [NEW] Kailangan itigil ang loading kung mali ang PIN sa backend
+          setLoading(false);
           return;
         }
       }
@@ -108,7 +110,6 @@ export default function PinLoginScreen() {
     }
   };
 
-  // 👈 [NEW] Proper Switch Account Logic
   const handleSwitchAccount = async () => {
     Alert.alert("Switch Account", "Sigurado ka bang gusto mong mag-log out at gumamit ng ibang account?", [
       { text: "Cancel", style: "cancel" },
@@ -116,7 +117,7 @@ export default function PinLoginScreen() {
         text: "Yes, Log out", 
         style: "destructive",
         onPress: async () => {
-          await logoutUser(); // Binubura lahat ng session data (PIN, Email, etc.)
+          await logoutUser();
           router.replace('/login');
         }
       }
@@ -124,12 +125,12 @@ export default function PinLoginScreen() {
   };
 
   return (
-    <LinearGradient colors={['#1c3c36', '#000']} style={styles.container}>
+    <LinearGradient colors={[DEEP_GREEN, TEAL]} style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" />
 
       <View style={styles.header}>
-        <Ionicons name="lock-closed" size={50} color="#edb232" />
+        <Ionicons name="lock-closed" size={50} color={GOLD} />
         <Text style={styles.title}>Welcome Back!</Text>
         <Text style={styles.subtitle}>Enter PIN to unlock</Text>
       </View>
@@ -142,7 +143,7 @@ export default function PinLoginScreen() {
 
       {loading ? (
         <View style={styles.loadingWrapper}>
-          <ActivityIndicator size="large" color="#edb232" />
+          <ActivityIndicator size="large" color={GOLD} />
           <Text style={styles.loadingText}>Unlocking FinAi...</Text>
         </View>
       ) : (
@@ -163,7 +164,6 @@ export default function PinLoginScreen() {
         </View>
       )}
 
-      {/* 👈 [NEW] Tinawag na natin yung tamang Switch Account function */}
       <TouchableOpacity 
         style={styles.switchAccountBtn}
         onPress={handleSwitchAccount}

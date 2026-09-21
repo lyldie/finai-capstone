@@ -3,9 +3,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
-const PREMIUM_DEEP_GREEN = '#144A3D'; 
-const PREMIUM_GOLD = '#D4AF37';       
-const MATTE_SAGE_INACTIVE = '#8A9A86'; 
+// ---- FINAI BRAND TOKENS (matches every other screen) ----
+const DEEP_GREEN = '#1c3c36';
+const GOLD = '#edb232';
+const SAGE = '#8BA19D';
 
 function TabBarIcon(props: {
   name: React.ComponentProps<typeof Ionicons>['name'];
@@ -19,18 +20,17 @@ export default function TabLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <Tabs
         screenOptions={{
-          tabBarActiveTintColor: PREMIUM_GOLD, 
-          tabBarInactiveTintColor: MATTE_SAGE_INACTIVE, 
+          tabBarActiveTintColor: GOLD, 
+          tabBarInactiveTintColor: SAGE, 
           headerShown: false,
           tabBarStyle: {
-            backgroundColor: PREMIUM_DEEP_GREEN, 
-            borderTopWidth: 1,
-            borderTopColor: '#0F332A', 
+            backgroundColor: DEEP_GREEN, 
+            borderTopWidth: 0,
             paddingBottom: 8,
             height: 65,
             elevation: 10,
-            shadowColor: '#142D2A',
-            shadowOpacity: 0.1,
+            shadowColor: DEEP_GREEN,
+            shadowOpacity: 0.15,
             shadowRadius: 10,
           },
           tabBarLabelStyle: {
@@ -46,7 +46,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Home', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "home" : "home-outline"} color={focused ? PREMIUM_GOLD : MATTE_SAGE_INACTIVE} />
+              <TabBarIcon name={focused ? "home" : "home-outline"} color={focused ? GOLD : SAGE} />
             ), 
           }} 
         />
@@ -57,7 +57,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Transactions', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "receipt" : "receipt-outline"} color={focused ? PREMIUM_GOLD : MATTE_SAGE_INACTIVE} />
+              <TabBarIcon name={focused ? "receipt" : "receipt-outline"} color={focused ? GOLD : SAGE} />
             ), 
           }} 
         />
@@ -68,7 +68,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Insights', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "pie-chart" : "pie-chart-outline"} color={focused ? PREMIUM_GOLD : MATTE_SAGE_INACTIVE} />
+              <TabBarIcon name={focused ? "pie-chart" : "pie-chart-outline"} color={focused ? GOLD : SAGE} />
             ), 
           }} 
         />

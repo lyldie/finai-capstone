@@ -10,6 +10,12 @@ import { Checkbox } from 'expo-checkbox';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../config'; 
 
+// ---- FINAI BRAND TOKENS (matches getstarted.tsx / login.tsx exactly) ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#8BA19D';
+
 export default function SignupScreen() {
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -109,7 +115,7 @@ export default function SignupScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
       
-      <LinearGradient colors={['#4c8479', '#2b5f56']} style={styles.header}>
+      <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.header}>
         <View style={styles.headerTextContainer}>
           <Text style={styles.headerTitle}>Register{"\n"}Ka Munaaa{"\n"}Sebby Ko, Okay?</Text>
         </View>
@@ -126,10 +132,10 @@ export default function SignupScreen() {
       >
         {/* Full Name */}
         <View style={styles.inputWrapper}>
-          <Ionicons name="person" size={20} color="#999" style={styles.icon} />
+          <Ionicons name="person" size={20} color={SAGE} style={styles.icon} />
           <TextInput 
             placeholder="Full Name" 
-            placeholderTextColor="#999" 
+            placeholderTextColor={SAGE} 
             style={styles.input} 
             value={name} 
             onChangeText={setName} 
@@ -140,10 +146,10 @@ export default function SignupScreen() {
 
         {/* Email Address */}
         <View style={styles.inputWrapper}>
-          <Ionicons name="mail" size={20} color="#999" style={styles.icon} />
+          <Ionicons name="mail" size={20} color={SAGE} style={styles.icon} />
           <TextInput 
             placeholder="Email Address" 
-            placeholderTextColor="#999" 
+            placeholderTextColor={SAGE} 
             style={styles.input} 
             value={email} 
             onChangeText={setEmail} 
@@ -155,10 +161,10 @@ export default function SignupScreen() {
 
         {/* Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
-          <Ionicons name="lock-closed" size={20} color="#999" style={styles.icon} />
+          <Ionicons name="lock-closed" size={20} color={SAGE} style={styles.icon} />
           <TextInput 
             placeholder="Password" 
-            placeholderTextColor="#999" 
+            placeholderTextColor={SAGE} 
             style={styles.input} 
             value={password} 
             onChangeText={setPassword} 
@@ -166,16 +172,16 @@ export default function SignupScreen() {
             editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
-            <Ionicons name={showPassword ? "eye-off" : "eye"} size={20} color="#999" />
+            <Ionicons name={showPassword ? "eye-off" : "eye"} size={20} color={SAGE} />
           </TouchableOpacity>
         </View>
 
         {/* Retype Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
-          <Ionicons name="lock-closed" size={20} color="#999" style={styles.icon} />
+          <Ionicons name="lock-closed" size={20} color={SAGE} style={styles.icon} />
           <TextInput 
             placeholder="Retype Password" 
-            placeholderTextColor="#999" 
+            placeholderTextColor={SAGE} 
             style={styles.input} 
             value={retypePassword} 
             onChangeText={setRetypePassword} 
@@ -183,7 +189,7 @@ export default function SignupScreen() {
             editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowRetypePassword(!showRetypePassword)}>
-            <Ionicons name={showRetypePassword ? "eye-off" : "eye"} size={20} color="#999" />
+            <Ionicons name={showRetypePassword ? "eye-off" : "eye"} size={20} color={SAGE} />
           </TouchableOpacity>
         </View>
 
@@ -192,14 +198,14 @@ export default function SignupScreen() {
           <Checkbox 
             value={isAgree} 
             onValueChange={setAgree} 
-            color={isAgree ? '#2b5f56' : undefined} 
+            color={isAgree ? DEEP_GREEN : undefined} 
             disabled={loading} // 👈 [NEW]
           />
           <Text style={styles.checkboxLabel}> I agree to <Text style={styles.boldText} onPress={showPrivacyPolicy}>Terms & Privacy</Text></Text>
         </View>
 
         {/* Sign Up Button */}
-        <TouchableOpacity style={styles.signupButton} onPress={handleSignup} disabled={loading}>
+        <TouchableOpacity style={styles.signupButton} onPress={handleSignup} disabled={loading} activeOpacity={0.85}>
           {loading ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Sign Up</Text>}
         </TouchableOpacity>
 
@@ -220,14 +226,14 @@ const styles = StyleSheet.create({
   logoCircle: { position: 'absolute', top: 50, right: 25, width: 80, height: 80, backgroundColor: 'white', borderRadius: 40, justifyContent: 'center', alignItems: 'center', elevation: 8 },
   logo: { width: 60, height: 60 }, 
   formContainer: { padding: 30, paddingTop: 25 },
-  inputWrapper: { flexDirection: 'row', alignItems: 'center', borderRadius: 30, borderWidth: 1.5, borderColor: '#2b5f56', marginBottom: 15, paddingHorizontal: 20, height: 55 },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', borderRadius: 30, borderWidth: 1.5, borderColor: TEAL, marginBottom: 15, paddingHorizontal: 20, height: 55 },
   icon: { marginRight: 10 },
-  input: { flex: 1, color: '#333', fontSize: 16 },
+  input: { flex: 1, color: DEEP_GREEN, fontSize: 16 },
   checkboxContainer: { flexDirection: 'row', alignItems: 'center', marginVertical: 10 },
-  checkboxLabel: { color: '#666', fontSize: 13, marginLeft: 8 },
-  boldText: { fontWeight: 'bold', color: '#edb232' }, 
-  signupButton: { backgroundColor: '#2b5f56', height: 55, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginTop: 10 },
+  checkboxLabel: { color: SAGE, fontSize: 13, marginLeft: 8 },
+  boldText: { fontWeight: 'bold', color: GOLD }, 
+  signupButton: { backgroundColor: DEEP_GREEN, height: 55, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginTop: 10, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
-  footerText: { textAlign: 'center', marginTop: 25, color: '#666' },
-  boldLink: { fontWeight: 'bold', color: '#2b5f56' }
+  footerText: { textAlign: 'center', marginTop: 25, color: SAGE },
+  boldLink: { fontWeight: 'bold', color: DEEP_GREEN }
 });

@@ -1,14 +1,23 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../context/AuthContext';
-import { API_URL } from '../../config'; // 👈 1. IDINAGDAG NATIN ITO PARA TAWAGIN SI CONFIG.JS
+import { API_URL } from '../../config';
 
-const GREEN = '#144A3D';
+// ---- FINAI BRAND TOKENS ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
+const SAGE = '#8BA19D';
+const CREAM = '#FAF7F2';
+const EXPENSE = '#FF6259';
 
-// 👈 2. PINALITAN NATIN YUNG HARDCODED IP NG VARIABLE GALING SA CONFIG
-const API_BASE_URL = `${API_URL}/api`;
+// FIX: users.py's router has prefix="/api/users" -- previously this pointed at
+// `${API_URL}/api`, missing the "/users" segment entirely, so every call from this
+// screen (update-income, change-pin, change-password) was hitting a 404.
+const API_BASE_URL = `${API_URL}/api/users`;
 
 export default function ProfileScreen() {
   const { user, logoutUser } = useAuth();
@@ -28,7 +37,11 @@ export default function ProfileScreen() {
 
   // --- HANDLERS ---
   const handleUpdateIncome = async () => {
-    if (!newIncome || isNaN(Number(newIncome))) {
+    // FIX: previously only checked for non-numeric input, not zero/negative --
+    // every other amount field in the app (transactions, budgets, goals) requires a
+    // positive value, so this screen was the one inconsistent spot.
+    const parsedIncome = Number(newIncome);
+    if (!newIncome || isNaN(parsedIncome) || parsedIncome <= 0) {
       Alert.alert('Oops!', 'Maglagay ng tamang amount paps.');
       return;
     }
@@ -37,7 +50,7 @@ export default function ProfileScreen() {
       const response = await fetch(`${API_BASE_URL}/${user?.id}/update-income`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ monthly_income: parseFloat(newIncome) })
+        body: JSON.stringify({ monthly_income: parsedIncome })
       });
       
       if (response.ok) {
@@ -45,7 +58,8 @@ export default function ProfileScreen() {
         setIncomeModalVisible(false);
         setNewIncome('');
       } else {
-        Alert.alert('Error', 'Hindi ma-update ang income. Subukan ulit.');
+        const data = await response.json().catch(() => ({}));
+        Alert.alert('Error', data.detail || 'Hindi ma-update ang income. Subukan ulit.');
       }
     } catch (error) {
       Alert.alert('Connection Error', 'Check your backend server.');
@@ -53,8 +67,8 @@ export default function ProfileScreen() {
   };
 
   const handleChangePin = async () => {
-    if (!oldPin || !newPin || newPin.length < 4) {
-      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang PIN dapat ay at least 4 digits.');
+    if (!oldPin || !newPin || newPin.length !== 4) {
+      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang bagong PIN ay dapat 4 digits.');
       return;
     }
 
@@ -114,8 +128,8 @@ export default function ProfileScreen() {
   };
 
   // Reusable Menu Button Component
-  const MenuOption = ({ icon, title, subtitle, onPress, color = GREEN }: any) => (
-    <TouchableOpacity style={styles.menuItem} onPress={onPress}>
+  const MenuOption = ({ icon, title, subtitle, onPress, color = DEEP_GREEN }: any) => (
+    <TouchableOpacity style={styles.menuItem} onPress={onPress} activeOpacity={0.7}>
       <View style={[styles.menuIconBox, { backgroundColor: `${color}15` }]}>
         <Ionicons name={icon} size={22} color={color} />
       </View>
@@ -123,22 +137,22 @@ export default function ProfileScreen() {
         <Text style={styles.menuTitle}>{title}</Text>
         {subtitle && <Text style={styles.menuSubtitle}>{subtitle}</Text>}
       </View>
-      <Ionicons name="chevron-forward" size={20} color="#CBD5E1" />
+      <Ionicons name="chevron-forward" size={20} color={SAGE} />
     </TouchableOpacity>
   );
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F7F9F8" />
+      <StatusBar barStyle="light-content" backgroundColor={DEEP_GREEN} />
       
       {/* HEADER SECTION */}
-      <View style={styles.header}>
+      <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.header}>
         <View style={styles.profileAvatar}>
           <Text style={styles.avatarText}>{user?.name ? user.name.charAt(0).toUpperCase() : 'U'}</Text>
         </View>
         <Text style={styles.userName}>{user?.name || 'User'}</Text>
         <Text style={styles.userEmail}>{user?.email || 'user@email.com'}</Text>
-      </View>
+      </LinearGradient>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         
@@ -156,6 +170,7 @@ export default function ProfileScreen() {
             icon="grid-outline" 
             title="Custom Categories & Accounts" 
             subtitle="Manage your personal presets"
+            color={TEAL}
             onPress={() => router.push('/custom-presets' as any)}
           />
         </View>
@@ -167,6 +182,7 @@ export default function ProfileScreen() {
             icon="keypad-outline" 
             title="Change App PIN" 
             subtitle="Update your 4-digit lock code"
+            color={GOLD}
             onPress={() => setPinModalVisible(true)} 
           />
           <View style={styles.divider} />
@@ -174,13 +190,14 @@ export default function ProfileScreen() {
             icon="lock-closed-outline" 
             title="Change Password" 
             subtitle="Update your account password"
+            color={GOLD}
             onPress={() => setPasswordModalVisible(true)} 
           />
         </View>
 
         {/* LOGOUT BUTTON */}
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Ionicons name="log-out-outline" size={20} color="#EF4444" style={{ marginRight: 8 }} />
+        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout} activeOpacity={0.8}>
+          <Ionicons name="log-out-outline" size={20} color={EXPENSE} style={{ marginRight: 8 }} />
           <Text style={styles.logoutText}>Log Out</Text>
         </TouchableOpacity>
 
@@ -196,9 +213,10 @@ export default function ProfileScreen() {
             <View style={styles.inputWrapper}>
               <Text style={styles.currencyPrefix}>₱</Text>
               <TextInput 
-                style={styles.inputField}
+                style={styles.amountInputField}
                 keyboardType="numeric"
                 placeholder="0.00"
+                placeholderTextColor={SAGE}
                 value={newIncome}
                 onChangeText={setNewIncome}
               />
@@ -208,7 +226,7 @@ export default function ProfileScreen() {
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setIncomeModalVisible(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleUpdateIncome}>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleUpdateIncome} activeOpacity={0.85}>
                 <Text style={styles.saveBtnText}>Save Update</Text>
               </TouchableOpacity>
             </View>
@@ -224,29 +242,31 @@ export default function ProfileScreen() {
             <Text style={styles.modalDesc}>Ilagay ang iyong kasalukuyang PIN bago mag-set ng bago.</Text>
             
             <TextInput 
-              style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
+              style={[styles.textInputField, { marginBottom: 12 }]}
               keyboardType="numeric"
               secureTextEntry
               placeholder="Old PIN"
+              placeholderTextColor={SAGE}
               maxLength={4}
               value={oldPin}
-              onChangeText={setOldPin}
+              onChangeText={(t) => setOldPin(t.replace(/[^0-9]/g, ''))}
             />
             <TextInput 
-              style={[styles.inputField, { width: '100%', marginBottom: 24, paddingHorizontal: 15 }]}
+              style={[styles.textInputField, { marginBottom: 24 }]}
               keyboardType="numeric"
               secureTextEntry
               placeholder="New PIN (4 digits)"
+              placeholderTextColor={SAGE}
               maxLength={4}
               value={newPin}
-              onChangeText={setNewPin}
+              onChangeText={(t) => setNewPin(t.replace(/[^0-9]/g, ''))}
             />
 
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setPinModalVisible(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePin}>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePin} activeOpacity={0.85}>
                 <Text style={styles.saveBtnText}>Update PIN</Text>
               </TouchableOpacity>
             </View>
@@ -262,16 +282,18 @@ export default function ProfileScreen() {
             <Text style={styles.modalDesc}>Protektahan ang iyong FinAi account gamit ang matibay na password.</Text>
             
             <TextInput 
-              style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
+              style={[styles.textInputField, { marginBottom: 12 }]}
               secureTextEntry
               placeholder="Old Password"
+              placeholderTextColor={SAGE}
               value={oldPassword}
               onChangeText={setOldPassword}
             />
             <TextInput 
-              style={[styles.inputField, { width: '100%', marginBottom: 24, paddingHorizontal: 15 }]}
+              style={[styles.textInputField, { marginBottom: 24 }]}
               secureTextEntry
               placeholder="New Password"
+              placeholderTextColor={SAGE}
               value={newPassword}
               onChangeText={setNewPassword}
             />
@@ -280,7 +302,7 @@ export default function ProfileScreen() {
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setPasswordModalVisible(false)}>
                 <Text style={styles.cancelBtnText}>Cancel</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePassword}>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleChangePassword} activeOpacity={0.85}>
                 <Text style={styles.saveBtnText}>Update Password</Text>
               </TouchableOpacity>
             </View>
@@ -293,35 +315,36 @@ export default function ProfileScreen() {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F7F9F8' },
-  header: { alignItems: 'center', paddingTop: 60, paddingBottom: 30, backgroundColor: '#FFFFFF', borderBottomWidth: 1, borderColor: '#E6ECE9' },
-  profileAvatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: GREEN, justifyContent: 'center', alignItems: 'center', marginBottom: 12, shadowColor: GREEN, shadowOpacity: 0.3, shadowRadius: 10, elevation: 5 },
+  container: { flex: 1, backgroundColor: CREAM },
+  header: { alignItems: 'center', paddingTop: 60, paddingBottom: 30, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
+  profileAvatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)' },
   avatarText: { fontSize: 32, fontWeight: 'bold', color: '#FFFFFF' },
-  userName: { fontSize: 22, fontWeight: '800', color: '#142D2A' },
-  userEmail: { fontSize: 14, color: '#7C9A95', marginTop: 4 },
+  userName: { fontSize: 22, fontWeight: '800', color: '#FFFFFF' },
+  userEmail: { fontSize: 14, color: 'rgba(255,255,255,0.7)', marginTop: 4 },
   scrollContent: { padding: 20, paddingBottom: 100 },
-  sectionTitle: { fontSize: 13, fontWeight: '700', color: '#7C9A95', textTransform: 'uppercase', marginBottom: 10, marginTop: 15, marginLeft: 5 },
-  cardGroup: { backgroundColor: '#FFFFFF', borderRadius: 20, borderWidth: 1, borderColor: '#E6ECE9', overflow: 'hidden' },
+  sectionTitle: { fontSize: 13, fontWeight: '700', color: SAGE, textTransform: 'uppercase', marginBottom: 10, marginTop: 15, marginLeft: 5, letterSpacing: 0.4 },
+  cardGroup: { backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
   menuItem: { flexDirection: 'row', alignItems: 'center', padding: 16 },
   menuIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
   menuTextContainer: { flex: 1 },
-  menuTitle: { fontSize: 15, fontWeight: '700', color: '#142D2A', marginBottom: 2 },
-  menuSubtitle: { fontSize: 12, color: '#8A9A86' },
-  divider: { height: 1, backgroundColor: '#F0F4F2', marginLeft: 70 },
-  logoutButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: '#FEF2F2', padding: 16, borderRadius: 16, marginTop: 30, borderWidth: 1, borderColor: '#FEE2E2' },
-  logoutText: { color: '#EF4444', fontSize: 16, fontWeight: '700' },
+  menuTitle: { fontSize: 15, fontWeight: '700', color: DEEP_GREEN, marginBottom: 2 },
+  menuSubtitle: { fontSize: 12, color: SAGE },
+  divider: { height: 1, backgroundColor: CREAM, marginLeft: 70 },
+  logoutButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255, 98, 89, 0.08)', padding: 16, borderRadius: 16, marginTop: 30 },
+  logoutText: { color: EXPENSE, fontSize: 16, fontWeight: '700' },
   
   // Modal Styles
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalContent: { backgroundColor: '#FFFFFF', width: '100%', borderRadius: 24, padding: 24, alignItems: 'center' },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#142D2A', marginBottom: 8 },
-  modalDesc: { fontSize: 13, color: '#7C9A95', textAlign: 'center', marginBottom: 24, lineHeight: 20 },
-  inputWrapper: { flexDirection: 'row', alignItems: 'center', width: '100%', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 16, paddingHorizontal: 20, marginBottom: 24 },
-  currencyPrefix: { fontSize: 24, fontWeight: '700', color: GREEN, marginRight: 10 },
-  inputField: { flex: 1, height: 60, fontSize: 20, fontWeight: '700', color: '#142D2A', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 16 },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalContent: { backgroundColor: '#FFFFFF', width: '100%', borderRadius: 24, padding: 24, alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 16, elevation: 5 },
+  modalTitle: { fontSize: 20, fontWeight: '800', color: DEEP_GREEN, marginBottom: 8 },
+  modalDesc: { fontSize: 13, color: SAGE, textAlign: 'center', marginBottom: 24, lineHeight: 20 },
+  inputWrapper: { flexDirection: 'row', alignItems: 'center', width: '100%', backgroundColor: CREAM, borderRadius: 16, paddingHorizontal: 20, marginBottom: 24 },
+  currencyPrefix: { fontSize: 24, fontWeight: '700', color: DEEP_GREEN, marginRight: 10 },
+  amountInputField: { flex: 1, height: 60, fontSize: 20, fontWeight: '700', color: DEEP_GREEN },
+  textInputField: { width: '100%', height: 55, fontSize: 15, fontWeight: '600', color: DEEP_GREEN, backgroundColor: CREAM, borderRadius: 16, paddingHorizontal: 20 },
   modalActions: { flexDirection: 'row', width: '100%', gap: 12 },
-  cancelBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: '#F0F4F2', alignItems: 'center' },
-  cancelBtnText: { color: '#58706B', fontSize: 15, fontWeight: '700' },
-  saveBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: GREEN, alignItems: 'center' },
+  cancelBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: CREAM, alignItems: 'center' },
+  cancelBtnText: { color: SAGE, fontSize: 15, fontWeight: '700' },
+  saveBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: DEEP_GREEN, alignItems: 'center' },
   saveBtnText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });

@@ -7,7 +7,12 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
-import { useAuth } from '../context/AuthContext'; // 👈 [NEW] Import natin yung pinagandang AuthContext
+import { useAuth } from '../context/AuthContext';
+
+// ---- FINAI BRAND TOKENS ----
+const DEEP_GREEN = '#1c3c36';
+const TEAL = '#3D7D6C';
+const GOLD = '#edb232';
 
 export default function OtpVerifyScreen() {
   const [otp, setOtp] = useState('');
@@ -18,7 +23,6 @@ export default function OtpVerifyScreen() {
   const { email } = useLocalSearchParams(); 
   const targetEmail = Array.isArray(email) ? email[0] : (email || '');
 
-  // 👈 [NEW] Kunin ang loginUser function
   const { loginUser } = useAuth(); 
 
   const handleVerify = async () => {
@@ -50,16 +54,14 @@ export default function OtpVerifyScreen() {
       if (response.ok) {
         const userId = data.user_id || data.id;
         
-        // 👈 [NEW INTEGRATION]: I-save ang user session sa global state at AsyncStorage nang sabay
         if (userId) {
           await loginUser({
             id: String(userId),
-            name: data.name || "User", // Fallback incase hindi ibalik ng backend ang name sa OTP verify
+            name: data.name || "User",
             email: cleanEmail,
             role: data.role
           });
         } else {
-           // Fallback kung email lang ang naibalik
            await AsyncStorage.setItem('user_email', cleanEmail);
         }
 
@@ -77,15 +79,14 @@ export default function OtpVerifyScreen() {
   };
 
   return (
-    <LinearGradient colors={['#1c3c36', '#4c8479']} style={styles.container}>
+    <LinearGradient colors={[DEEP_GREEN, TEAL]} style={styles.container}>
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" />
 
-      {/* 👈 [NEW] Cross-platform KeyboardAvoidingView behavior */}
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.content}>
         <Text style={styles.title}>OTP Verification</Text>
         <Text style={styles.subtitle}>Pakisulat yung 6-digit code na sinend namin sa:{"\n"}
-          <Text style={{fontWeight: 'bold', color: '#edb232'}}>{targetEmail}</Text>
+          <Text style={{fontWeight: 'bold', color: GOLD}}>{targetEmail}</Text>
         </Text>
 
         <Pressable style={styles.otpContainer} onPress={() => inputRef.current?.focus()}>
@@ -110,13 +111,13 @@ export default function OtpVerifyScreen() {
             style={[styles.btn, { opacity: (otp.length === 6 && !loading) ? 1 : 0.6 }]} 
             onPress={handleVerify}
             disabled={loading || otp.length < 6}
+            activeOpacity={0.85}
         >
-          {loading ? <ActivityIndicator color="#1c3c36" /> : <Text style={styles.btnText}>VERIFY CODE</Text>}
+          {loading ? <ActivityIndicator color={DEEP_GREEN} /> : <Text style={styles.btnText}>VERIFY CODE</Text>}
         </TouchableOpacity>
         
-        {/* 👈 [NEW] Naka-disable din ang 'Back to Signup' kapag naglo-loading */}
         <TouchableOpacity onPress={() => router.replace('/signup')} style={{marginTop: 25}} disabled={loading}>
-          <Text style={{color: '#fff', opacity: 0.8}}>Wrong email? <Text style={{fontWeight: 'bold', color: '#edb232'}}>Back to Signup</Text></Text>
+          <Text style={{color: '#fff', opacity: 0.8}}>Wrong email? <Text style={{fontWeight: 'bold', color: GOLD}}>Back to Signup</Text></Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
     </LinearGradient>
@@ -130,8 +131,8 @@ const styles = StyleSheet.create({
     subtitle: { fontSize: 14, color: '#fff', textAlign: 'center', opacity: 0.8, marginBottom: 40 },
     otpContainer: { flexDirection: 'row', gap: 10 },
     box: { width: 45, height: 55, borderRadius: 10, borderWidth: 1, borderColor: 'rgba(255,255,255,0.3)', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.1)' },
-    boxActive: { borderColor: '#edb232' },
+    boxActive: { borderColor: GOLD },
     boxText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
-    btn: { backgroundColor: '#edb232', width: '100%', height: 55, borderRadius: 28, justifyContent: 'center', alignItems: 'center', marginTop: 40 },
-    btnText: { color: '#1c3c36', fontWeight: 'bold', fontSize: 16 }
+    btn: { backgroundColor: GOLD, width: '100%', height: 55, borderRadius: 28, justifyContent: 'center', alignItems: 'center', marginTop: 40 },
+    btnText: { color: DEEP_GREEN, fontWeight: 'bold', fontSize: 16 }
 });

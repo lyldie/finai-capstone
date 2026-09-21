@@ -22,3 +22,9 @@ async def ensure_indexes():
         [("user_id", 1), ("category_id", 1), ("period_type", 1), ("period_key", 1)],
         unique=True,
     )
+
+    # FIX: pending_signups now backs OTP verification (previously an in-memory dict --
+    # see main.py's /register and /verify-otp). This TTL index auto-deletes any
+    # unverified registration 15 minutes after it was created, a small safety margin
+    # past the 10-minute app-level expiry check, so abandoned signups don't pile up.
+    await db.pending_signups.create_index("timestamp", expireAfterSeconds=900)
