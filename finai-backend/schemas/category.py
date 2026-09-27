@@ -3,9 +3,9 @@ from typing import Optional
 
 class CategoryCreate(BaseModel):
     name: str
-    type: str                    # "income" o "expense"
-    category_role: str = "user"  # Default natin ay "user" para hindi mo kailangan i-set kada gawa
-    user_id: Optional[str] = None # Optional ito, pero required kung ang role ay "user"
+    type: str
+    category_role: str = "user"
+    user_id: Optional[str] = None
     icon: Optional[str] = None
 
 class CategoryResponse(BaseModel):
@@ -15,6 +15,7 @@ class CategoryResponse(BaseModel):
     category_role: str = "user"
     user_id: Optional[str] = None
     icon: Optional[str] = None
+    is_archived: bool = False  # NEW: drives the Active/Archived split in categories.tsx
 
     class Config:
         from_attributes = True

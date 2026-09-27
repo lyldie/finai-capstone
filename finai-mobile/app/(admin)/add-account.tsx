@@ -6,11 +6,13 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
+import { useAuth } from '../../context/AuthContext';
 
 export default function AddAccountScreen() {
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { user } = useAuth();
 
   const handleAddAccount = async () => {
     if (!name) {
@@ -20,20 +22,26 @@ export default function AddAccountScreen() {
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/accounts/`, {
+      // CHANGED: hits the new admin-only endpoint (was /api/accounts/) and
+      // sends the admin token. user_id/account_role are no longer needed in
+      // the body -- the server forces them now -- but harmless to omit.
+      const response = await fetch(`${API_URL}/api/accounts/admin`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.token}`,
+        },
         body: JSON.stringify({ 
           name: name,
-          initial_balance: 0.0, // Added to pass schema validation
-          icon: "wallet",       // Added fallback icon
-          user_id: null,        
-          account_role: "admin" 
+          initial_balance: 0.0,
+          icon: "wallet",
         }),
       });
 
       if (response.ok) {
         router.back();
+      } else if (response.status === 401) {
+        Alert.alert("Session Expired", "Please log in again.");
       } else {
         const errorData = await response.json();
         console.error(errorData); 

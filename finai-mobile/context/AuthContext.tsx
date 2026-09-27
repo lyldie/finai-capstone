@@ -1,25 +1,25 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 1. Pinalawak natin ang interface para hawak niya lahat ng importanteng data
 interface User {
   id: string;
   name: string;
   email: string;
   role?: string;
+  token?: string; // NEW: only present for admin logins (see main.py /login)
 }
 
 interface AuthContextType {
   user: User | null;
   loginUser: (userData: User) => Promise<void>;
   logoutUser: () => Promise<void>;
-  isLoading: boolean; // Para hindi mag-flicker ang screen habang nagche-check ng session
+  isLoading: boolean;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [user, setUser] = useState<User | null>(null); // Tinanggal na natin yung hardcoded name
+  const [user, setUser] = useState<User | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -29,13 +29,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const storedName = await AsyncStorage.getItem('user_name');
         const storedEmail = await AsyncStorage.getItem('user_email');
         const storedRole = await AsyncStorage.getItem('user_role');
+        const storedToken = await AsyncStorage.getItem('user_token'); // NEW
 
         if (storedId && storedName && storedEmail) {
-          setUser({ 
-            id: storedId, 
-            name: storedName, 
-            email: storedEmail, 
-            role: storedRole || undefined 
+          setUser({
+            id: storedId,
+            name: storedName,
+            email: storedEmail,
+            role: storedRole || undefined,
+            token: storedToken || undefined, // NEW
           });
         }
       } catch (e) {
@@ -47,7 +49,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     loadUserData();
   }, []);
 
-  // 2. Centralized Login Function (Ito ang tatawagin natin sa login.tsx mamaya)
   const loginUser = async (userData: User) => {
     setUser(userData);
     await AsyncStorage.setItem('user_id', userData.id);
@@ -56,12 +57,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (userData.role) {
       await AsyncStorage.setItem('user_role', userData.role);
     }
+    // NEW: only admins receive a token from /login; regular users simply won't hit this branch.
+    if (userData.token) {
+      await AsyncStorage.setItem('user_token', userData.token);
+    }
   };
 
-  // 3. Centralized Logout Function
   const logoutUser = async () => {
     setUser(null);
-    const keysToRemove = ['user_id', 'user_name', 'user_email', 'user_role', 'user_pin'];
+    const keysToRemove = ['user_id', 'user_name', 'user_email', 'user_role', 'user_pin', 'user_token']; // NEW: user_token added
     await AsyncStorage.multiRemove(keysToRemove);
   };
 

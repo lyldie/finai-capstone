@@ -6,7 +6,7 @@ class GoalTypeCreate(BaseModel):
 class GoalTypeResponse(BaseModel):
     id: str
     name: str
+    is_archived: bool = False  # NEW: drives the Active/Archived split in goal-types.tsx
 
-    # Dapat nakapasok ito sa loob ng Response class paps!
     class Config:
         from_attributes = True

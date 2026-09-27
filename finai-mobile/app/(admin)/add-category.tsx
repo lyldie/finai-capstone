@@ -14,12 +14,14 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
+import { useAuth } from '../../context/AuthContext';
 
 export default function AddCategoryScreen() {
   const [name, setName] = useState('');
-  const [type, setType] = useState('expense'); // Default to expense
+  const [type, setType] = useState('expense');
   const [loading, setLoading] = useState(false);
   const router = useRouter();
+  const { user } = useAuth();
 
   const handleSave = async () => {
     if (!name) {
@@ -29,22 +31,26 @@ export default function AddCategoryScreen() {
 
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/categories/`, {
+      // CHANGED: hits the new admin-only endpoint (was /api/categories/) and
+      // sends the admin token. user_id/category_role no longer need to be
+      // sent -- the server forces them -- but harmless to omit.
+      const response = await fetch(`${API_URL}/api/categories/admin`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.token}`,
+        },
         body: JSON.stringify({ 
           name: name, 
-          type: type, 
-          category_role: "admin",
-          user_id: null
-          // HINDI NA NATIN IPAPASA YUNG ICON DITO!
-          // Hahayaan natin ang backend (get_default_icon) ang mag-assign base sa pangalan para mas matalino!
+          type: type,
         }),
       });
 
       if (response.ok) {
         Alert.alert("Success", "Added na paps!");
         router.back(); 
+      } else if (response.status === 401) {
+        Alert.alert("Session Expired", "Please log in again.");
       } else {
         Alert.alert("Error", "Hindi ma-save, check backend logs.");
       }
@@ -62,7 +68,6 @@ export default function AddCategoryScreen() {
         style={styles.content}
       >
         
-        {/* HEADER */}
         <View style={styles.header}>
           <TouchableOpacity onPress={() => router.back()}>
             <Ionicons name="arrow-back" size={24} color="#1c3c36" />
@@ -70,7 +75,6 @@ export default function AddCategoryScreen() {
           <Text style={styles.title}>New Category</Text>
         </View>
 
-        {/* FORM */}
         <View style={styles.form}>
           <Text style={styles.label}>Category Name</Text>
           <TextInput 

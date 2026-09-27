@@ -1,4 +1,3 @@
-# finai-backend/schemas/user.py
 from pydantic import BaseModel
 from typing import Optional
 
@@ -7,6 +6,7 @@ class UserResponse(BaseModel):
     name: str
     email: str
     role: str
+    is_archived: bool = False  # NEW: drives the Active/Archived split in users.tsx
 
     class Config:
         from_attributes = True

@@ -7,6 +7,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
 import { getIcon } from '../../utils/iconHelper'; 
+import { useAuth } from '../../context/AuthContext';
 
 interface GoalType {
   id: string;
@@ -22,6 +23,7 @@ export default function GoalTypesScreen() {
   const [newName, setNewName] = useState('');
 
   const router = useRouter();
+  const { user } = useAuth();
 
   useFocusEffect(
     useCallback(() => {
@@ -48,8 +50,13 @@ export default function GoalTypesScreen() {
       { 
         text: "Delete", style: "destructive",
         onPress: async () => {
-          const response = await fetch(`${API_URL}/api/goal-types/${id}`, { method: 'DELETE' });
+          // CHANGED: gated endpoint, needs the admin token
+          const response = await fetch(`${API_URL}/api/goal-types/${id}`, {
+            method: 'DELETE',
+            headers: { Authorization: `Bearer ${user?.token}` },
+          });
           if (response.ok) fetchGoalTypes();
+          else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
         }
       }
     ]);
@@ -64,15 +71,23 @@ export default function GoalTypesScreen() {
   const updateGoalType = async () => {
     if (!editingGoalType) return;
     try {
+      // CHANGED: gated endpoint, needs the admin token
       const response = await fetch(`${API_URL}/api/goal-types/${editingGoalType.id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.token}`,
+        },
         body: JSON.stringify({ name: newName }), 
       });
       if (response.ok) {
         setModalVisible(false);
         fetchGoalTypes();
-      } else Alert.alert("Error", "Hindi ma-update.");
+      } else if (response.status === 401) {
+        Alert.alert("Session Expired", "Please log in again.");
+      } else {
+        Alert.alert("Error", "Hindi ma-update.");
+      }
     } catch (error) {
       Alert.alert("Error", "Check connection.");
     }

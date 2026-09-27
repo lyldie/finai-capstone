@@ -29,6 +29,9 @@ import uvicorn
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db, ensure_indexes
 
+# NEW: JWT token creation for admin logins (see auth.py). Used only in /login below.
+from auth import create_access_token
+
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor
 from services.budget_service import create_crossed_threshold_notifications
@@ -1092,19 +1095,31 @@ async def login(user: UserLogin):
         print(f"Bcrypt verification error: {e}")
         raise HTTPException(status_code=500, detail="Error sa pag-verify ng password.")
 
-    return {
+    if db_user.get("is_archived"):
+        raise HTTPException(status_code=403, detail="This account has been archived. Please contact an administrator.")
+
+    # CHANGED: builds the response dict first, then conditionally adds a JWT token
+    # (see auth.py) only when the user is an admin. Every field that was here before
+    # is still here, unchanged.
+    response_data = {
         "status": "Success",
         "user_id": str(db_user["_id"]),
         "name": db_user["name"],
         "email": db_user["email"],
         "role": db_user.get("role", "user"),
         "onboarding_completed": db_user.get("onboarding_completed", False),
-        # FIX: login.tsx's routing logic checks data.has_pin / data.is_setup_complete to
-        # decide whether to send the user to /setup-pin or /verify-pin -- but neither
-        # field was ever actually returned here, so that check could never be true.
-        # Returning a real has_pin field makes that routing logic actually work.
         "has_pin": bool(db_user.get("pin"))
     }
+
+    # Only admins get a token -- regular users don't need one for anything
+    # currently built.
+    if db_user.get("role") == "admin":
+        response_data["token"] = create_access_token(
+            user_id=str(db_user["_id"]),
+            role=db_user.get("role", "user")
+        )
+
+    return response_data
 
 
 @app.post("/verify-pin")

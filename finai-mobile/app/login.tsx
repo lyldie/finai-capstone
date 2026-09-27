@@ -48,21 +48,22 @@ export default function LoginScreen() {
       const data = await response.json();
 
       if (response.ok) {
+        // CHANGED: now also passes data.token through. It'll simply be undefined
+        // for non-admin logins (main.py only issues one when role === "admin"),
+        // which loginUser() already handles by skipping the AsyncStorage write.
         await loginUser({
           id: String(data.user_id),
           name: data.name,
           email: cleanedEmail,
-          role: data.role
+          role: data.role,
+          token: data.token,
         });
 
         // Smart Redirection
         if (data.role === 'admin') {
           router.replace('/(admin)/admin-dashboard'); 
         } else {
-          // FIX: previously checked data.has_pin === false and data.is_setup_complete
-          // === false -- but the backend never returned either field, so this could
-          // never actually be true and every user was sent to /verify-pin, even one
-          // who has never set up a PIN. The backend now returns a real has_pin field.
+          // (unchanged) backend now returns a real has_pin field.
           if (!data.has_pin) {
             router.replace('/setup-pin');
           } else {

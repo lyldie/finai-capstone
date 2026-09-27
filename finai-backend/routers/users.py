@@ -1,5 +1,5 @@
 # finai-backend/routers/users.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from bson import ObjectId
 from database import db
 from typing import List
@@ -7,16 +7,14 @@ from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 
 from schemas.user import UserResponse
+from auth import get_current_admin
+from .logs import log_action
 
 router = APIRouter(prefix="/api/users", tags=["Admin Users"])
 
-# Separate CryptContext instance, identical config to the one in main.py. bcrypt hashing
-# is stateless, so a second instance with the same scheme is fully interchangeable --
-# avoids a circular import between this router and main.py.
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-# --- SCHEMAS PARA SA PROFILE UPDATES ---
 class UpdateIncomeSchema(BaseModel):
     monthly_income: float = Field(..., gt=0)
 
@@ -31,77 +29,88 @@ class ChangePasswordSchema(BaseModel):
     new_password: str = Field(..., min_length=6)
 
 
-async def _require_admin(requester_id: str):
-    """FIX: get_all_users and delete_user previously had NO access control at all --
-    anyone could list every user's name/email/role, or delete any account, just by
-    calling the endpoint. This is a minimum bar (checks the requester's stored role),
-    not full authentication -- same honest caveat as everywhere else in this backend:
-    without real auth tokens, a requester_id can still be spoofed by a deliberate
-    caller. It does stop accidental/naive misuse and casual discovery, which is a real
-    improvement over having no check whatsoever."""
-    try:
-        oid = ObjectId(requester_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid requester ID")
-    requester = await db.users.find_one({"_id": oid})
-    if not requester or requester.get("role") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required.")
-
-
-# --- EXISTING ADMIN ENDPOINTS ---
 @router.get("/", response_model=List[UserResponse])
-async def get_all_users(requester_id: str):
-    await _require_admin(requester_id)
+async def get_all_users(admin: dict = Depends(get_current_admin), archived: bool = False):
+    """CHANGED: added `archived` query param, same pattern as the other
+    3 routers -- default excludes archived users."""
+    query = {"is_archived": True if archived else {"$ne": True}}
     users = []
-    async for user in db.users.find():
+    async for user in db.users.find(query):
         user_data = {
             "id": str(user["_id"]),
             "name": user.get("name", "Unknown User"),
             "email": user.get("email", "No Email"),
-            "role": user.get("role", "user")
+            "role": user.get("role", "user"),
+            "is_archived": user.get("is_archived", False),
         }
         users.append(UserResponse(**user_data))
     return users
 
 
-@router.delete("/{user_id}")
-async def delete_user(user_id: str, requester_id: str):
-    await _require_admin(requester_id)
+@router.patch("/{user_id}/archive")
+async def archive_user(user_id: str, admin: dict = Depends(get_current_admin)):
+    """NEW: replaces delete_user entirely. This is a real safety improvement,
+    not just a style change -- the old delete_user PERMANENTLY destroyed the
+    user's expenses and accounts with no way back. Archiving instead:
+      - blocks the user's future logins (see main.py's /login check)
+      - keeps every expense, account, goal, and budget of theirs intact
+      - can be undone with restore_user below
+    """
     try:
         oid = ObjectId(user_id)
     except:
         raise HTTPException(status_code=400, detail="Invalid User ID format")
 
-    result = await db.users.delete_one({"_id": oid})
-    if result.deleted_count == 0:
+    target_user = await db.users.find_one({"_id": oid})
+    if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
-    
-    await db.expenses.delete_many({"user_id": user_id})
-    await db.accounts.delete_many({"user_id": user_id, "account_role": "user"})
-    # NOTE: budgets, goals, notifications, and user-created categories tied to this
-    # user_id are not cleaned up here -- they become harmless orphaned documents
-    # (nothing will ever query them again since the user_id no longer exists), not a
-    # correctness bug, just data hygiene. Worth a dedicated cleanup pass if desired.
-    
-    return {"message": "User and their data deleted successfully"}
+
+    if target_user.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Admin accounts cannot be archived through this endpoint.")
+
+    await db.users.update_one({"_id": oid}, {"$set": {"is_archived": True}})
+    await log_action(admin["name"], f"Archived user '{target_user.get('name', user_id)}'")
+
+    return {"message": "User archived successfully"}
 
 
-# --- PROFILE ENDPOINTS ---
+@router.patch("/{user_id}/restore")
+async def restore_user(user_id: str, admin: dict = Depends(get_current_admin)):
+    """NEW: the undo for archive_user above. The user can log in again
+    immediately after this."""
+    try:
+        oid = ObjectId(user_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid User ID format")
+
+    target_user = await db.users.find_one({"_id": oid})
+    if not target_user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    await db.users.update_one({"_id": oid}, {"$set": {"is_archived": False}})
+    await log_action(admin["name"], f"Restored user '{target_user.get('name', user_id)}'")
+
+    return {"message": "User restored successfully"}
+
+
+# --- PROFILE ENDPOINTS (unchanged -- called by the user themselves, not the
+# admin panel; see earlier notes on the separate "regular users have no
+# token" gap, not part of this pass) ---
 @router.patch("/{user_id}/update-income")
 async def update_income(user_id: str, data: UpdateIncomeSchema):
     try:
         oid = ObjectId(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid User ID")
-    
+
     result = await db.users.update_one(
         {"_id": oid},
         {"$set": {"monthly_income": data.monthly_income}}
     )
-    
+
     if result.matched_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-        
+
     return {"status": "Success", "message": "Monthly income updated successfully!"}
 
 
@@ -111,18 +120,13 @@ async def change_pin(user_id: str, data: ChangePinSchema):
         oid = ObjectId(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid User ID")
-    
+
     user = await db.users.find_one({"_id": oid})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     stored_pin = str(user.get("pin", ""))
 
-    # FIX: PINs are now bcrypt hashes (see main.py's /initial-setup and /verify-pin
-    # fixes) -- comparing against data.old_pin as plaintext could never match a real
-    # hash. Same auto-upgrade pattern as /verify-pin: if a legacy plaintext PIN is
-    # found instead, it's accepted once via direct comparison, consistent with how
-    # /verify-pin already handles the same transition.
     pin_matches = False
     if stored_pin:
         try:
@@ -146,18 +150,13 @@ async def change_password(user_id: str, data: ChangePasswordSchema):
         oid = ObjectId(user_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid User ID")
-    
+
     user = await db.users.find_one({"_id": oid})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     stored_password = user.get("password", "")
 
-    # FIX: passwords have always been bcrypt-hashed at registration (main.py's
-    # /register), so the previous plaintext comparison here could never succeed for a
-    # correct password -- and if it somehow had, the next line stored the new password
-    # UNHASHED, which would have permanently locked the user out at their next login
-    # (pwd_context.verify() throws on a non-hash string, caught by /login as a 500).
     try:
         if not pwd_context.verify(data.old_password[:72], stored_password):
             raise HTTPException(status_code=400, detail="Mali ang iyong kasalukuyang password.")

@@ -6,10 +6,12 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../../config';
+import { useAuth } from '../../context/AuthContext';
 
 export default function AddGoalTypeScreen() {
   const [name, setName] = useState('');
   const router = useRouter();
+  const { user } = useAuth();
 
   const handleAdd = async () => {
     if (!name.trim()) {
@@ -18,14 +20,20 @@ export default function AddGoalTypeScreen() {
     }
 
     try {
+      // CHANGED: this endpoint is now admin-gated, needs the token
       const response = await fetch(`${API_URL}/api/goal-types/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.token}`,
+        },
         body: JSON.stringify({ name }),
       });
 
       if (response.ok) {
         router.back();
+      } else if (response.status === 401) {
+        Alert.alert("Session Expired", "Please log in again.");
       } else {
         Alert.alert("Error", "Hindi ma-save, paps.");
       }

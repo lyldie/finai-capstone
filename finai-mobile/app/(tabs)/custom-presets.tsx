@@ -107,7 +107,12 @@ export default function CustomPresetsScreen() {
       { text: "Delete", style: "destructive", onPress: async () => {
           const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
           try {
-            const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}`, { method: 'DELETE' });
+            // CHANGED: now sends ?user_id=... so the backend's ownership check
+            // (categories.py/accounts.py delete_*) has something to verify
+            // against. Without this, every delete here would 403 once the
+            // backend's admin/ownership branching was added, since the
+            // request previously carried no identity at all.
+            const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE' });
             if (res.ok) {
               fetchData(true); // 👈 SILENT REFRESH PAGKATAPOS MAG-DELETE
             } else {
