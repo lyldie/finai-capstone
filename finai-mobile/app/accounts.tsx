@@ -43,8 +43,9 @@ export default function PersonalAccountsScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) return;
+      const token = await AsyncStorage.getItem('user_token');
       const [accountResponse, templateResponse] = await Promise.all([
-        fetch(`${API_URL}/api/accounts/user/${userId}`),
+        fetch(`${API_URL}/api/accounts/user/${userId}`, { headers: { Authorization: `Bearer ${token || ''}` } }),
         fetch(`${API_URL}/api/accounts/templates`),
       ]);
       setAccounts(accountResponse.ok ? await accountResponse.json() : []);
@@ -113,6 +114,7 @@ export default function PersonalAccountsScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) throw new Error('Your session has expired. Please log in again.');
+      const token = await AsyncStorage.getItem('user_token');
 
       const url = editingAccount ? `${API_URL}/api/accounts/${editingAccount.id}` : `${API_URL}/api/accounts/`;
       const method = editingAccount ? 'PUT' : 'POST';
@@ -132,7 +134,7 @@ export default function PersonalAccountsScreen() {
 
       const response = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify(payload),
       });
 
@@ -148,14 +150,15 @@ export default function PersonalAccountsScreen() {
     }
   };
 
-  // DELETE Account (DELETE)
+  // Archive keeps the account and its transaction history recoverable.
   const deleteAccount = (account: Account) => {
-    Alert.alert('Delete account?', 'Hindi maaaring mabura ang mga account na may kasaysayan na ng transaksyon.', [
+    Alert.alert('Archive account?', 'Ililipat ang account sa Archive Center. Maaari mo itong ibalik anumang oras.', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: async () => {
-        const response = await fetch(`${API_URL}/api/accounts/${account.id}`, { method: 'DELETE' });
+      { text: 'Archive', style: 'destructive', onPress: async () => {
+        const token = await AsyncStorage.getItem('user_token');
+        const response = await fetch(`${API_URL}/api/accounts/${account.id}/archive`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) Alert.alert('Cannot delete account', result.detail || 'Please try again.');
+        if (!response.ok) Alert.alert('Cannot archive account', result.detail || 'Please try again.');
         else loadAccounts();
       }},
     ]);
@@ -212,13 +215,13 @@ export default function PersonalAccountsScreen() {
                 </View>
               </View>
 
-              {/* Action Buttons: Edit and Delete */}
+              {/* Action Buttons: Edit and Archive */}
               <View style={styles.actionButtonsRow}>
                 <TouchableOpacity onPress={() => openEditModal(item)} style={styles.editBtn}>
                   <Ionicons name="pencil-outline" size={18} color={TEAL} />
                 </TouchableOpacity>
                 <TouchableOpacity onPress={() => deleteAccount(item)} style={styles.deleteBtn}>
-                  <Ionicons name="trash-outline" size={18} color={DANGER} />
+                  <Ionicons name="archive-outline" size={18} color={DANGER} />
                 </TouchableOpacity>
               </View>
             </View>

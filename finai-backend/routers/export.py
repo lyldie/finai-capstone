@@ -1,17 +1,14 @@
 # finai-backend/routers/export.py
 from fastapi import APIRouter, HTTPException, Depends
 from database import db
-from auth import bearer_scheme
-from fastapi.security import HTTPAuthorizationCredentials
-from typing import Optional
+from auth import get_current_user
 
 router = APIRouter(prefix="/api/export", tags=["Export"])
 
 @router.get("/backup")
-async def export_user_data(user_id: str, credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+async def export_user_data(current_user: dict = Depends(get_current_user)):
     """Export all financial records (transactions, accounts, budgets, and goals) for a specific user."""
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required for export.")
+    user_id = current_user["id"]
 
     # 1. Kunin ang mga transaksyon ng user
     transactions = []
@@ -50,11 +47,18 @@ async def export_user_data(user_id: str, credentials: Optional[HTTPAuthorization
 
 
 @router.post("/restore")
-async def restore_user_data(payload: dict, credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)):
+async def restore_user_data(payload: dict, current_user: dict = Depends(get_current_user)):
     """Restore or import financial records using Overwrite Strategy to prevent duplicates."""
-    user_id = payload.get("user_id")
-    if not user_id:
-        raise HTTPException(status_code=400, detail="user_id is required in backup payload.")
+    user_id = current_user["id"]
+
+    collections = ("transactions", "accounts", "budgets", "goals")
+    if not isinstance(payload, dict) or any(
+        not isinstance(payload.get(name, []), list)
+        or len(payload.get(name, [])) > 5000
+        or any(not isinstance(item, dict) for item in payload.get(name, []))
+        for name in collections
+    ):
+        raise HTTPException(status_code=422, detail="Backup must contain valid record lists (up to 5,000 each).")
 
     try:
         # OVERWRITE STRATEGY: Burahin muna ang lumang data ng user na ito para malinis ang pag-restore
@@ -67,7 +71,8 @@ async def restore_user_data(payload: dict, credentials: Optional[HTTPAuthorizati
         transactions = payload.get("transactions", [])
         if transactions:
             for txn in transactions:
-                txn.pop("_id", None) # Tanggalin ang old ID para gawan ng bago ng MongoDB
+                txn.pop("_id", None)
+                txn.pop("user_id", None)
                 txn["user_id"] = user_id
                 await db.expenses.insert_one(txn)
 
@@ -76,6 +81,7 @@ async def restore_user_data(payload: dict, credentials: Optional[HTTPAuthorizati
         if accounts:
             for acc in accounts:
                 acc.pop("_id", None)
+                acc.pop("user_id", None)
                 acc["user_id"] = user_id
                 await db.accounts.insert_one(acc)
 
@@ -84,6 +90,7 @@ async def restore_user_data(payload: dict, credentials: Optional[HTTPAuthorizati
         if budgets:
             for bgt in budgets:
                 bgt.pop("_id", None)
+                bgt.pop("user_id", None)
                 bgt["user_id"] = user_id
                 await db.budgets.insert_one(bgt)
 
@@ -92,10 +99,11 @@ async def restore_user_data(payload: dict, credentials: Optional[HTTPAuthorizati
         if goals:
             for goal in goals:
                 goal.pop("_id", None)
+                goal.pop("user_id", None)
                 goal["user_id"] = user_id
                 await db.goals.insert_one(goal)
 
         return {"status": "success", "message": "Matagumpay na naibalik ang mga financial records (Overwrite complete)!"}
     
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Restore failed. Please retry with a valid backup file.") from e

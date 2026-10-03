@@ -96,7 +96,7 @@ export default function SetupPinScreen() {
 
       const response = await fetch(`${API_URL}/initial-setup`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify(payload)
       });
 

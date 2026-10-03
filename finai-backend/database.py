@@ -1,7 +1,12 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+import os
+from pathlib import Path
+from dotenv import load_dotenv
 
-# Siguraduhin na may MongoDB URL ka dito
-MONGO_URL = "mongodb+srv://loyld30estardo_db_user:G4fh9SToFxKw2bds@finai-cluster.3hekskr.mongodb.net/?appName=FinAI-Cluster"
+load_dotenv(Path(__file__).with_name(".env"))
+MONGO_URL = os.getenv("MONGO_URL")
+if not MONGO_URL:
+    raise RuntimeError("MONGO_URL must be set in the environment before starting the backend.")
 
 # I-initialize ang client at db
 client = AsyncIOMotorClient(MONGO_URL)
@@ -28,3 +33,7 @@ async def ensure_indexes():
     # unverified registration 15 minutes after it was created, a small safety margin
     # past the 10-minute app-level expiry check, so abandoned signups don't pile up.
     await db.pending_signups.create_index("timestamp", expireAfterSeconds=900)
+
+    # Keeps date-range analytics (dashboard and advisor) scoped to one user's
+    # non-archived transaction history instead of scanning the entire collection.
+    await db.expenses.create_index([("user_id", 1), ("is_archived", 1), ("date", 1)])

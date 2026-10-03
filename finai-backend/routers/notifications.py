@@ -1,15 +1,17 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from bson import ObjectId
 
 from database import db
 from schemas.notification import NotificationResponse
+from auth import get_current_user
 
 
 router = APIRouter(prefix="/api/notifications", tags=["Notifications"])
 
 
 @router.get("/{user_id}", response_model=list[NotificationResponse])
-async def list_notifications(user_id: str, unread_only: bool = False):
+async def list_notifications(user_id: str, unread_only: bool = False, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
     query = {"user_id": user_id}
     if unread_only:
         query["is_read"] = False
@@ -18,12 +20,12 @@ async def list_notifications(user_id: str, unread_only: bool = False):
 
 
 @router.patch("/{notification_id}/read")
-async def mark_notification_read(notification_id: str):
+async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
     try:
         oid = ObjectId(notification_id)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid notification ID")
-    result = await db.notifications.update_one({"_id": oid}, {"$set": {"is_read": True}})
+    result = await db.notifications.update_one({"_id": oid, "user_id": current_user["id"]}, {"$set": {"is_read": True}})
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"status": "Success"}

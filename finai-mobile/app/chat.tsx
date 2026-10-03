@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   StatusBar,
   Alert,
+  ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
@@ -72,12 +73,12 @@ export default function ChatScreen() {
     }
   }, [messages, isReady, user?.id]);
 
-  const sendChatMessage = async () => {
-    if (!inputText.trim()) return;
+  const sendChatMessage = async (question = inputText) => {
+    if (!question.trim()) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
-      text: inputText,
+      text: question.trim(),
       sender: "user",
     };
 
@@ -95,7 +96,7 @@ export default function ChatScreen() {
     try {
       const response = await fetch(`${API_URL}/advisor/chat`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify({
           user_id: user?.id,
           message: userMsg.text,
@@ -329,6 +330,23 @@ export default function ChatScreen() {
 
         {/* Bottom Input Area */}
         <View style={styles.inputArea}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
+            {[
+              ['Today', 'How much have I spent today?'],
+              ['This week', 'How am I doing with spending this week?'],
+              ['This month', 'Am I on track with my budgets this month?'],
+              ['Savings goal', 'How much should I save each month for my goals?'],
+            ].map(([label, prompt]) => (
+              <TouchableOpacity
+                key={label}
+                style={{ borderRadius: 16, borderWidth: 1, borderColor: '#D7E2DE', backgroundColor: '#F7F9F8', paddingHorizontal: 12, paddingVertical: 7 }}
+                onPress={() => sendChatMessage(prompt)}
+                disabled={isChatLoading}
+              >
+                <Text style={{ color: DEEP_GREEN, fontSize: 12, fontWeight: '700' }}>{label}</Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
           <View style={styles.inputContainer}>
             <TouchableOpacity style={styles.attachButton}>
               <Ionicons name="add" size={22} color={SAGE} />
@@ -344,7 +362,7 @@ export default function ChatScreen() {
             />
 
             <TouchableOpacity
-              onPress={sendChatMessage}
+              onPress={() => sendChatMessage()}
               disabled={!inputText.trim() || isChatLoading}
               activeOpacity={0.85}
             >

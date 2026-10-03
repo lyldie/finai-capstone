@@ -23,7 +23,7 @@ export default function NotificationsScreen() {
         <Ionicons name={item.level === 'warning' ? 'warning-outline' : 'alert-circle-outline'} size={21} color={item.level === 'warning' ? '#B45309' : '#B91C1C'} />
       </View>
       <View style={styles.content}>
-        <Text style={styles.title}>{item.threshold}% budget alert</Text>
+        <Text style={styles.title}>{item.level === 'over_budget' ? 'Budget limit exceeded' : item.level === 'critical' ? 'Critical budget alert' : 'Budget warning'} · {item.threshold}%</Text>
         <Text style={styles.message}>{item.message}</Text>
         <Text style={styles.date}>{new Date(item.created_at).toLocaleString()}</Text>
       </View>

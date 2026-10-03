@@ -3,6 +3,7 @@ import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput,
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // File system at Sharing para sa Backup (Export)
 import { File, Paths } from 'expo-file-system';
@@ -52,7 +53,7 @@ export default function ProfileScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/${user?.id}/update-income`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify({ monthly_income: parsedIncome })
       });
       
@@ -78,12 +79,13 @@ export default function ProfileScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/${user?.id}/change-pin`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify({ old_pin: oldPin, new_pin: newPin })
       });
       
       const data = await response.json();
       if (response.ok) {
+        await AsyncStorage.setItem('user_pin', newPin);
         Alert.alert('Success', 'App PIN changed successfully!');
         setPinModalVisible(false);
         setOldPin('');
@@ -105,7 +107,7 @@ export default function ProfileScreen() {
     try {
       const response = await fetch(`${API_BASE_URL}/${user?.id}/change-password`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
       });
       
@@ -132,7 +134,7 @@ export default function ProfileScreen() {
     }
 
     try {
-      const response = await fetch(`${API_URL}/api/export/backup?user_id=${targetUserId}`, {
+      const response = await fetch(`${API_URL}/api/export/backup`, {
         headers: { Authorization: `Bearer ${user?.token}` },
       });
 
@@ -179,9 +181,6 @@ export default function ProfileScreen() {
         Alert.alert("Error", "Hindi wastong format ng backup file.");
         return;
       }
-
-      const targetUserId = user?.id || (user as any)?._id;
-      parsedData.user_id = targetUserId;
 
       const response = await fetch(`${API_URL}/api/export/restore`, {
         method: 'POST',

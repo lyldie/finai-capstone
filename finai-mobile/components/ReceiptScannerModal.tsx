@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 
@@ -111,9 +112,11 @@ export default function ReceiptScannerModal({
       if (userId) {
         formData.append('user_id', userId);
       }
+      const token = await AsyncStorage.getItem('user_token');
 
       const response = await fetch(`${API_URL}/ocr-scan`, {
         method: 'POST',
+        headers: { Authorization: `Bearer ${token || ''}` },
         body: formData,
       });
 
@@ -138,7 +141,7 @@ export default function ReceiptScannerModal({
       const foundCat = categories.find((c) => {
         const categoryName = (c?.name || '').toLowerCase();
         const backendName = (backendCategory || '').toLowerCase();
-        return categoryName.includes(backendName) || backendName.includes(categoryName);
+        return categoryName === backendName;
       });
 
       if (foundCat) {
@@ -220,10 +223,17 @@ export default function ReceiptScannerModal({
       Alert.alert('Amount required', 'Please enter a valid total amount before saving.');
       return;
     }
+    const selectedCategory = categories.find(
+      (category) => category.type?.toLowerCase() === 'expense' && category.name?.toLowerCase() === reviewData.values.category.trim().toLowerCase()
+    );
+    if (!selectedCategory) {
+      Alert.alert('Choose a category', 'Select an expense category from your active categories before continuing.');
+      return;
+    }
 
     onScanComplete({
       amount: amount.toFixed(2),
-      category: reviewData.values.category.trim() || 'General',
+      category: selectedCategory.name,
       date: reviewData.values.date.trim(),
       note: reviewData.values.merchant.trim() ? `Scanned from ${reviewData.values.merchant.trim()}` : 'Scanned receipt'
     });
@@ -271,6 +281,22 @@ export default function ReceiptScannerModal({
                     keyboardType={keyboardType || 'default'}
                     style={styles.reviewInput}
                   />
+                  {key === 'category' && (
+                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                      {categories.filter((category) => category.type?.toLowerCase() === 'expense').map((category) => {
+                        const selected = category.name?.toLowerCase() === reviewData.values.category.trim().toLowerCase();
+                        return (
+                          <TouchableOpacity
+                            key={category.id || category.name}
+                            onPress={() => updateReviewValue('category', category.name)}
+                            style={{ paddingHorizontal: 10, paddingVertical: 7, borderRadius: 16, backgroundColor: selected ? '#144A3D' : '#E8EFEC' }}
+                          >
+                            <Text style={{ color: selected ? '#FFFFFF' : '#144A3D', fontSize: 12, fontWeight: '700' }}>{category.name}</Text>
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </View>
+                  )}
                   {metadata?.confidence !== undefined && (
                     <Text style={styles.reviewConfidence}>Scanner confidence: {Math.round(metadata.confidence * 100)}%</Text>
                   )}

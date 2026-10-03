@@ -6,7 +6,7 @@ interface User {
   name: string;
   email: string;
   role?: string;
-  token?: string; // NEW: only present for admin logins (see main.py /login)
+  token?: string; // Signed session used by authenticated API requests.
 }
 
 interface AuthContextType {
@@ -57,7 +57,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     if (userData.role) {
       await AsyncStorage.setItem('user_role', userData.role);
     }
-    // NEW: only admins receive a token from /login; regular users simply won't hit this branch.
+    // Store the signed session returned by both login and OTP verification.
     if (userData.token) {
       await AsyncStorage.setItem('user_token', userData.token);
     }

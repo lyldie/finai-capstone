@@ -27,18 +27,28 @@ export default function ArchiveScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) return;
+      const token = await AsyncStorage.getItem('user_token');
 
-      let endpoint = `${API_URL}/api/transactions/archived/${userId}`;
-      if (activeTab === 'Accounts') {
-        endpoint = `${API_URL}/api/accounts/user/${userId}?archived=true`; // Adjust depende sa backend route nyo ng accounts
+      let endpoint = '';
+      // 👈 FIX: Ginamit natin ang tamang query parameters na tugma sa ating backend routers
+      if (activeTab === 'Transactions') {
+        endpoint = `${API_URL}/get-expenses?user_id=${userId}&archived=true`;
+      } else if (activeTab === 'Accounts') {
+        endpoint = `${API_URL}/api/accounts/user/${userId}?archived=true`;
       } else if (activeTab === 'Goals') {
-        endpoint = `${API_URL}/api/goals/archived/${userId}`; // Adjust depende sa backend route nyo ng goals
+        endpoint = `${API_URL}/api/goals/?user_id=${userId}&archived=true`;
       }
 
-      const res = await fetch(endpoint);
+      const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) {
         const data = await res.json();
-        setArchivedData(Array.isArray(data) ? data : []);
+        // Frontend filtering para masiguradong ang mga naka-archive lang ang lalabas
+        const filtered = Array.isArray(data)
+          ? data.filter((item: any) => item.is_archived === true || item.archived === true)
+          : Array.isArray(data?.data)
+            ? data.data.filter((item: any) => item.is_archived === true || item.archived === true)
+            : [];
+        setArchivedData(filtered);
       } else {
         setArchivedData([]);
       }
@@ -58,11 +68,14 @@ export default function ArchiveScreen() {
 
   const handleRestore = async (id: string) => {
     try {
-      let endpoint = `${API_URL}/api/transactions/${id}/restore`;
+      const token = await AsyncStorage.getItem('user_token');
+      // 👈 FIX: Tugmang restore endpoints para sa bawat uri ng item
+      let endpoint = `${API_URL}/restore-expense/${id}`;
       if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/restore`;
       if (activeTab === 'Goals') endpoint = `${API_URL}/api/goals/${id}/restore`;
 
-      const res = await fetch(endpoint, { method: 'PUT' });
+      const method = activeTab === 'Accounts' || activeTab === 'Transactions' ? 'PATCH' : 'PUT';
+      const res = await fetch(endpoint, { method, headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) {
         Alert.alert('Success 🎉', 'Naibalik na ang item sa active list!');
         fetchArchivedData();
@@ -85,11 +98,13 @@ export default function ArchiveScreen() {
           style: 'destructive', 
           onPress: async () => {
             try {
-              let endpoint = `${API_URL}/api/transactions/${id}/permanent`;
-              if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}`;
+              const token = await AsyncStorage.getItem('user_token');
+              // 👈 FIX: Tugmang permanent delete endpoints
+              let endpoint = `${API_URL}/permanent-delete-expense/${id}`;
+              if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/permanent`;
               if (activeTab === 'Goals') endpoint = `${API_URL}/api/goals/${id}/permanent`;
 
-              const res = await fetch(endpoint, { method: 'DELETE' });
+              const res = await fetch(endpoint, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
               if (res.ok) {
                 fetchArchivedData();
               } else {
@@ -151,7 +166,8 @@ export default function ArchiveScreen() {
           }
           renderItem={({ item }) => {
             const isIncome = item.type === 'Income';
-            const color = isIncome ? INCOME : EXPENSE;
+            const isNeutral = item.type === 'Transfer' || item.type === 'Contribution';
+            const color = isIncome ? INCOME : isNeutral ? TEAL : EXPENSE;
 
             return (
               <View style={styles.card}>
@@ -167,7 +183,7 @@ export default function ArchiveScreen() {
                 <View style={styles.cardRight}>
                   {activeTab === 'Transactions' && (
                     <Text style={[styles.cardAmount, { color }]}>
-                      {isIncome ? '+' : '-'}₱{(parseFloat(item.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                      {item.type === 'Transfer' ? '' : isIncome ? '+' : '-'}₱{(parseFloat(item.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </Text>
                   )}
                   <View style={styles.actionsRow}>

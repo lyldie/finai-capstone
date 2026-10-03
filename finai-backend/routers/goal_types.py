@@ -45,6 +45,7 @@ async def update_goal_type(gt_id: str, goal: GoalTypeCreate, admin: dict = Depen
     existing = await db.goal_types.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Goal type not found")
+
     old_name = existing.get("name")
 
     updated = await db.goal_types.find_one_and_update(
@@ -107,6 +108,9 @@ async def permanent_delete_goal_type(gt_id: str, admin: dict = Depends(get_curre
     existing = await db.goal_types.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Goal type not found")
+
+    if not existing.get("is_archived", False):
+        raise HTTPException(status_code=400, detail="Archive the goal type before permanently deleting it.")
 
     goal_type_name = existing.get("name")
 

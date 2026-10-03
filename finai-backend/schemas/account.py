@@ -1,9 +1,9 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 
 class AccountCreate(BaseModel):
     name: str
-    initial_balance: float = 0.0
+    initial_balance: float = Field(default=0.0, allow_inf_nan=False)
     icon: Optional[str] = "wallet"
     user_id: Optional[str] = None
     account_role: Optional[str] = "user"

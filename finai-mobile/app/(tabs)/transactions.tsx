@@ -21,6 +21,13 @@ const transactionDate = (value: string) => {
   return year && month && day ? new Date(year, month - 1, day) : new Date(value);
 };
 
+const isValidDateOnly = (value: string) => {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split('-').map(Number);
+  const parsed = new Date(year, month - 1, day);
+  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
+};
+
 export default function TransactionsScreen() {
   const {
     transactions,
@@ -109,6 +116,11 @@ export default function TransactionsScreen() {
   }, [deleteTransaction, fetchTransactions]);
 
   const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
+    if (item.goal_id) {
+      swipeableInstance?.close();
+      Alert.alert('Goal contribution', 'Edit or remove this contribution from its savings goal so the goal total stays accurate.');
+      return;
+    }
     swipeableInstance?.close();
     router.push({
       pathname: '/(tabs)/two',
@@ -118,10 +130,12 @@ export default function TransactionsScreen() {
 
   const renderRightActions = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => (
     <View style={styles.actionsContainer}>
-      <TouchableOpacity style={[styles.actionButton, styles.editActionButton]} onPress={() => handleEditPress(item, swipeableInstance)}>
-        <Ionicons name="pencil-sharp" size={16} color={DEEP_GREEN} />
-        <Text style={[styles.actionButtonText, { color: DEEP_GREEN }]}>Edit</Text>
-      </TouchableOpacity>
+      {!item.goal_id && (
+        <TouchableOpacity style={[styles.actionButton, styles.editActionButton]} onPress={() => handleEditPress(item, swipeableInstance)}>
+          <Ionicons name="pencil-sharp" size={16} color={DEEP_GREEN} />
+          <Text style={[styles.actionButtonText, { color: DEEP_GREEN }]}>Edit</Text>
+        </TouchableOpacity>
+      )}
       {/* 👈 ARCHIVE BUTTON SA SWIPE */}
       <TouchableOpacity style={[styles.actionButton, styles.archiveActionButton]} onPress={() => confirmArchive(item.id, swipeableInstance)}>
         <Ionicons name="archive-outline" size={16} color="#FFFFFF" />
@@ -138,6 +152,8 @@ export default function TransactionsScreen() {
       iconName = "arrow-up-outline"; iconColor = INCOME; amountColor = INCOME; prefix = '+'; bgColor = 'rgba(16, 185, 129, 0.12)';
     } else if (item.type === 'Transfer') {
       iconName = "swap-horizontal"; iconColor = TEAL; amountColor = DEEP_GREEN; prefix = ''; bgColor = 'rgba(61, 125, 108, 0.12)';
+    } else if (item.type === 'Contribution' || item.goal_id) {
+      iconName = "flag-outline"; iconColor = TEAL; amountColor = TEAL; prefix = '−'; bgColor = 'rgba(61, 125, 108, 0.12)';
     }
 
     return (
@@ -149,7 +165,7 @@ export default function TransactionsScreen() {
             </View>
             <View style={styles.cardInfo}>
               <Text style={styles.cardCategory} numberOfLines={1}>
-                {item.type === 'Transfer' ? `${item.account} → ${item.to_account || 'Other'}` : item.category}
+                {item.type === 'Transfer' ? `${item.account} → ${item.to_account || 'Other'}` : item.type === 'Contribution' || item.goal_id ? 'Goal Contribution' : item.category}
               </Text>
               <Text style={styles.cardNote} numberOfLines={1}>{item.note || 'No description'}</Text>
             </View>
@@ -171,8 +187,13 @@ export default function TransactionsScreen() {
     const groups: { [key: string]: { title: string; data: Transaction[]; income: number; expense: number } } = {};
     const filteredTransactions = transactions.filter(t => {
       const transDate = transactionDate(t.date);
+      if (startDate && t.date < startDate) return false;
+      if (endDate && t.date > endDate) return false;
       if (!startDate && !endDate && (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear)) return false;
-      const matchesType = selectedFilter === 'All' || t.type === selectedFilter;
+      const matchesType = selectedFilter === 'All'
+        || (selectedFilter === 'Expense' && t.type === 'Expense' && !t.goal_id)
+        || (selectedFilter === 'Contribution' && (t.type === 'Contribution' || Boolean(t.goal_id)))
+        || (selectedFilter !== 'All' && selectedFilter !== 'Expense' && selectedFilter !== 'Contribution' && t.type === selectedFilter);
       const matchesCategory = selectedCategory === 'All' || t.category === selectedCategory;
       const matchesAccount = selectedAccount === 'All' || t.account === selectedAccount || t.to_account === selectedAccount;
       const query = searchQuery.toLowerCase().trim();
@@ -185,7 +206,7 @@ export default function TransactionsScreen() {
       groups[t.date].data.push(t);
       const amt = parseFloat(t.amount) || 0;
       if (t.type === 'Income') groups[t.date].income += amt;
-      else if (t.type === 'Expense') groups[t.date].expense += amt;
+      else if (t.type === 'Expense' && !t.goal_id) groups[t.date].expense += amt;
     });
     return Object.values(groups).sort((a, b) => transactionDate(b.title).getTime() - transactionDate(a.title).getTime());
   }, [transactions, searchQuery, selectedFilter, selectedCategory, selectedAccount, startDate, endDate, selectedMonth, selectedYear]);
@@ -209,7 +230,7 @@ export default function TransactionsScreen() {
       if (!daySummaries[day]) daySummaries[day] = { income: 0, expense: 0, data: [] };
       daySummaries[day].data.push(t);
       if (t.type === 'Income') daySummaries[day].income += (parseFloat(t.amount) || 0);
-      else if (t.type === 'Expense') daySummaries[day].expense += (parseFloat(t.amount) || 0);
+      else if (t.type === 'Expense' && !t.goal_id) daySummaries[day].expense += (parseFloat(t.amount) || 0);
     });
 
     let monthIncSum = 0; let monthExpSum = 0;
@@ -224,14 +245,24 @@ export default function TransactionsScreen() {
     transactions.forEach(t => {
       if (transactionDate(t.date).getFullYear() === selectedYear) {
         if (t.type === 'Income') yearIncome += parseFloat(t.amount) || 0;
-        if (t.type === 'Expense') yearExpense += parseFloat(t.amount) || 0;
+        if (t.type === 'Expense' && !t.goal_id) yearExpense += parseFloat(t.amount) || 0;
       }
     });
     return { yearIncome, yearExpense, yearNet: yearIncome - yearExpense };
   }, [transactions, selectedYear]);
 
   const clearAdvancedFilters = () => { setSelectedCategory('All'); setSelectedAccount('All'); setStartDate(''); setEndDate(''); };
-  const applyAdvancedFilters = () => setIsFilterModalVisible(false);
+  const applyAdvancedFilters = () => {
+    if ((startDate && !isValidDateOnly(startDate)) || (endDate && !isValidDateOnly(endDate))) {
+      Alert.alert('Invalid date', 'Use a real date in YYYY-MM-DD format.');
+      return;
+    }
+    if (startDate && endDate && startDate > endDate) {
+      Alert.alert('Invalid date range', 'The start date must be before or equal to the end date.');
+      return;
+    }
+    setIsFilterModalVisible(false);
+  };
   const hasAdvancedFilters = selectedCategory !== 'All' || selectedAccount !== 'All' || !!startDate || !!endDate;
 
   if (isLoading) {
@@ -299,7 +330,7 @@ export default function TransactionsScreen() {
               <TextInput placeholder="Search records..." placeholderTextColor={SAGE} style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} />
             </View>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-              {['All', 'Income', 'Expense', 'Transfer'].map((filter) => (
+              {['All', 'Income', 'Expense', 'Transfer', 'Contribution'].map((filter) => (
                 <TouchableOpacity key={filter} onPress={() => setSelectedFilter(filter)} style={[styles.filterChip, selectedFilter === filter && styles.activeFilterChip]}>
                   <Text style={[styles.filterChipText, selectedFilter === filter && styles.activeFilterChipText]}>{filter}</Text>
                 </TouchableOpacity>
@@ -436,7 +467,7 @@ export default function TransactionsScreen() {
             {monthsNames.map((mName, idx) => {
               const filtered = transactions.filter(t => transactionDate(t.date).getMonth() === idx && transactionDate(t.date).getFullYear() === selectedYear);
               const inc = filtered.filter(t => t.type === 'Income').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
-              const exp = filtered.filter(t => t.type === 'Expense').reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
+              const exp = filtered.filter(t => t.type === 'Expense' && !t.goal_id).reduce((s, t) => s + (parseFloat(t.amount) || 0), 0);
               const net = inc - exp;
               const isCurrentMonth = idx === today.getMonth() && selectedYear === today.getFullYear();
 
@@ -468,6 +499,25 @@ export default function TransactionsScreen() {
               <TouchableOpacity onPress={() => setIsFilterModalVisible(false)}>
                 <View style={styles.closeBtnCircle}><Ionicons name="close" size={20} color={DEEP_GREEN} /></View>
               </TouchableOpacity>
+            </View>
+            <Text style={styles.filterLabel}>Date range (optional)</Text>
+            <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
+              <TextInput
+                value={startDate}
+                onChangeText={setStartDate}
+                placeholder="From YYYY-MM-DD"
+                placeholderTextColor={SAGE}
+                autoCapitalize="none"
+                style={[styles.searchInput, { backgroundColor: CREAM, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 }]}
+              />
+              <TextInput
+                value={endDate}
+                onChangeText={setEndDate}
+                placeholder="To YYYY-MM-DD"
+                placeholderTextColor={SAGE}
+                autoCapitalize="none"
+                style={[styles.searchInput, { backgroundColor: CREAM, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 }]}
+              />
             </View>
             <Text style={styles.filterLabel}>Category</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>

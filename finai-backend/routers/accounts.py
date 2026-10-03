@@ -7,7 +7,7 @@ from schemas.account import AccountCreate, AccountResponse
 from typing import List, Optional
 import re
 
-from auth import get_current_admin, verify_admin_credentials, bearer_scheme
+from auth import get_current_admin, get_current_user, verify_admin_credentials, bearer_scheme
 from .logs import log_action
 
 router = APIRouter(prefix="/api/accounts", tags=["Accounts"])
@@ -17,7 +17,7 @@ async def calculate_account_balance(account_name: str, user_id: Optional[str], i
     if not user_id:
         return float(initial_balance)
     balance = float(initial_balance)
-    query = {"user_id": user_id, "$or": [{"account": account_name}, {"to_account": account_name}]}
+    query = {"user_id": user_id, "is_archived": {"$ne": True}, "$or": [{"account": account_name}, {"to_account": account_name}]}
     async for txn in db.expenses.find(query):
         t_type = txn.get("type", "").capitalize()
         amount = float(txn.get("amount", 0))
@@ -25,7 +25,7 @@ async def calculate_account_balance(account_name: str, user_id: Optional[str], i
         acc_to = txn.get("to_account")
         if t_type == "Income" and acc_from == account_name:
             balance += amount
-        elif t_type == "Expense" and acc_from == account_name:
+        elif t_type in {"Expense", "Contribution"} and acc_from == account_name:
             balance -= amount
         elif t_type == "Transfer":
             if acc_from == account_name:
@@ -45,7 +45,10 @@ async def _check_duplicate_name(name: str, user_id: Optional[str], exclude_id: O
         "is_archived": {"$ne": True},
     }
     if user_id:
-        scope_query["user_id"] = user_id
+        scope_query["$or"] = [
+            {"user_id": user_id, "account_role": "user"},
+            {"account_role": "admin"},
+        ]
     else:
         scope_query["account_role"] = "admin"
     if exclude_id is not None:
@@ -56,11 +59,12 @@ async def _check_duplicate_name(name: str, user_id: Optional[str], exclude_id: O
 
 
 @router.get("/", response_model=List[AccountResponse])
-async def get_accounts(user_id: Optional[str] = None, archived: bool = False):
+async def get_accounts(user_id: Optional[str] = None, archived: bool = False, current_user: dict = Depends(get_current_user)):
     """CHANGED: added `archived` query param. Default (False) excludes
     archived items, matching every existing caller's expectations unchanged.
     Pass archived=true to see only the archived ones (used by accounts.tsx's
     new Archived tab)."""
+    user_id = current_user["id"]
     if user_id:
         query = {"$or": [{"user_id": None}, {"user_id": "null"}, {"account_role": "admin"}, {"user_id": user_id}]}
     else:
@@ -94,13 +98,15 @@ async def get_account_templates(archived: bool = False):
 
 
 @router.get("/user/{user_id}", response_model=List[AccountResponse])
-async def get_user_accounts(user_id: str):
+async def get_user_accounts(user_id: str, archived: bool = False, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
     """(unchanged) -- a user's own transaction-entry screens should never
     see an archived account anyway, but archiving is an admin-preset concept
     here, not something that applies to personal accounts, so no filter
     needed."""
     accounts = []
-    async for acc in db.accounts.find({"user_id": user_id, "account_role": "user"}):
+    query = {"user_id": user_id, "account_role": "user", "is_archived": True if archived else {"$ne": True}}
+    async for acc in db.accounts.find(query):
         acc_id = str(acc["_id"])
         acc_name = acc.get("name", "")
         init_bal = float(acc.get("initial_balance", 0.0))
@@ -111,14 +117,13 @@ async def get_user_accounts(user_id: str):
 
 
 @router.post("/", response_model=AccountResponse)
-async def create_account(account: AccountCreate):
+async def create_account(account: AccountCreate, current_user: dict = Depends(get_current_user)):
     """(unchanged) User-only: requires user_id."""
     account_data = account.model_dump()
     account_data["name"] = account_data["name"].strip()
     if not account_data["name"]:
         raise HTTPException(status_code=422, detail="Account name is required")
-    if not account_data.get("user_id"):
-        raise HTTPException(status_code=400, detail="user_id is required to create a personal account. Admin presets must use POST /api/accounts/admin.")
+    account_data["user_id"] = current_user["id"]
 
     account_data["account_role"] = "user"
     await _check_duplicate_name(account_data["name"], account_data["user_id"])
@@ -159,6 +164,7 @@ async def update_account(
     account_id: str,
     account: AccountCreate,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
 ):
     """(unchanged)"""
     try:
@@ -174,8 +180,7 @@ async def update_account(
     if existing.get("account_role") == "admin":
         admin_actor = await verify_admin_credentials(credentials)
     else:
-        claimed_user_id = account.user_id
-        if not claimed_user_id or str(existing.get("user_id")) != str(claimed_user_id):
+        if str(existing.get("user_id")) != current_user["id"]:
             raise HTTPException(status_code=403, detail="You don't have permission to edit this account.")
 
     account_data = account.model_dump()
@@ -186,6 +191,7 @@ async def update_account(
     account_data["user_id"] = existing.get("user_id")
     account_data["account_role"] = existing.get("account_role", "admin")
     account_data["parent_template_id"] = existing.get("parent_template_id")
+    account_data["is_archived"] = existing.get("is_archived", False)
 
     await _check_duplicate_name(account_data["name"], account_data.get("user_id"), exclude_id=oid)
 
@@ -200,6 +206,9 @@ async def update_account(
     if owner_user_id and new_name != old_name:
         await db.expenses.update_many({"user_id": owner_user_id, "account": old_name}, {"$set": {"account": new_name}})
         await db.expenses.update_many({"user_id": owner_user_id, "to_account": old_name}, {"$set": {"to_account": new_name}})
+    elif not owner_user_id and new_name != old_name:
+        await db.expenses.update_many({"account": old_name}, {"$set": {"account": new_name}})
+        await db.expenses.update_many({"to_account": old_name}, {"$set": {"to_account": new_name}})
 
     acc_name = updated.get("name", "")
     user_id = updated.get("user_id")
@@ -214,8 +223,11 @@ async def update_account(
 
 
 @router.patch("/{account_id}/archive", response_model=AccountResponse)
-async def archive_account(account_id: str, admin: dict = Depends(get_current_admin)):
-    """NEW: replaces hard-deleting an admin preset."""
+async def archive_account(
+    account_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
+):
     try:
         oid = ObjectId(account_id)
     except:
@@ -224,18 +236,25 @@ async def archive_account(account_id: str, admin: dict = Depends(get_current_adm
     account = await db.accounts.find_one({"_id": oid})
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    if account.get("account_role") != "admin":
-        raise HTTPException(status_code=400, detail="Only account presets can be archived here. Personal accounts are managed by their owner.")
+    if account.get("account_role") == "admin":
+        admin = await verify_admin_credentials(credentials)
+    elif account.get("account_role") != "user" or str(account.get("user_id")) != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Account not found")
 
     updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
-    await log_action(admin["name"], f"Archived account '{account.get('name')}'")
+    if account.get("account_role") == "admin":
+        await log_action(admin["name"], f"Archived account '{account.get('name')}'")
 
     init_bal = float(updated.get("initial_balance", 0.0))
     return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": init_bal})
 
 
 @router.patch("/{account_id}/restore", response_model=AccountResponse)
-async def restore_account(account_id: str, admin: dict = Depends(get_current_admin)):
+async def restore_account(
+    account_id: str,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
+):
     """NEW: the undo for archive_account above."""
     try:
         oid = ObjectId(account_id)
@@ -245,14 +264,42 @@ async def restore_account(account_id: str, admin: dict = Depends(get_current_adm
     account = await db.accounts.find_one({"_id": oid})
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
+    if not account.get("is_archived", False):
+        raise HTTPException(status_code=400, detail="Account is not archived.")
+    admin = None
+    if account.get("account_role") == "admin":
+        admin = await verify_admin_credentials(credentials)
+    elif account.get("account_role") != "user" or str(account.get("user_id")) != current_user["id"]:
+        raise HTTPException(status_code=404, detail="Account not found")
 
     await _check_duplicate_name(account.get("name", ""), account.get("user_id"), exclude_id=oid)
 
     updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
-    await log_action(admin["name"], f"Restored account '{account.get('name')}'")
+    if admin:
+        await log_action(admin["name"], f"Restored account '{account.get('name')}'")
 
     init_bal = float(updated.get("initial_balance", 0.0))
     return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": init_bal})
+
+
+@router.delete("/{account_id}/permanent")
+async def permanently_delete_personal_account(account_id: str, current_user: dict = Depends(get_current_user)):
+    """Permanently remove an archived personal account with no transaction history."""
+    try:
+        oid = ObjectId(account_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Account ID format")
+    account = await db.accounts.find_one({"_id": oid, "user_id": current_user["id"], "account_role": "user", "is_archived": True})
+    if not account:
+        raise HTTPException(status_code=404, detail="Archived account not found")
+    linked = await db.expenses.find_one({
+        "user_id": current_user["id"],
+        "$or": [{"account": account["name"]}, {"to_account": account["name"]}],
+    })
+    if linked:
+        raise HTTPException(status_code=409, detail="This account has transaction history and cannot be permanently deleted.")
+    await db.accounts.delete_one({"_id": oid, "user_id": current_user["id"]})
+    return {"message": "Account permanently deleted successfully"}
 
 
 # 👈 BAGONG IDINAGDAG: Permanent Delete endpoint para sa Admin Account Preset na may transaction check
@@ -270,6 +317,8 @@ async def permanent_delete_account(account_id: str, admin: dict = Depends(get_cu
 
     if account.get("account_role") != "admin":
         raise HTTPException(status_code=400, detail="Only admin account presets can be permanently deleted through this route.")
+    if not account.get("is_archived", False):
+        raise HTTPException(status_code=400, detail="Archive the preset before permanently deleting it.")
 
     account_name = account.get("name")
 
@@ -294,6 +343,7 @@ async def delete_account(
     account_id: str,
     user_id: Optional[str] = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
 ):
     """CHANGED: admin presets can no longer be hard-deleted through this endpoint."""
     try:
@@ -308,10 +358,11 @@ async def delete_account(
     if account.get("account_role") == "admin":
         raise HTTPException(status_code=400, detail="Account presets can't be deleted -- use archive instead (PATCH /api/accounts/{id}/archive).")
 
-    if not user_id or str(account.get("user_id")) != str(user_id):
+    user_id = current_user["id"]
+    if str(account.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="You don't have permission to delete this account.")
 
-    transaction_query = {"$or": [{"account": account["name"]}, {"to_account": account["name"]}]}
+    transaction_query = {"is_archived": {"$ne": True}, "$or": [{"account": account["name"]}, {"to_account": account["name"]}]}
     if account.get("user_id"):
         transaction_query["user_id"] = account["user_id"]
 

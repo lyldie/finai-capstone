@@ -28,6 +28,7 @@ export default function HomeDashboard() {
     totalExpense,
     fetchTransactions,
     accounts,
+    budgets,
     getAccountBalance,
     isLoading
   } = useTransactions();
@@ -47,25 +48,44 @@ export default function HomeDashboard() {
     return "Magandang Gabi";
   }, []);
 
+  const localDateKey = (value: Date) => {
+    const year = value.getFullYear();
+    const month = String(value.getMonth() + 1).padStart(2, '0');
+    const day = String(value.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+  const todayKey = localDateKey(new Date());
+  const mostUsedBudget = useMemo(() => budgets
+    .filter((budget) => budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey)
+    .map((budget) => ({
+      ...budget,
+      usage: Number(budget.percentage_used) || 0,
+      remainingAmount: Math.max(Number(budget.remaining ?? (budget.amount - budget.spent)) || 0, 0),
+    }))
+    .sort((left, right) => right.usage - left.usage)[0], [budgets, todayKey]);
+
   const dynamicAiTip = useMemo(() => {
-    if (totalExpense > totalIncome && totalIncome > 0) {
-      return "Paps, medyo alanganin tayo ngayon. Mas malaki ang gastos mo kaysa sa kinita mo. Preno-preno muna sa luho!";
-    } else if (balance <= 500 && balance >= 0) {
-      return "Kulang na lang sa pambili ng kape ang balanse mo, paps. Magtipid-tipid muna habang naghihintay ng sweldo!";
-    } else if (totalIncome > 0 && totalExpense <= totalIncome * 0.5) {
-      return "Ang galing ng pag-budget mo ngayon, paps! Malaki ang natira sa kita mo. Keep it up!";
-    } else {
-      return "Huwag mong hintaying maubos ang sweldo bago magtipid, paps. Konting pigil sa luho, malaking tulong sa bulsa!";
-    }
-  }, [totalIncome, totalExpense, balance]);
+    if (!mostUsedBudget) return 'Set a category budget in Insights to get clear spending limits and alerts here.';
+    const category = mostUsedBudget.category_name || 'This category';
+    const period = mostUsedBudget.period_type || 'budget';
+    const used = mostUsedBudget.usage;
+    const spent = Number(mostUsedBudget.spent) || 0;
+    const limit = Number(mostUsedBudget.amount) || 0;
+    const remaining = mostUsedBudget.remainingAmount;
+    if (used >= 100) return `${category} is over its ${period} limit. You have spent ₱${spent.toLocaleString()} of ₱${limit.toLocaleString()}.`;
+    if (used >= 90) return `${category} is close to its ${period} limit (${used.toFixed(0)}% used). ₱${remaining.toLocaleString()} remains.`;
+    if (used >= 70) return `${category} has used ${used.toFixed(0)}% of its ${period} limit. About ₱${remaining.toLocaleString()} remains.`;
+    return `Your most-used budget is ${category} at ${used.toFixed(0)}%. About ₱${remaining.toLocaleString()} remains for this ${period} period.`;
+  }, [mostUsedBudget]);
 
   const budgetHealthStatus = useMemo(() => {
-    if (totalIncome === 0) return { label: "No Income Recorded", color: SAGE, percentage: 0 };
-    const ratio = totalExpense / totalIncome;
-    if (ratio > 0.85) return { label: "Critical Budget Warning", color: EXPENSE, percentage: Math.min(ratio * 100, 100) };
-    if (ratio > 0.6) return { label: "Moderate Spending", color: GOLD, percentage: ratio * 100 };
-    return { label: "Budget on Track", color: INCOME, percentage: ratio * 100 };
-  }, [totalIncome, totalExpense]);
+    if (!mostUsedBudget) return { label: 'No Active Budget', color: SAGE, percentage: 0 };
+    const percentage = mostUsedBudget.usage;
+    if (percentage >= 100) return { label: 'Over Budget', color: EXPENSE, percentage };
+    if (percentage >= 90) return { label: 'Critical Budget Warning', color: EXPENSE, percentage };
+    if (percentage >= 70) return { label: 'Budget Warning', color: GOLD, percentage };
+    return { label: 'Budget on Track', color: INCOME, percentage };
+  }, [mostUsedBudget]);
 
   if (isLoading) {
     return (
@@ -116,10 +136,10 @@ export default function HomeDashboard() {
           <View style={styles.aiTipHeader}>
             <View style={styles.aiBadge}>
               <Ionicons name="sparkles" size={11} color={DEEP_GREEN} />
-              <Text style={styles.aiBadgeText}>FINAI ADVISOR</Text>
+              <Text style={styles.aiBadgeText}>QUICK BUDGET TIP</Text>
             </View>
           </View>
-          <Text style={styles.aiTipText}>"{dynamicAiTip}"</Text>
+          <Text style={styles.aiTipText}>{dynamicAiTip}</Text>
           <TouchableOpacity onPress={() => router.push('/chat' as never)} style={styles.aiTipAction}>
             <Text style={styles.aiTipActionText}>Magtanong kay FinAi</Text>
             <Ionicons name="arrow-forward" size={14} color={TEAL} />
@@ -232,12 +252,13 @@ export default function HomeDashboard() {
             {recentTransactions.map((item, index) => {
               const isIncome = item.type === 'Income';
               const isTransfer = item.type === 'Transfer';
-              const color = isTransfer ? TEAL : isIncome ? INCOME : EXPENSE;
-              const bgColor = isTransfer ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
+              const isContribution = item.type === 'Contribution' || Boolean(item.goal_id);
+              const color = isTransfer || isContribution ? TEAL : isIncome ? INCOME : EXPENSE;
+              const bgColor = isTransfer || isContribution ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
               const prefix = isTransfer ? '' : isIncome ? '+' : '-';
               
               // LILINISIN DIN YUNG MGA LUMANG TEXT ICONS DITO
-              const transactionEmoji = isTransfer 
+              const transactionEmoji = isContribution ? '🎯' : isTransfer
                 ? '🔄' 
                 : getCategoryEmoji(item.category, item.type.toLowerCase());
 
@@ -249,7 +270,7 @@ export default function HomeDashboard() {
                     </View>
                     <View style={styles.recentInfo}>
                       <Text style={styles.recentCategory} numberOfLines={1}>
-                        {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : item.category}
+                        {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : isContribution ? 'Goal Contribution' : item.category}
                       </Text>
                       <Text style={styles.recentNote} numberOfLines={1}>{item.note || 'No description'}</Text>
                     </View>
@@ -394,4 +415,4 @@ const styles = StyleSheet.create({
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 8
   },
   fab: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center' }
-}); 
+});

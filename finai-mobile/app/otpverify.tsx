@@ -59,7 +59,8 @@ export default function OtpVerifyScreen() {
             id: String(userId),
             name: data.name || "User",
             email: cleanEmail,
-            role: data.role
+            role: data.role,
+            token: data.token
           });
         } else {
            await AsyncStorage.setItem('user_email', cleanEmail);

@@ -54,7 +54,7 @@ export default function CategoriesScreen() {
   const fetchCategories = async (which: 'active' | 'archived') => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/categories/?archived=${which === 'archived'}`);
+      const response = await fetch(`${API_URL}/api/categories/?archived=${which === 'archived'}`, { headers: { Authorization: `Bearer ${user?.token || ''}` } });
       const data = await response.json();
       setCategories(Array.isArray(data) ? data : []);
     } catch (error) {

@@ -7,6 +7,8 @@ from schemas.category import CategoryCreate, CategoryResponse
 from database import db
 
 from auth import get_current_admin, verify_admin_credentials, bearer_scheme
+from auth import get_current_user
+import re
 from .logs import log_action
 
 router = APIRouter(prefix="/api/categories", tags=["Categories"])
@@ -32,8 +34,9 @@ def get_default_icon(name: str):
         return "pricetag-outline"
 
 @router.get("/", response_model=list[CategoryResponse])
-async def get_categories(user_id: Optional[str] = None, archived: bool = False):
+async def get_categories(user_id: Optional[str] = None, archived: bool = False, current_user: dict = Depends(get_current_user)):
     """CHANGED: added `archived` query param, same reasoning as accounts.py."""
+    user_id = current_user["id"]
     query = {"category_role": "admin"}
     if user_id:
         query = {"$or": [{"category_role": "admin"}, {"$and": [{"category_role": "user"}, {"user_id": user_id}]}]}
@@ -47,13 +50,31 @@ async def get_categories(user_id: Optional[str] = None, archived: bool = False):
     return categories
 
 @router.post("/", response_model=CategoryResponse)
-async def create_category(category: CategoryCreate):
-    """(unchanged) User-only: requires user_id."""
+async def create_category(category: CategoryCreate, current_user: dict = Depends(get_current_user)):
+    """FIXED: Added duplicate name check for user."""
     cat_data = category.model_dump()
-    if not cat_data.get("user_id"):
+    user_id = current_user["id"]
+    cat_data["user_id"] = user_id
+    cat_data["name"] = cat_data["name"].strip()
+    cat_data["type"] = cat_data["type"].strip().lower()
+    if not cat_data["name"] or cat_data["type"] not in {"expense", "income"}:
+        raise HTTPException(status_code=422, detail="Category name and a valid type (expense or income) are required.")
+
+    if not user_id:
         raise HTTPException(status_code=400, detail="user_id is required to create a personal category. Admin presets must use POST /api/categories/admin.")
 
+    # 🛡️ FIX: Duplicate category check (Case-insensitive)
+    existing_cat = await db.categories.find_one({
+        "$or": [{"user_id": user_id, "category_role": "user"}, {"category_role": "admin"}],
+        "type": cat_data["type"],
+        "name": {"$regex": f"^{re.escape(cat_data['name'])}$", "$options": "i"},
+        "is_archived": {"$ne": True}
+    })
+    if existing_cat:
+        raise HTTPException(status_code=409, detail="A category with this name already exists.")
+
     cat_data["category_role"] = "user"
+    cat_data["is_archived"] = False
     if not cat_data.get("icon"):
         cat_data["icon"] = get_default_icon(cat_data["name"])
 
@@ -65,8 +86,23 @@ async def create_category(category: CategoryCreate):
 
 @router.post("/admin", response_model=CategoryResponse)
 async def create_admin_category(category: CategoryCreate, admin: dict = Depends(get_current_admin)):
-    """(unchanged) Admin-only preset creation."""
+    """FIXED: Added duplicate name check for admin presets."""
     cat_data = category.model_dump()
+    cat_data["name"] = cat_data["name"].strip()
+    cat_data["type"] = cat_data["type"].strip().lower()
+    if not cat_data["name"] or cat_data["type"] not in {"expense", "income"}:
+        raise HTTPException(status_code=422, detail="Category name and a valid type (expense or income) are required.")
+
+    # 🛡️ FIX: Duplicate category check for admins
+    existing_cat = await db.categories.find_one({
+        "category_role": "admin",
+        "name": {"$regex": f"^{re.escape(cat_data['name'])}$", "$options": "i"},
+        "type": cat_data["type"],
+        "is_archived": {"$ne": True}
+    })
+    if existing_cat:
+        raise HTTPException(status_code=400, detail="Mayroon nang admin preset na may ganitong pangalan.")
+
     cat_data["user_id"] = None
     cat_data["category_role"] = "admin"
     cat_data["is_archived"] = False
@@ -86,9 +122,9 @@ async def update_category(
     category_id: str,
     category: CategoryCreate,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
 ):
-    """(unchanged) Branches between admin-JWT (preset) and ownership check
-    (personal category)."""
+    """(unchanged) Branches between admin-JWT (preset) and ownership check (personal category)."""
     try:
         oid = ObjectId(category_id)
     except:
@@ -102,21 +138,41 @@ async def update_category(
     if existing_cat.get("category_role") == "admin":
         admin_actor = await verify_admin_credentials(credentials)
     else:
-        claimed_user_id = category.user_id
-        if not claimed_user_id or str(existing_cat.get("user_id")) != str(claimed_user_id):
+        if str(existing_cat.get("user_id")) != current_user["id"]:
             raise HTTPException(status_code=403, detail="You don't have permission to edit this category.")
 
     old_name = existing_cat.get("name")
 
-    updated_cat = await db.categories.find_one_and_update(
-        {"_id": oid}, {"$set": category.model_dump()}, return_document=True
-    )
+    category_data = category.model_dump(exclude={"user_id", "category_role"})
+    category_data["name"] = category_data["name"].strip()
+    category_data["type"] = category_data["type"].strip().lower()
+    if not category_data["name"] or category_data["type"] not in {"expense", "income"}:
+        raise HTTPException(status_code=422, detail="Category name and a valid type (expense or income) are required.")
+    category_data["user_id"] = existing_cat.get("user_id")
+    category_data["category_role"] = existing_cat.get("category_role", "user")
+    duplicate_query = {
+        "_id": {"$ne": oid}, "is_archived": {"$ne": True}, "type": category_data["type"],
+        "name": {"$regex": f"^{re.escape(category_data['name'])}$", "$options": "i"},
+    }
+    if existing_cat.get("category_role") == "admin":
+        duplicate_query["category_role"] = "admin"
+    else:
+        duplicate_query["$or"] = [
+            {"category_role": "admin"},
+            {"category_role": "user", "user_id": current_user["id"]},
+        ]
+    if await db.categories.find_one(duplicate_query):
+        raise HTTPException(status_code=409, detail="A category with this name and type already exists.")
+    updated_cat = await db.categories.find_one_and_update({"_id": oid}, {"$set": category_data}, return_document=True)
     if not updated_cat:
         raise HTTPException(status_code=404, detail="Category not found")
 
     new_name = category.name
     if new_name and new_name != old_name:
-        await db.expenses.update_many({"category": old_name}, {"$set": {"category": new_name}})
+        expense_query = {"category": old_name}
+        if existing_cat.get("category_role") != "admin":
+            expense_query["user_id"] = current_user["id"]
+        await db.expenses.update_many(expense_query, {"$set": {"category": new_name}})
         if admin_actor:
             await log_action(admin_actor["name"], f"Renamed category '{old_name}' to '{new_name}'")
 
@@ -154,16 +210,24 @@ async def restore_category(category_id: str, admin: dict = Depends(get_current_a
     category = await db.categories.find_one({"_id": oid})
     if not category:
         raise HTTPException(status_code=404, detail="Category not found")
+    if category.get("category_role") != "admin" or not category.get("is_archived", False):
+        raise HTTPException(status_code=400, detail="Only archived admin category presets can be restored.")
+    duplicate = await db.categories.find_one({
+        "_id": {"$ne": oid}, "category_role": "admin", "type": category.get("type"),
+        "name": {"$regex": f"^{re.escape(category.get('name', ''))}$", "$options": "i"},
+        "is_archived": {"$ne": True},
+    })
+    if duplicate:
+        raise HTTPException(status_code=409, detail="An active category with this name and type already exists.")
 
     updated = await db.categories.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
     await log_action(admin["name"], f"Restored category '{category.get('name')}'")
     return CategoryResponse(**{**updated, "id": str(updated["_id"])})
 
 
-# 👈 BAGONG IDINAGDAG: Permanent Delete endpoint para sa Admin Preset na may active transaction check
 @router.delete("/admin/{category_id}/permanent")
 async def permanent_delete_category(category_id: str, admin: dict = Depends(get_current_admin)):
-    """NEW: Permanently delete an archived admin category preset if no transactions use it."""
+    """FIXED: Uses db.expenses instead of db.transactions to check for orphaned data."""
     try:
         oid = ObjectId(category_id)
     except:
@@ -175,11 +239,13 @@ async def permanent_delete_category(category_id: str, admin: dict = Depends(get_
 
     if category.get("category_role") != "admin":
         raise HTTPException(status_code=400, detail="Only admin category presets can be permanently deleted through this route.")
+    if not category.get("is_archived", False):
+        raise HTTPException(status_code=400, detail="Archive the preset before permanently deleting it.")
 
     category_name = category.get("name")
     
-    # I-check kung may mga aktibong transaksyon pang nakatali sa kategoryang ito
-    linked_transaction = await db.transactions.find_one({"category": category_name})
+    # 🛡️ FIX: Pinalitan ng db.expenses dahil yun ang tamang collection name ninyo
+    linked_transaction = await db.expenses.find_one({"category": category_name})
     if linked_transaction:
         raise HTTPException(
             status_code=400, 
@@ -199,8 +265,9 @@ async def delete_category(
     category_id: str,
     user_id: Optional[str] = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
+    current_user: dict = Depends(get_current_user),
 ):
-    """CHANGED: admin presets can no longer be hard-deleted through this endpoint."""
+    """FIXED: Added check for orphaned expenses before deleting."""
     try:
         oid = ObjectId(category_id)
     except:
@@ -213,12 +280,19 @@ async def delete_category(
     if existing.get("category_role") == "admin":
         raise HTTPException(status_code=400, detail="Category presets can't be deleted -- use archive instead (PATCH /api/categories/{id}/archive).")
 
-    if not user_id or str(existing.get("user_id")) != str(user_id):
+    user_id = current_user["id"]
+    if str(existing.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="You don't have permission to delete this category.")
 
-    linked_budget = await db.budgets.find_one({"category_id": category_id})
+    # 🛡️ FIX: Check kung may BUDGET na gumagamit nito
+    linked_budget = await db.budgets.find_one({"category_id": category_id, "user_id": user_id})
     if linked_budget:
         raise HTTPException(status_code=400, detail="This category has an active budget. Delete or reassign that budget first.")
+
+    # 🛡️ FIX: Check kung may TRANSACTIONS na gumagamit nito para hindi magka-multong data
+    linked_expense = await db.expenses.find_one({"category": existing.get("name"), "user_id": user_id})
+    if linked_expense:
+        raise HTTPException(status_code=400, detail="Hindi mabura ang kategorya. Mayroon ka pang mga transaksyon na gumagamit nito. I-delete o i-edit muna ang mga transaksyon.")
 
     result = await db.categories.delete_one({"_id": oid})
     if result.deleted_count == 0:

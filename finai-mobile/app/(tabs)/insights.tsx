@@ -32,6 +32,18 @@ const formatCurrency = (amount: number) => {
   });
 };
 
+const parseTransactionDate = (value: string) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
+  return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date(value);
+};
+
+const localDateKey = (value: Date) => {
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, '0');
+  const day = String(value.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
 const screenWidth = Dimensions.get('window').width;
 
 export default function InsightsScreen() {
@@ -55,7 +67,7 @@ export default function InsightsScreen() {
     categories = [],
     deleteBudget,
     goals = [],
-    deleteGoal,
+    archiveGoal,
     accounts = [],
     getAccountBalance,
     depositToGoal
@@ -64,7 +76,7 @@ export default function InsightsScreen() {
   const periodTypeForTimeframe = { Week: 'weekly', Month: 'monthly', Year: 'annual' } as const;
   const selectedPeriodType = periodTypeForTimeframe[timeframe];
   const today = new Date();
-  const todayKey = today.toISOString().slice(0, 10);
+  const todayKey = localDateKey(today);
   const activeBudgets = useMemo(() => budgets.filter((budget) =>
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
   ), [budgets, todayKey]);
@@ -74,13 +86,13 @@ export default function InsightsScreen() {
   // Shared time-window predicate so stats, the bar chart, and the category chart all
   // agree on what "this period" means.
   const isInSelectedWindow = (dateString: string) => {
-    const d = new Date(dateString);
+    const d = parseTransactionDate(dateString);
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
     if (timeframe === 'Year') return d.getFullYear() === currentYear;
     if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
     const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay());
+    startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
     startOfWeek.setHours(0, 0, 0, 0);
     return d >= startOfWeek;
   };
@@ -99,7 +111,7 @@ export default function InsightsScreen() {
       if (!isInSelectedWindow(t.date)) return acc;
       const amount = Number(t.amount) || 0;
       if (t.type === 'Income') return acc + amount;
-      if (t.type === 'Expense') return acc - amount;
+      if (t.type === 'Expense' && !t.goal_id) return acc - amount;
       return acc;
     }, 0);
 
@@ -122,8 +134,8 @@ export default function InsightsScreen() {
       const monthlyTotals = new Array(12).fill(0);
 
       transactions.forEach(t => {
-        if (t.type === subTab) {
-          const d = new Date(t.date);
+        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
+          const d = parseTransactionDate(t.date);
           if (d.getFullYear() === currentYear) {
             monthlyTotals[d.getMonth()] += Number(t.amount) || 0;
           }
@@ -143,10 +155,10 @@ export default function InsightsScreen() {
       const weeklyTotals = new Array(5).fill(0);
 
       transactions.forEach(t => {
-        if (t.type === subTab) {
-          const d = new Date(t.date);
+        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
+          const d = parseTransactionDate(t.date);
           if (d.getFullYear() === currentYear && d.getMonth() === currentMonth) {
-            const weekIndex = Math.min(Math.floor(d.getDate() / 7), 4);
+            const weekIndex = Math.min(Math.floor((d.getDate() - 1) / 7), 4);
             weeklyTotals[weekIndex] += Number(t.amount) || 0;
           }
         }
@@ -162,17 +174,17 @@ export default function InsightsScreen() {
         });
       });
     } else if (timeframe === 'Week') {
-      const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
       const dailyTotals = new Array(7).fill(0);
       const startOfWeek = new Date(today);
-      startOfWeek.setDate(today.getDate() - today.getDay());
+      startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
       startOfWeek.setHours(0, 0, 0, 0);
 
       transactions.forEach(t => {
-        if (t.type === subTab) {
-          const d = new Date(t.date);
+        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
+          const d = parseTransactionDate(t.date);
           if (d >= startOfWeek) {
-            dailyTotals[d.getDay()] += Number(t.amount) || 0;
+            dailyTotals[(d.getDay() + 6) % 7] += Number(t.amount) || 0;
           }
         }
       });
@@ -607,20 +619,19 @@ export default function InsightsScreen() {
                           style={[styles.actionIconButton, { backgroundColor: 'rgba(255, 98, 89, 0.14)', marginLeft: 6 }]}
                           onPress={() => {
                             Alert.alert(
-                              "Burahin ang Goal?",
-                              `Sigurado ka bang buburahin ang target na "${goal.target_name}"?`,
+                              "I-archive ang Goal?",
+                              `Ililipat ang "${goal.target_name}" sa Archive Center. Maaari mo itong ibalik anumang oras.`,
                               [
                                 { text: "Cancel", style: "cancel" },
                                 {
-                                  text: "Delete",
-                                  style: "destructive",
-                                  onPress: () => deleteGoal ? deleteGoal(goal.id) : null
+                                  text: "Archive",
+                                  onPress: () => archiveGoal ? archiveGoal(goal.id) : null
                                 }
                               ]
                             );
                           }}
                         >
-                          <Ionicons name="trash-outline" size={14} color={CRITICAL_RED} />
+                          <Ionicons name="archive-outline" size={14} color={CRITICAL_RED} />
                         </TouchableOpacity>
                       </View>
                     </View>

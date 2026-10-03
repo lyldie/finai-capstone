@@ -1,11 +1,12 @@
 // finai-frontend/context/TransactionContext.tsx
-import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config'; 
+import { useAuth } from './AuthContext';
 
-export type TransactionType = 'Income' | 'Expense' | 'Transfer';
-export type Transaction = { id: string; amount: string; category: string; note: string; type: TransactionType; account: string; to_account?: string; date: string; };
+export type TransactionType = 'Income' | 'Expense' | 'Transfer' | 'Contribution';
+export type Transaction = { id: string; amount: string; category: string; note: string; type: TransactionType; account: string; to_account?: string; date: string; goal_id?: string; };
 export type Category = { id: string; name: string; type: string; icon: string; };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
@@ -37,6 +38,7 @@ type TransactionContextType = {
   addGoal: (name: string, target_amount: number, target_date: string, goal_type_id: string) => Promise<void>;
   updateGoal: (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings?: number) => Promise<void>;
   deleteGoal: (id: string) => Promise<void>;
+  archiveGoal: (id: string) => Promise<void>;
   depositToGoal: (goalId: string, amount: number, account: string) => Promise<boolean>;
   getAccountBalance: (name: string) => number;
   totalIncome: number; 
@@ -65,6 +67,7 @@ const getPhDateString = () => {
 };
 
 export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  const { user } = useAuth();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -72,40 +75,80 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const activeUserId = useRef<string | null>(null);
+  const fetchRequestId = useRef(0);
 
   // Option for silent refresh (showLoading = false) para iwas flicker sa UI
   const fetchTransactions = useCallback(async (showLoading = true) => {
+    const requestId = ++fetchRequestId.current;
     if (showLoading) setIsLoading(true);
     try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { 
-        if (showLoading) setIsLoading(false); 
+      const userId = user?.id;
+      if (!userId) {
+        activeUserId.current = null;
+        setTransactions([]);
+        setCategories([]);
+        setAccounts([]);
+        setBudgets([]);
+        setNotifications([]);
+        setGoals([]);
+        if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
         return; 
       }
+      if (activeUserId.current !== userId) {
+        activeUserId.current = userId;
+        setTransactions([]);
+        setCategories([]);
+        setAccounts([]);
+        setBudgets([]);
+        setNotifications([]);
+        setGoals([]);
+      }
+      const token = user?.token;
+      const authHeaders = { Authorization: `Bearer ${token || ''}` };
 
       // 1. OFFLINE MODE: I-load muna ang local cache bago mag-fetch sa server
-      const cachedTrans = await AsyncStorage.getItem('@offline_transactions');
-      const cachedBudgets = await AsyncStorage.getItem('@offline_budgets');
-      const cachedAccounts = await AsyncStorage.getItem('@offline_accounts');
-      
-      if (cachedTrans) setTransactions(JSON.parse(cachedTrans));
-      if (cachedBudgets) setBudgets(JSON.parse(cachedBudgets));
-      if (cachedAccounts) setAccounts(JSON.parse(cachedAccounts));
+      const transactionCacheKey = `@offline_${userId}_transactions`;
+      const budgetCacheKey = `@offline_${userId}_budgets`;
+      const accountCacheKey = `@offline_${userId}_accounts`;
+      const readCachedArray = async (key: string) => {
+        const cached = await AsyncStorage.getItem(key);
+        if (!cached) return null;
+        try {
+          const parsed = JSON.parse(cached);
+          return Array.isArray(parsed) ? parsed : null;
+        } catch {
+          await AsyncStorage.removeItem(key);
+          return null;
+        }
+      };
+      const [cachedTrans, cachedBudgets, cachedAccounts] = await Promise.all([
+        readCachedArray(transactionCacheKey), readCachedArray(budgetCacheKey), readCachedArray(accountCacheKey),
+      ]);
+      if (requestId !== fetchRequestId.current || activeUserId.current !== userId) return;
+
+      // Offline data is partitioned by authenticated user so another account on the
+      // same device can never briefly see the previous user's cached financial records.
+      if (cachedTrans) setTransactions(cachedTrans);
+      if (cachedBudgets) setBudgets(cachedBudgets);
+      if (cachedAccounts) setAccounts(cachedAccounts);
 
       // 2. BACKGROUND SYNC: Subukan kunin ang latest sa server nang may safe fallbacks
       const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
-        fetch(`${API_URL}/get-expenses?user_id=${userId}`).then(res => res.ok ? res.json() : { status: "Error", data: [] }).catch(() => ({ status: "Error", data: [] })),
-        fetch(`${API_URL}/api/categories/?user_id=${userId}`).then(res => res.ok ? res.json() : []).catch(() => []), 
-        fetch(`${API_URL}/api/accounts/user/${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
-        fetch(`${API_URL}/api/budgets/get-all/${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
-        fetch(`${API_URL}/api/goals/?user_id=${userId}`).then(res => res.ok ? res.json() : []).catch(() => []),
-        fetch(`${API_URL}/api/notifications/${userId}`).then(res => res.ok ? res.json() : []).catch(() => [])
+        fetch(`${API_URL}/get-expenses?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : { status: "Error", data: [] }).catch(() => ({ status: "Error", data: [] })),
+        fetch(`${API_URL}/api/categories/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/accounts/user/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/budgets/get-all/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/goals/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/notifications/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => [])
       ]);
+
+      if (requestId !== fetchRequestId.current || activeUserId.current !== userId) return;
 
       const parsedAccounts = Array.isArray(accRes) ? accRes : (accRes.data || []);
       const formattedAccounts = parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id }));
       setAccounts(formattedAccounts);
-      await AsyncStorage.setItem('@offline_accounts', JSON.stringify(formattedAccounts)); // Cache
+      await AsyncStorage.setItem(accountCacheKey, JSON.stringify(formattedAccounts)); // Cache
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         const formattedTrans = transRes.data.map((i: any) => ({
@@ -116,16 +159,17 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           type: i.type || 'Expense',
           account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
           to_account: i.to_account || '', 
+          goal_id: i.goal_id ? String(i.goal_id) : undefined,
           date: i.date ? i.date.split('T')[0] : getPhDateString() // Ginamit ang PH time helper
         }));
         setTransactions(formattedTrans);
-        await AsyncStorage.setItem('@offline_transactions', JSON.stringify(formattedTrans)); // Cache
+        await AsyncStorage.setItem(transactionCacheKey, JSON.stringify(formattedTrans)); // Cache
       }
       
       const parsedBudgets = Array.isArray(budRes) ? budRes : (budRes.data || []);
       const formattedBudgets = parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id }));
       setBudgets(formattedBudgets);
-      await AsyncStorage.setItem('@offline_budgets', JSON.stringify(formattedBudgets)); // Cache
+      await AsyncStorage.setItem(budgetCacheKey, JSON.stringify(formattedBudgets)); // Cache
       
       const parsedCategories = Array.isArray(catRes) ? catRes : (catRes.data || []);
       setCategories(parsedCategories.map((c: any) => ({ ...c, id: c._id || c.id })));
@@ -137,12 +181,13 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
       
     } catch (e) { 
+      if (requestId !== fetchRequestId.current) return;
       // Kahit mag-error, may makikita pa ring data ang user dahil sa cache
       console.log("Offline mode active or network error:", e); 
     } finally { 
-      if (showLoading) setIsLoading(false); 
+      if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
     }
-  }, []);
+  }, [user?.id]);
 
   useEffect(() => { 
     fetchTransactions(true); 
@@ -157,6 +202,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const amount = Number.parseFloat(transaction.amount) || 0;
       if (transaction.type === 'Income' && transaction.account === accountName) return total + amount;
       if (transaction.type === 'Expense' && transaction.account === accountName) return total - amount;
+      if (transaction.type === 'Contribution' && transaction.account === accountName) return total - amount;
       if (transaction.type === 'Transfer') {
         if (transaction.account === accountName) total -= amount;
         if (transaction.to_account === accountName) total += amount;
@@ -177,7 +223,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // alert even though nothing was actually saved. Letting the error propagate here
     // (matching how it worked before the offline-mode changes) means two.tsx's existing
     // try/catch correctly shows a failure message instead of a false success.
-    const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const token = await AsyncStorage.getItem('user_token');
+    const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
 
     if (res.ok) {
       const result = await res.json();
@@ -199,7 +246,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     // FIX: same reasoning as addTransaction above -- let the error propagate instead of
     // swallowing it, so two.tsx's own error handling reflects what actually happened.
-    const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const token = await AsyncStorage.getItem('user_token');
+    const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
     if (res.ok) {
       const result = await res.json();
       await fetchTransactions(false); // Silent refresh
@@ -218,7 +266,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       
       // FIX: user_id is now passed in the URL to match backend requirements
-      const res = await fetch(`${API_URL}/delete-expense/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      const token = await AsyncStorage.getItem('user_token');
+      const res = await fetch(`${API_URL}/archive-expense/${id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
       
       if (res.ok) {
         await fetchTransactions(false); // Silent refresh
@@ -232,7 +281,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const markNotificationRead = async (id: string) => {
     try {
-      const response = await fetch(`${API_URL}/api/notifications/${id}/read`, { method: 'PATCH' });
+      const token = await AsyncStorage.getItem('user_token');
+      const response = await fetch(`${API_URL}/api/notifications/${id}/read`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
       if (response.ok) {
         setNotifications((current) => current.map((item) => item.id === id ? { ...item, is_read: true } : item));
       }
@@ -243,7 +293,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ amount, user_id: userId }) });
+      const token = await AsyncStorage.getItem('user_token');
+      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, user_id: userId }) });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to update budget.");
     } catch (e) { console.error(e); }
   };
@@ -252,7 +303,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      const token = await AsyncStorage.getItem('user_token');
+      const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete budget.");
     } catch (e) { console.error(e); }
   };
@@ -261,9 +313,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      const token = await AsyncStorage.getItem('user_token');
       const response = await fetch(`${API_URL}/api/goals/`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify({ user_id: userId, goal_type_id, target_name: name, target_amount, current_savings: 0, target_date }),
       });
       if (!response.ok) throw new Error('Failed to add goal');
@@ -275,10 +328,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
+      const token = await AsyncStorage.getItem('user_token');
       
       const response = await fetch(`${API_URL}/api/goals/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify({ 
           user_id: userId, 
           goal_type_id, 
@@ -303,10 +357,28 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // DELETE /api/goals/{id}) so only the goal's owner can delete it.
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const res = await fetch(`${API_URL}/api/goals/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE' });
+      const token = await AsyncStorage.getItem('user_token');
+      const res = await fetch(`${API_URL}/api/goals/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete goal.");
     } catch (e) {
       Alert.alert("Error", "Network connection failed.");
+    }
+  };
+
+  const archiveGoal = async (id: string) => {
+    try {
+      const token = await AsyncStorage.getItem('user_token');
+      const response = await fetch(`${API_URL}/api/goals/${id}/archive`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token || ''}` },
+      });
+      if (response.ok) await fetchTransactions(false);
+      else {
+        const error = await response.json().catch(() => ({}));
+        Alert.alert('Unable to archive goal', error.detail || 'Please try again.');
+      }
+    } catch {
+      Alert.alert('Unable to archive goal', 'Check your connection and try again.');
     }
   };
 
@@ -327,10 +399,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // goal and inject a fake transaction into their history.
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return false; }
+      const token = await AsyncStorage.getItem('user_token');
 
       const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify({
           user_id: userId,
           amount: amount,
@@ -353,14 +426,14 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
-  const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
+  const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense' && !t.goal_id).reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   
   const balance = useMemo(() => {
     const accountNames = [...new Set(accounts.map((account) => account.name))];
     
     const totalFromAccounts = accountNames.length
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
-      : totalIncome - totalExpense;
+      : totalIncome - totalExpense - transactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
     const totalGoalSavings = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
 
@@ -368,7 +441,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [accounts, getAccountBalance, totalExpense, totalIncome, goals]); 
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

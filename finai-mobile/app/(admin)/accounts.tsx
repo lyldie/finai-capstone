@@ -51,7 +51,7 @@ export default function AccountsScreen() {
   const fetchAccounts = async (which: 'active' | 'archived') => {
     setLoading(true);
     try {
-      const response = await fetch(`${API_URL}/api/accounts/?archived=${which === 'archived'}`);
+      const response = await fetch(`${API_URL}/api/accounts/?archived=${which === 'archived'}`, { headers: { Authorization: `Bearer ${user?.token || ''}` } });
       const data = await response.json();
       setAccounts(Array.isArray(data) ? data : []);
     } catch (error) {

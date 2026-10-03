@@ -67,6 +67,7 @@ export default function SetBudgetScreen() {
 
     try {
       const userId = await AsyncStorage.getItem('user_id');
+      const token = await AsyncStorage.getItem('user_token');
       const payload = {
         user_id: userId,
         category_id: selectedCategory?.id, 
@@ -75,7 +76,7 @@ export default function SetBudgetScreen() {
       };
 
       const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload)
       });
       if (!response.ok) throw new Error('Failed to save budget');
       await fetchTransactions(); 

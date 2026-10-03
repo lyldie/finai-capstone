@@ -1,90 +1,72 @@
-import smtplib
+"""Email delivery helpers. SMTP credentials are loaded from backend .env."""
+
+import os
 import random
+import smtplib
 import string
 from email.message import EmailMessage
+from html import escape
+from pathlib import Path
 
-# CONFIGURATION
-# Siguraduhin na i-paste mo ulit yung 16-char code mo dito paps
-EMAIL_SENDER = "sobrangfinefinai@gmail.com"
-EMAIL_PASSWORD = "natvzmqhkmkquafu" 
+from dotenv import load_dotenv
 
-def send_otp_email(target_email):
-    # 1. Generate 6-digit random code (Mix of letters and numbers)
-    otp_code = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    
-    try:
-        msg = EmailMessage()
-        msg['Subject'] = "FinAi - Verify Your Account 🐿️"
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = target_email
-        msg.set_content(f"""
-        Mabuhay paps! 
-        
-        Salamat sa pag-register sa FinAi. Heto ang iyong OTP Verification Code:
-        
-        CODE: {otp_code}
-        
-        Input mo lang 'to sa app para ma-verify ang email mo at makapag-setup na ng security PIN.
-        
-        Ligtas ang budget mo rito!
-        - FinAi Team 🐿️
-        """)
+load_dotenv(Path(__file__).with_name(".env"))
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 
-        # 2. SMTP Connection
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            smtp.send_message(msg)
-        
-        return otp_code  # I-return natin yung code para ma-save sa DB
-    except Exception as e:
-        print(f"SMTP Error: {e}")
-        return None
 
-# Eto yung para sa Threshold Alerts niyo soon (Reusable!)
-def send_threshold_alert(target_email, category, amount):
-    try:
-        msg = EmailMessage()
-        msg['Subject'] = "FinAi Alert: Budget Limit Reached! ⚠️"
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = target_email
-        
-        # 1. Fallback (Plain Text) kung sakaling hindi naglo-load ang HTML sa email app ng user
-        msg.set_content(f"Paps! Malapit na maubos budget mo sa {category}. {amount} na lang natitira!")
-        
-        # 2. Ang astig na HTML Design! (FinAi Colors)
-        html_content = f"""
-        <html>
-            <body style="font-family: Arial, sans-serif; background-color: #F7F9F8; padding: 20px;">
-                <div style="max-width: 400px; margin: auto; background-color: #FFFFFF; padding: 30px; border-radius: 16px; border-top: 6px solid #144A3D; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
-                    
-                    <h2 style="color: #144A3D; text-align: center; margin-top: 0;">FinAi Budget Alert ⚠️</h2>
-                    
-                    <p style="color: #58706B; font-size: 15px;">Mabuhay paps!</p>
-                    <p style="color: #58706B; font-size: 15px;">Ito ay isang paalala na malapit nang maubos ang budget limit mo para sa category na ito:</p>
-                    
-                    <div style="background-color: #FEE2E2; padding: 15px; border-radius: 12px; text-align: center; margin: 25px 0; border: 1px solid #FCA5A5;">
-                        <p style="color: #B91C1C; font-size: 14px; margin: 0; text-transform: uppercase; font-weight: bold;">Category: {category}</p>
-                        <h1 style="color: #991B1B; font-size: 24px; margin: 5px 0;">{amount}</h1>
-                    </div>
-                    
-                    <p style="color: #58706B; font-size: 14px; text-align: center;">I-check ang iyong FinAi app para sa karagdagang detalye at mag-adjust ng expenses kung kinakailangan.</p>
-                    
-                    <hr style="border: none; border-top: 1px solid #E6ECE9; margin: 25px 0;">
-                    
-                    <p style="color: #8A9A86; font-size: 12px; text-align: center; margin: 0;">Ligtas ang budget mo rito!<br><strong>- FinAi Team 🐿️</strong></p>
-                </div>
-            </body>
-        </html>
-        """
-        
-        # I-attach ang HTML design sa email
-        msg.add_alternative(html_content, subtype='html')
-
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as smtp:
-            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            smtp.send_message(msg)
-            
-        return True
-    except Exception as e:
-        print(f"Failed to send email alert: {e}")
+def _send(msg: EmailMessage) -> bool:
+    if not EMAIL_SENDER or not EMAIL_PASSWORD:
         return False
+    try:
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
+            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            smtp.send_message(msg)
+        return True
+    except Exception as exc:
+        print(f"Email delivery failed: {exc}")
+        return False
+
+
+def send_otp_email(target_email: str) -> str | None:
+    """Send a generated verification code and return it only after successful delivery."""
+    otp_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    msg = EmailMessage()
+    msg["Subject"] = "FinAI - Verify Your Account"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = target_email
+    msg.set_content(
+        "Thanks for registering with FinAI. Use this code to verify your email: "
+        f"{otp_code}\n\nThe code expires in 10 minutes."
+    )
+    return otp_code if _send(msg) else None
+
+
+def send_threshold_alert(
+    target_email: str,
+    category: str,
+    threshold: int,
+    spent: float,
+    limit_amount: float,
+    period_type: str,
+) -> bool:
+    """Send one factual email for a newly crossed budget threshold."""
+    msg = EmailMessage()
+    msg["Subject"] = f"FinAI budget alert: {threshold}% used"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = target_email
+    msg.set_content(
+        f"Your {category} {period_type} budget is {threshold}% used "
+        f"(PHP {spent:.2f} of PHP {limit_amount:.2f}). Open FinAI to review your spending."
+    )
+    safe_category = escape(category)
+    msg.add_alternative(
+        f"""<html><body style="font-family:Arial,sans-serif">
+        <h2>FinAI budget alert</h2>
+        <p>Your <strong>{safe_category}</strong> {period_type} budget is <strong>{threshold}%</strong> used.</p>
+        <p>PHP {spent:.2f} of PHP {limit_amount:.2f}</p>
+        <p>Open FinAI to review your spending.</p>
+        </body></html>""",
+        subtype="html",
+    )
+    return _send(msg)

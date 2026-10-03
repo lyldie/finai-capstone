@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Modal, TextInput, Alert, ActivityIndicator, FlatList } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
 
@@ -63,12 +64,14 @@ export default function CustomPresetsScreen() {
     if (!isSilent) setIsLoading(true); 
     
     try {
-      const catRes = await fetch(`${API_BASE_URL}/categories?user_id=${user.id}`);
+      const token = await AsyncStorage.getItem('user_token');
+      const headers = { Authorization: `Bearer ${token || ''}` };
+      const catRes = await fetch(`${API_BASE_URL}/categories?user_id=${user.id}`, { headers });
       const catData = await catRes.json();
       const userCategories = catData.filter((item: any) => item.category_role === 'user' && item.user_id === user.id);
       setCategories(userCategories);
 
-      const accRes = await fetch(`${API_BASE_URL}/accounts?user_id=${user.id}`);
+      const accRes = await fetch(`${API_BASE_URL}/accounts?user_id=${user.id}`, { headers });
       const accData = await accRes.json();
       const userAccounts = accData.filter((item: any) => item.account_role === 'user' && item.user_id === user.id);
       setAccounts(userAccounts);
@@ -121,9 +124,10 @@ export default function CustomPresetsScreen() {
       : { name: newItemName, initial_balance: parseFloat(newAccBalance) || 0.0, user_id: user?.id, icon: finalEmoji };
 
     try {
+      const token = await AsyncStorage.getItem('user_token');
       const res = await fetch(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify(payload)
       });
 
@@ -144,7 +148,8 @@ export default function CustomPresetsScreen() {
       { text: "Delete", style: "destructive", onPress: async () => {
           const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
           try {
-            const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE' });
+            const token = await AsyncStorage.getItem('user_token');
+            const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
             if (res.ok) {
               fetchData(true); 
             } else {

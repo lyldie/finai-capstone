@@ -4,6 +4,8 @@ import {
   TextInput, FlatList, KeyboardAvoidingView, Platform, ActivityIndicator 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '../config';
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
@@ -42,10 +44,10 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
     setIsChatLoading(true);
 
     try {
-      // PALITAN ANG IP ADDRESS KUNG NASA PHYSICAL PHONE (e.g., 192.168.1.X)
-      const response = await fetch('http://192.168.1.67:8000/advisor/chat', {
+      const token = await AsyncStorage.getItem('user_token');
+      const response = await fetch(`${API_URL}/advisor/chat`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify({ user_id: userId, message: userMsg.text }),
       });
 

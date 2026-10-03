@@ -57,7 +57,7 @@ export default function AdminArchiveScreen() {
   const handleRestore = async (id: string) => {
     try {
       let endpoint = `${API_URL}/api/categories/${id}/restore`;
-      if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/templates/${id}/restore`;
+      if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/restore`;
       if (activeTab === 'GoalTypes') endpoint = `${API_URL}/api/goal-types/${id}/restore`;
 
       const res = await fetch(endpoint, { 
@@ -86,9 +86,9 @@ export default function AdminArchiveScreen() {
           style: 'destructive', 
           onPress: async () => {
             try {
-              let endpoint = `${API_URL}/api/categories/${id}`;
-              if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/templates/${id}`;
-              if (activeTab === 'GoalTypes') endpoint = `${API_URL}/api/goal-types/${id}`;
+              let endpoint = `${API_URL}/api/categories/admin/${id}/permanent`;
+              if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/admin/${id}/permanent`;
+              if (activeTab === 'GoalTypes') endpoint = `${API_URL}/api/goal-types/${id}/permanent`;
 
               const res = await fetch(endpoint, { 
                 method: 'DELETE',

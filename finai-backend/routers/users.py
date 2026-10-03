@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from passlib.context import CryptContext
 
 from schemas.user import UserResponse
-from auth import get_current_admin
+from auth import get_current_admin, get_current_user
 from .logs import log_action
 
 router = APIRouter(prefix="/api/users", tags=["Admin Users"])
@@ -97,7 +97,9 @@ async def restore_user(user_id: str, admin: dict = Depends(get_current_admin)):
 # admin panel; see earlier notes on the separate "regular users have no
 # token" gap, not part of this pass) ---
 @router.patch("/{user_id}/update-income")
-async def update_income(user_id: str, data: UpdateIncomeSchema):
+async def update_income(user_id: str, data: UpdateIncomeSchema, current_user: dict = Depends(get_current_user)):
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You can only update your own profile.")
     try:
         oid = ObjectId(user_id)
     except Exception:
@@ -115,7 +117,9 @@ async def update_income(user_id: str, data: UpdateIncomeSchema):
 
 
 @router.patch("/{user_id}/change-pin")
-async def change_pin(user_id: str, data: ChangePinSchema):
+async def change_pin(user_id: str, data: ChangePinSchema, current_user: dict = Depends(get_current_user)):
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You can only change your own PIN.")
     try:
         oid = ObjectId(user_id)
     except Exception:
@@ -145,7 +149,9 @@ async def change_pin(user_id: str, data: ChangePinSchema):
 
 
 @router.patch("/{user_id}/change-password")
-async def change_password(user_id: str, data: ChangePasswordSchema):
+async def change_password(user_id: str, data: ChangePasswordSchema, current_user: dict = Depends(get_current_user)):
+    if user_id != current_user["id"]:
+        raise HTTPException(status_code=403, detail="You can only change your own password.")
     try:
         oid = ObjectId(user_id)
     except Exception:
