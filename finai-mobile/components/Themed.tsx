@@ -20,7 +20,9 @@ export function useThemeColor(
   props: { light?: string; dark?: string },
   colorName: keyof typeof Colors.light & keyof typeof Colors.dark
 ) {
-  const theme = useColorScheme() ?? 'light';
+  // 👈 ITO ANG FIX: Nilinaw natin kay TypeScript na 'dark' o 'light' lang talaga ang gagamitin natin
+  const theme = useColorScheme() === 'dark' ? 'dark' : 'light';
+  
   const colorFromProps = props[theme];
 
   if (colorFromProps) {

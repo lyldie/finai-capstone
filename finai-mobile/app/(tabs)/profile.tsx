@@ -3,6 +3,15 @@ import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput,
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
+
+// File system at Sharing para sa Backup (Export)
+import { File, Paths } from 'expo-file-system';
+import { isAvailableAsync, shareAsync } from 'expo-sharing';
+
+// 👈 Document Picker at readAsStringAsync para sa Restore (Import)
+import * as DocumentPicker from 'expo-document-picker';
+import { readAsStringAsync } from 'expo-file-system';
+
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
 
@@ -14,9 +23,6 @@ const SAGE = '#8BA19D';
 const CREAM = '#FAF7F2';
 const EXPENSE = '#FF6259';
 
-// FIX: users.py's router has prefix="/api/users" -- previously this pointed at
-// `${API_URL}/api`, missing the "/users" segment entirely, so every call from this
-// screen (update-income, change-pin, change-password) was hitting a 404.
 const API_BASE_URL = `${API_URL}/api/users`;
 
 export default function ProfileScreen() {
@@ -37,9 +43,6 @@ export default function ProfileScreen() {
 
   // --- HANDLERS ---
   const handleUpdateIncome = async () => {
-    // FIX: previously only checked for non-numeric input, not zero/negative --
-    // every other amount field in the app (transactions, budgets, goals) requires a
-    // positive value, so this screen was the one inconsistent spot.
     const parsedIncome = Number(newIncome);
     if (!newIncome || isNaN(parsedIncome) || parsedIncome <= 0) {
       Alert.alert('Oops!', 'Maglagay ng tamang amount paps.');
@@ -120,6 +123,87 @@ export default function ProfileScreen() {
     }
   };
 
+  // 1. CLOUD BACKUP & EXPORT HANDLER
+  const handleCloudBackupExport = async () => {
+    const targetUserId = user?.id || (user as any)?._id;
+    if (!targetUserId) {
+      Alert.alert("Error", "Kailangan mong mag-log in ulit.");
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_URL}/api/export/backup?user_id=${targetUserId}`, {
+        headers: { Authorization: `Bearer ${user?.token}` },
+      });
+
+      if (!response.ok) {
+        throw new Error("Hindi nakuha ang data mula sa server.");
+      }
+
+      const data = await response.json();
+      const jsonString = JSON.stringify(data, null, 2);
+
+      const fileName = `FinAI_Backup_${new Date().toISOString().split('T')[0]}.json`;
+      const backupFile = new File(Paths.cache, fileName);
+      backupFile.write(jsonString);
+
+      if (await isAvailableAsync()) {
+        await shareAsync(backupFile.uri);
+      } else {
+        Alert.alert("Success", `Na-save ang backup file.`);
+      }
+
+    } catch (error) {
+      console.error("Backup export error:", error);
+      Alert.alert("Error", "Nagkaroon ng problema sa pag-export ng iyong mga record.");
+    }
+  };
+
+  // 2. CLOUD RESTORE & IMPORT HANDLER
+  const handleCloudRestoreImport = async () => {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/json',
+        copyToCacheDirectory: true,
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const fileUri = result.assets[0].uri;
+      const fileContent = await readAsStringAsync(fileUri);
+      const parsedData = JSON.parse(fileContent);
+
+      if (!parsedData || !parsedData.transactions) {
+        Alert.alert("Error", "Hindi wastong format ng backup file.");
+        return;
+      }
+
+      const targetUserId = user?.id || (user as any)?._id;
+      parsedData.user_id = targetUserId;
+
+      const response = await fetch(`${API_URL}/api/export/restore`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${user?.token}`,
+        },
+        body: JSON.stringify(parsedData),
+      });
+
+      if (!response.ok) {
+        throw new Error("Nabigo ang pag-restore ng data mula sa server.");
+      }
+
+      Alert.alert("Success!", "Matagumpay na naibalik at nai-import ang iyong mga financial records sa app!");
+
+    } catch (error) {
+      console.error("Restore error:", error);
+      Alert.alert("Error", "Nagkaroon ng problema sa pag-import ng backup file.");
+    }
+  };
+
   const handleLogout = () => {
     Alert.alert("Mag-logout", "Sigurado ka ba paps?", [
       { text: "Cancel", style: "cancel" },
@@ -166,7 +250,7 @@ export default function ProfileScreen() {
             onPress={() => setIncomeModalVisible(true)} 
           />
           <View style={styles.divider} />
-         <MenuOption 
+          <MenuOption 
             icon="grid-outline" 
             title="Custom Categories & Accounts" 
             subtitle="Manage your personal presets"
@@ -175,8 +259,8 @@ export default function ProfileScreen() {
           />
         </View>
 
-        {/* SECURITY SETTINGS */}
-        <Text style={styles.sectionTitle}>Security & Access</Text>
+        {/* SECURITY SETTINGS & DATA MANAGEMENT */}
+        <Text style={styles.sectionTitle}>Security & Data Management</Text>
         <View style={styles.cardGroup}>
           <MenuOption 
             icon="keypad-outline" 
@@ -192,6 +276,33 @@ export default function ProfileScreen() {
             subtitle="Update your account password"
             color={GOLD}
             onPress={() => setPasswordModalVisible(true)} 
+          />
+          <View style={styles.divider} />
+          {/* ARCHIVE CENTER SHORTCUT */}
+          <MenuOption 
+            icon="archive-outline" 
+            title="Archive Center & Trash Bin" 
+            subtitle="Restore or manage archived records"
+            color={TEAL}
+            onPress={() => router.push('/archive' as any)} 
+          />
+          <View style={styles.divider} />
+          {/* CLOUD BACKUP & EXPORT */}
+          <MenuOption 
+            icon="cloud-upload-outline" 
+            title="Cloud Backup & Export" 
+            subtitle="Export and store financial records externally"
+            color={TEAL}
+            onPress={handleCloudBackupExport} 
+          />
+          <View style={styles.divider} />
+          {/* 👈 RESTORE / IMPORT BACKUP */}
+          <MenuOption 
+            icon="cloud-download-outline" 
+            title="Restore / Import Backup" 
+            subtitle="Ibalik ang mga records mula sa JSON file"
+            color={TEAL}
+            onPress={handleCloudRestoreImport} 
           />
         </View>
 

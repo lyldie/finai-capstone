@@ -33,7 +33,7 @@ from database import db, ensure_indexes
 from auth import create_access_token
 
 # I-IMPORT ANG ROUTERS
-from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor
+from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export
 from services.budget_service import create_crossed_threshold_notifications
 
 app = FastAPI(title="FinAi Backend", version="1.0")
@@ -1459,6 +1459,51 @@ async def initial_setup(data: InitialSetupSchema):
     await db.goals.insert_one(goal_document)
     return {"status": "Success"}
 
+@app.get("/api/health", tags=["System"])
+async def check_system_health():
+    """
+    Dynamic health check para sa Admin Dashboard.
+    Sinusuri ang MongoDB, OCR engine, at AI Advisor API keys.
+    """
+    health_status = {
+        "database": "offline",
+        "ocr": "offline",
+        "advisor": "offline"
+    }
+
+    # 1. Check Database (MongoDB Ping)
+    try:
+        await db.command("ping")
+        health_status["database"] = "ok"
+    except Exception:
+        health_status["database"] = "error"
+
+    # 2. Check OCR Scanner (EasyOCR)
+    try:
+        import easyocr
+        # Kung nag-i-import nang maayos at walang library missing, goods ito.
+        health_status["ocr"] = "ok"
+    except ImportError:
+        health_status["ocr"] = "error"
+
+    # 3. Check AI Budget Advisor (Gemini/OpenAI Key Check)
+    # Palitan mo yung "GEMINI_API_KEY" ng kung ano mang variable name gamit mo sa .env
+    ai_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    if ai_key:
+        health_status["advisor"] = "ok"
+    else:
+        health_status["advisor"] = "missing_key"
+
+    # Determine Overall Status
+    statuses = list(health_status.values())
+    if all(s == "ok" for s in statuses):
+        overall = "optimal"
+    elif "error" in statuses or "offline" in statuses:
+        overall = "offline"
+    else:
+        overall = "degraded" # Halimbawa, working ang DB pero missing ang AI key
+
+    return {"status": overall, "details": health_status}
 
 # --- ROUTERS ---
 app.include_router(budgets.router)
@@ -1470,6 +1515,7 @@ app.include_router(notifications.router)
 app.include_router(users.router)
 app.include_router(logs.router)
 app.include_router(advisor.router)
+app.include_router(export.router)
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8000)

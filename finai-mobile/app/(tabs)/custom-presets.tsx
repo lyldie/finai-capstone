@@ -7,6 +7,28 @@ import { API_URL } from '../../config';
 
 const GREEN = '#144A3D';
 const API_BASE_URL = `${API_URL}/api`;
+const ACCOUNT_TINT = '#fff3da';
+
+// 🛠️ MGA SAFE AT LITERAL NA EMOJI HELPERS PARA SIGURADONG EMOJI ANG LALABAS
+const getSafeCategoryEmoji = (name: string, type: string) => {
+  const lower = name.toLowerCase();
+  if (lower.includes('food') || lower.includes('kain') || lower.includes('grocery') || lower.includes('pagka')) return '🍔';
+  if (lower.includes('transpo') || lower.includes('pamasahe') || lower.includes('gas') || lower.includes('kotse')) return '🚗';
+  if (lower.includes('bills') || lower.includes('kuryente') || lower.includes('tubig') || lower.includes('rent')) return '⚡';
+  if (lower.includes('salary') || lower.includes('sahod') || lower.includes('sweldo')) return '💰';
+  if (lower.includes('shopping') || lower.includes('damit') || lower.includes('bili')) return '🛍️';
+  if (lower.includes('health') || lower.includes('mediko') || lower.includes('ospital')) return '💊';
+  return type === 'income' ? '💵' : '🏷️';
+};
+
+const getSafeAccountEmoji = (name: string) => {
+  const lower = name.toLowerCase();
+  if (lower.includes('cash') || lower.includes('wallet') || lower.includes('bulsa')) return '💵';
+  if (lower.includes('bank') || lower.includes('bdo') || lower.includes('bpi') || lower.includes('unionbank')) return '🏦';
+  if (lower.includes('gcash') || lower.includes('maya') || lower.includes('digital')) return '📱';
+  if (lower.includes('savings') || lower.includes('ipon')) return '🐷';
+  return '💳';
+};
 
 export default function CustomPresetsScreen() {
   const router = useRouter();
@@ -19,15 +41,26 @@ export default function CustomPresetsScreen() {
   const [accounts, setAccounts] = useState<any[]>([]);
 
   const [isModalVisible, setModalVisible] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null); // State para sa Edit
+  const [editingId, setEditingId] = useState<string | null>(null); 
   const [newItemName, setNewItemName] = useState('');
   const [newCatType, setNewCatType] = useState('expense'); 
   const [newAccBalance, setNewAccBalance] = useState('');
+  const [newEmoji, setNewEmoji] = useState('🍔');            
+  const [emojiTouched, setEmojiTouched] = useState(false); 
 
-  // 👈 DINAGDAGAN NG isSilent PARAMETER PARA SA SMOOTH UI
+  useEffect(() => {
+    if (!emojiTouched) {
+      if (activeTab === 'categories') {
+        setNewEmoji(getSafeCategoryEmoji(newItemName || 'category', newCatType));
+      } else {
+        setNewEmoji(getSafeAccountEmoji(newItemName || 'account'));
+      }
+    }
+  }, [newItemName, newCatType, emojiTouched, activeTab]);
+
   const fetchData = async (isSilent = false) => {
     if (!user?.id) return;
-    if (!isSilent) setIsLoading(true); // Maglo-loading lang kapag hindi silent
+    if (!isSilent) setIsLoading(true); 
     
     try {
       const catRes = await fetch(`${API_BASE_URL}/categories?user_id=${user.id}`);
@@ -42,27 +75,31 @@ export default function CustomPresetsScreen() {
     } catch (error) {
       console.error(error);
     } finally {
-      if (!isSilent) setIsLoading(false); // Papatayin lang yung loading kapag hindi silent
+      if (!isSilent) setIsLoading(false); 
     }
   };
 
   useEffect(() => { fetchData(); }, [user]);
 
-  // OPEN MODAL FOR ADD OR EDIT
   const openModal = (item: any = null) => {
     if (item) {
       setEditingId(item.id);
       setNewItemName(item.name);
       if (activeTab === 'categories') {
         setNewCatType(item.type);
+        setNewEmoji(item.icon || getSafeCategoryEmoji(item.name, item.type)); 
       } else {
         setNewAccBalance(item.initial_balance.toString());
+        setNewEmoji(item.icon || getSafeAccountEmoji(item.name));
       }
+      setEmojiTouched(true); 
     } else {
       setEditingId(null);
       setNewItemName('');
       setNewAccBalance('');
       setNewCatType('expense');
+      setNewEmoji(activeTab === 'categories' ? '🍔' : '💳');
+      setEmojiTouched(false); 
     }
     setModalVisible(true);
   };
@@ -74,12 +111,14 @@ export default function CustomPresetsScreen() {
     }
 
     const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
-    const method = editingId ? 'PUT' : 'POST'; // PUT kung edit, POST kung add
+    const method = editingId ? 'PUT' : 'POST'; 
     const url = editingId ? `${API_BASE_URL}/${endpoint}/${editingId}` : `${API_BASE_URL}/${endpoint}/`;
 
+    const finalEmoji = newEmoji.trim() || (activeTab === 'categories' ? getSafeCategoryEmoji(newItemName, newCatType) : getSafeAccountEmoji(newItemName));
+
     const payload = activeTab === 'categories' 
-      ? { name: newItemName, type: newCatType, user_id: user?.id, icon: 'pricetag-outline' }
-      : { name: newItemName, initial_balance: parseFloat(newAccBalance) || 0.0, user_id: user?.id, icon: 'wallet' };
+      ? { name: newItemName, type: newCatType, user_id: user?.id, icon: finalEmoji } 
+      : { name: newItemName, initial_balance: parseFloat(newAccBalance) || 0.0, user_id: user?.id, icon: finalEmoji };
 
     try {
       const res = await fetch(url, {
@@ -89,9 +128,8 @@ export default function CustomPresetsScreen() {
       });
 
       if (res.ok) {
-        Alert.alert('Success', `${activeTab === 'categories' ? 'Category' : 'Account'} saved!`);
         setModalVisible(false);
-        fetchData(true); // 👈 SILENT REFRESH PAGKATAPOS MAG-SAVE
+        fetchData(true); 
       } else {
         Alert.alert('Error', 'Failed to save data. Check backend endpoints.');
       }
@@ -100,23 +138,16 @@ export default function CustomPresetsScreen() {
     }
   };
 
-  // DELETE FUNCTION
   const handleDelete = (id: string) => {
     Alert.alert("Delete Item", "Sigurado ka ba paps? Hindi na ito maibabalik.", [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
           const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
           try {
-            // CHANGED: now sends ?user_id=... so the backend's ownership check
-            // (categories.py/accounts.py delete_*) has something to verify
-            // against. Without this, every delete here would 403 once the
-            // backend's admin/ownership branching was added, since the
-            // request previously carried no identity at all.
             const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE' });
             if (res.ok) {
-              fetchData(true); // 👈 SILENT REFRESH PAGKATAPOS MAG-DELETE
+              fetchData(true); 
             } else {
-              // 👈 BABASAHIN NA NIYA YUNG ERROR MESSAGE MULA SA BACKEND (Error 409 Conflict)
               const errorData = await res.json().catch(() => ({}));
               Alert.alert('Hindi Mabura', errorData.detail || 'Failed to delete.');
             }
@@ -128,28 +159,33 @@ export default function CustomPresetsScreen() {
     ]);
   };
 
-  const renderItem = ({ item }: { item: any }) => (
-    <View style={styles.listItem}>
-      <View style={[styles.iconBox, { backgroundColor: `${GREEN}15` }]}>
-        <Ionicons name={item.icon || "folder-outline"} size={20} color={GREEN} />
+  const renderItem = ({ item }: { item: any }) => {
+    const displayEmoji = item.icon && !item.icon.match(/^[a-zA-Z]+$/) 
+      ? item.icon 
+      : (activeTab === 'categories' ? getSafeCategoryEmoji(item.name, item.type) : getSafeAccountEmoji(item.name));
+
+    return (
+      <View style={styles.listItem}>
+        <View style={[styles.iconBox, { backgroundColor: activeTab === 'categories' ? (item.type === 'income' ? '#e8f5e9' : '#ffebee') : ACCOUNT_TINT }]}>
+          <Text style={styles.emoji}>{displayEmoji}</Text>
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.itemName}>{item.name}</Text>
+          <Text style={styles.itemSub}>
+            {activeTab === 'categories' ? `Type: ${item.type.toUpperCase()}` : `Balance: ₱${item.initial_balance}`}
+          </Text>
+        </View>
+        <View style={styles.actionButtons}>
+          <TouchableOpacity onPress={() => openModal(item)} style={styles.actionIcon}>
+            <Ionicons name="pencil-outline" size={20} color="#58706B" />
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handleDelete(item.id)} style={styles.actionIcon}>
+            <Ionicons name="trash-outline" size={20} color="#EF4444" />
+          </TouchableOpacity>
+        </View>
       </View>
-      <View style={{ flex: 1 }}>
-        <Text style={styles.itemName}>{item.name}</Text>
-        <Text style={styles.itemSub}>
-          {activeTab === 'categories' ? `Type: ${item.type.toUpperCase()}` : `Balance: ₱${item.initial_balance}`}
-        </Text>
-      </View>
-      {/* EDIT AND DELETE BUTTONS */}
-      <View style={styles.actionButtons}>
-        <TouchableOpacity onPress={() => openModal(item)} style={styles.actionIcon}>
-          <Ionicons name="pencil-outline" size={20} color="#58706B" />
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => handleDelete(item.id)} style={styles.actionIcon}>
-          <Ionicons name="trash-outline" size={20} color="#EF4444" />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
+    );
+  };
 
   return (
     <View style={styles.container}>
@@ -195,6 +231,35 @@ export default function CustomPresetsScreen() {
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>{editingId ? 'Edit' : 'Add Custom'} {activeTab === 'categories' ? 'Category' : 'Account'}</Text>
             
+            <View style={{ alignItems: 'center', marginBottom: 16 }}>
+              <TextInput
+                style={[
+                  styles.previewCircle, 
+                  { backgroundColor: activeTab === 'categories' 
+                      ? (newCatType === 'income' ? '#e8f5e9' : '#ffebee') 
+                      : ACCOUNT_TINT 
+                  }
+                ]}
+                value={newEmoji}
+                onChangeText={(text) => {
+                  setEmojiTouched(true);
+                  setNewEmoji(text.slice(-2));
+                }}
+                maxLength={4}
+                textAlign="center"
+              />
+              <Text style={styles.previewHint}>Tap to pick your own emoji</Text>
+              {emojiTouched && (
+                <TouchableOpacity onPress={() => {
+                  setEmojiTouched(false);
+                  if (activeTab === 'categories') setNewEmoji(getSafeCategoryEmoji(newItemName, newCatType));
+                  else setNewEmoji(getSafeAccountEmoji(newItemName));
+                }}>
+                  <Text style={[styles.previewHint, { color: GREEN, marginTop: 4, fontWeight: '700' }]}>Reset icon</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
             <TextInput 
               style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
               placeholder={`Enter ${activeTab === 'categories' ? 'Category' : 'Account'} Name`}
@@ -251,14 +316,17 @@ const styles = StyleSheet.create({
   sectionDesc: { fontSize: 14, color: '#7C9A95', textAlign: 'center', marginTop: 30 },
   listItem: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', padding: 16, borderRadius: 16, marginBottom: 12, borderWidth: 1, borderColor: '#E6ECE9' },
   iconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
+  emoji: { fontSize: 18 },
   itemName: { fontSize: 16, fontWeight: '700', color: '#142D2A', marginBottom: 4 },
   itemSub: { fontSize: 12, color: '#8A9A86', fontWeight: '500' },
   actionButtons: { flexDirection: 'row', gap: 10 },
   actionIcon: { padding: 8, backgroundColor: '#F0F4F2', borderRadius: 8 },
   fab: { position: 'absolute', bottom: 30, right: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: GREEN, justifyContent: 'center', alignItems: 'center', shadowColor: GREEN, shadowOpacity: 0.4, shadowRadius: 10, elevation: 6 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  modalContent: { backgroundColor: '#FFFFFF', width: '100%', borderRadius: 24, padding: 24, alignItems: 'center' },
+  modalContent: { backgroundColor: '#FFFFFF', width: '90%', borderRadius: 24, padding: 24, alignItems: 'center' },
   modalTitle: { fontSize: 20, fontWeight: '800', color: '#142D2A', marginBottom: 20 },
+  previewCircle: { width: 56, height: 56, borderRadius: 16, fontSize: 26, padding: 0, marginBottom: 8 },
+  previewHint: { fontSize: 12, color: '#8A9A86', fontWeight: '500' },
   inputField: { height: 50, fontSize: 16, color: '#142D2A', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 12 },
   radioGroup: { flexDirection: 'row', width: '100%', gap: 10, marginBottom: 20 },
   radioBtn: { flex: 1, paddingVertical: 12, borderRadius: 12, borderWidth: 1, borderColor: '#E6ECE9', alignItems: 'center' },

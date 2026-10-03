@@ -63,11 +63,7 @@ async def update_goal_type(gt_id: str, goal: GoalTypeCreate, admin: dict = Depen
 
 @router.patch("/{gt_id}/archive", response_model=GoalTypeResponse)
 async def archive_goal_type(gt_id: str, admin: dict = Depends(get_current_admin)):
-    """NEW: replaces delete_goal_type entirely. Any existing goal referencing
-    this type by goal_type_id keeps resolving correctly (see
-    resolvePresetName in the frontend) -- the type just disappears from
-    create-goal.tsx's picker and from goal-types.tsx's active list. This
-    makes the old block-delete-if-a-goal-uses-it guard unnecessary."""
+    """NEW: replaces delete_goal_type entirely."""
     try:
         oid = ObjectId(gt_id)
     except:
@@ -97,3 +93,34 @@ async def restore_goal_type(gt_id: str, admin: dict = Depends(get_current_admin)
     updated = await db.goal_types.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
     await log_action(admin["name"], f"Restored goal type '{existing.get('name')}'")
     return GoalTypeResponse(**{**updated, "id": str(updated["_id"])})
+
+
+# 👈 BAGONG IDINAGDAG: Permanent Delete endpoint para sa Goal Types na may active goal check
+@router.delete("/{gt_id}/permanent")
+async def permanent_delete_goal_type(gt_id: str, admin: dict = Depends(get_current_admin)):
+    """NEW: Permanently delete an archived goal type if no active user goals use it."""
+    try:
+        oid = ObjectId(gt_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid ID format")
+
+    existing = await db.goal_types.find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Goal type not found")
+
+    goal_type_name = existing.get("name")
+
+    # I-check kung may active user goals pang nakatali sa goal type na ito (pwede ring gamitin ang gt_id o name depende sa schema ninyo)
+    linked_goal = await db.goals.find_one({"$or": [{"goal_type_id": gt_id}, {"goal_type": goal_type_name}]})
+    if linked_goal:
+        raise HTTPException(
+            status_code=400, 
+            detail="Hindi ma-permanently delete. May mga active user goals pang gumagamit sa goal type na ito."
+        )
+
+    result = await db.goal_types.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Goal type not found")
+
+    await log_action(admin["name"], f"Permanently deleted goal type '{goal_type_name}'")
+    return {"message": "Goal type permanently deleted successfully"}

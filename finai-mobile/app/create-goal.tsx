@@ -17,6 +17,7 @@ import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/dat
 import { useTransactions } from '../context/TransactionContext'; 
 import { router, useLocalSearchParams } from 'expo-router';
 import { API_URL } from '../config'; 
+import { getGoalEmoji } from '../utils/goalEmoji'; // 👈 IMPORT NATIN YUNG EMOJI HELPER
 
 const FINAI_DEEP_GREEN = '#0D5C3A';
 const FINAI_BG = '#F4F7F5';
@@ -28,13 +29,13 @@ const FINAI_BORDER = '#E5E7EB';
 interface GoalType {
   id: string;
   name: string;
+  icon?: string; // 👈 DINAGDAG YUNG ICON FIELD
 }
 
 export default function CreateGoal() {
   const params = useLocalSearchParams();
   const { addGoal, updateGoal } = useTransactions();
 
-  // Mode check
   const isEditMode = Boolean(params.id);
 
   const [name, setName] = useState('');
@@ -43,12 +44,10 @@ export default function CreateGoal() {
   const [showPicker, setShowPicker] = useState(false);
   const [currentSavings, setCurrentSavings] = useState(0);
 
-  // States para sa Admin Goal Type Presets
   const [goalTypes, setGoalTypes] = useState<GoalType[]>([]);
   const [selectedType, setSelectedType] = useState<GoalType | null>(null);
   const [showTypeModal, setShowTypeModal] = useState(false);
 
-  // 1. I-fetch ang Goal Types mula sa Backend
   useEffect(() => {
     const fetchTypes = async () => {
       try {
@@ -66,7 +65,6 @@ export default function CreateGoal() {
     fetchTypes();
   }, []);
 
-  // 2. Pre-select Preset / Goal Type (Flexible param checking)
   useEffect(() => {
     if (goalTypes.length > 0) {
       const targetParam = params.goal_type_id || params.preset_id || params.type_id || params.goal_type;
@@ -82,7 +80,6 @@ export default function CreateGoal() {
     }
   }, [goalTypes, params.goal_type_id, params.preset_id, params.type_id, params.goal_type]);
 
-  // 3. I-populate ang Form Fields kapag Edit Mode
   useEffect(() => {
     if (isEditMode) {
       if (params.target_name) setName(String(params.target_name));
@@ -97,14 +94,12 @@ export default function CreateGoal() {
     }
   }, [params.id, params.target_name, params.target_amount, params.current_savings, params.target_date]);
 
-  // 4. Date Change Handler (Inayos para sa iOS Wheels at Android)
   const onDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
     if (Platform.OS === 'android') {
-      setShowPicker(false); // Matic close lang sa Android OK button
+      setShowPicker(false); 
     }
-    
     if (selectedDate) {
-      setDate(selectedDate); // Ino-update lang ang date value nang hindi isinasara ang wheel sa iOS
+      setDate(selectedDate); 
     }
   };
 
@@ -173,7 +168,14 @@ export default function CreateGoal() {
               activeOpacity={0.7}
             >
               <View style={styles.dateLeftRow}>
-                <Ionicons name="options-outline" size={20} color={FINAI_DEEP_GREEN} style={styles.inputIcon} />
+                {/* 👈 NAGPAPAKITA NA NG EMOJI KUNG MAY SELECTED TYPE */}
+                {selectedType ? (
+                  <Text style={{ fontSize: 20, marginRight: 10 }}>
+                    {selectedType.icon || getGoalEmoji(selectedType.name)}
+                  </Text>
+                ) : (
+                  <Ionicons name="options-outline" size={20} color={FINAI_DEEP_GREEN} style={styles.inputIcon} />
+                )}
                 <Text style={[styles.dropdownText, !selectedType && { color: '#9CA3AF' }]}>
                   {selectedType ? selectedType.name : "Select from Admin Presets"}
                 </Text>
@@ -231,7 +233,6 @@ export default function CreateGoal() {
               />
             </TouchableOpacity>
 
-            {/* DATE PICKER + DONE BUTTON FOR IOS */}
             {showPicker && (
               <View style={styles.pickerContainer}>
                 <DateTimePicker
@@ -293,12 +294,19 @@ export default function CreateGoal() {
                     setShowTypeModal(false);
                   }}
                 >
-                  <Text style={[
-                    styles.modalItemText,
-                    selectedType?.id === item.id && { color: FINAI_DEEP_GREEN, fontWeight: '700' }
-                  ]}>
-                    {item.name}
-                  </Text>
+                  {/* 👈 DINAGDAG ANG EMOJI SA LISTAHAN NG MODAL */}
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    <Text style={{ fontSize: 20, marginRight: 12 }}>
+                      {item.icon || getGoalEmoji(item.name)}
+                    </Text>
+                    <Text style={[
+                      styles.modalItemText,
+                      selectedType?.id === item.id && { color: FINAI_DEEP_GREEN, fontWeight: '700' }
+                    ]}>
+                      {item.name}
+                    </Text>
+                  </View>
+                  
                   {selectedType?.id === item.id && (
                     <Ionicons name="checkmark" size={20} color={FINAI_DEEP_GREEN} />
                   )}

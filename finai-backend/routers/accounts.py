@@ -160,9 +160,7 @@ async def update_account(
     account: AccountCreate,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ):
-    """(unchanged) Branches between admin-JWT (preset) and ownership check
-    (personal account) -- see the earlier custom-presets.tsx fix for the
-    full reasoning."""
+    """(unchanged)"""
     try:
         oid = ObjectId(account_id)
     except:
@@ -217,10 +215,7 @@ async def update_account(
 
 @router.patch("/{account_id}/archive", response_model=AccountResponse)
 async def archive_account(account_id: str, admin: dict = Depends(get_current_admin)):
-    """NEW: replaces hard-deleting an admin preset. The account row stays in
-    the database (so any historical transaction that reference it by name
-    keep resolving correctly), it just stops appearing in the default
-    (active) list and in "create new" pickers."""
+    """NEW: replaces hard-deleting an admin preset."""
     try:
         oid = ObjectId(account_id)
     except:
@@ -251,8 +246,6 @@ async def restore_account(account_id: str, admin: dict = Depends(get_current_adm
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    # Restoring shouldn't silently create a duplicate-name collision with
-    # something created while this one was archived.
     await _check_duplicate_name(account.get("name", ""), account.get("user_id"), exclude_id=oid)
 
     updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
@@ -262,17 +255,47 @@ async def restore_account(account_id: str, admin: dict = Depends(get_current_adm
     return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": init_bal})
 
 
+# 👈 BAGONG IDINAGDAG: Permanent Delete endpoint para sa Admin Account Preset na may transaction check
+@router.delete("/admin/{account_id}/permanent")
+async def permanent_delete_account(account_id: str, admin: dict = Depends(get_current_admin)):
+    """NEW: Permanently delete an archived admin account preset if no transactions use it."""
+    try:
+        oid = ObjectId(account_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid Account ID format")
+
+    account = await db.accounts.find_one({"_id": oid})
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if account.get("account_role") != "admin":
+        raise HTTPException(status_code=400, detail="Only admin account presets can be permanently deleted through this route.")
+
+    account_name = account.get("name")
+
+    # I-check kung may active transactions pang nakatali sa account na ito
+    linked_transaction = await db.expenses.find_one({"$or": [{"account": account_name}, {"to_account": account_name}]})
+    if linked_transaction:
+        raise HTTPException(
+            status_code=400, 
+            detail="Hindi ma-permanently delete. May mga active transactions pang gumagamit sa account na ito."
+        )
+
+    result = await db.accounts.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    await log_action(admin["name"], f"Permanently deleted account preset '{account_name}'")
+    return {"message": "Account permanently deleted successfully"}
+
+
 @router.delete("/{account_id}")
 async def delete_account(
     account_id: str,
     user_id: Optional[str] = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ):
-    """CHANGED: admin presets can no longer be hard-deleted through this
-    endpoint at all -- use PATCH /{id}/archive instead. A regular user
-    deleting their OWN personal account (via custom-presets.tsx) is
-    completely unaffected; that ownership-checked path still hard-deletes,
-    unchanged, transaction-history guard and all."""
+    """CHANGED: admin presets can no longer be hard-deleted through this endpoint."""
     try:
         oid = ObjectId(account_id)
     except:

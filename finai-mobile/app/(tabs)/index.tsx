@@ -6,7 +6,11 @@ import { useTransactions } from '../../context/TransactionContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 
-// ---- FINAI BRAND TOKENS (shared with transactions.tsx) ----
+// 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
+import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+
+// ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
 const GOLD = '#edb232';
@@ -79,6 +83,12 @@ export default function HomeDashboard() {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   };
 
+  // HELPER PARA I-CHECK KUNG TUNAY NA EMOJI ANG TEXT (Para sa accounts)
+  const isEmoji = (text: string) => {
+    if (!text) return false;
+    return !/^[a-zA-Z0-9\s.,-]+$/.test(text); // Kung puro letters/numbers lang, hindi emoji 'yun
+  };
+
   return (
     <View style={styles.container}>
       <StatusBar barStyle="dark-content" backgroundColor={CREAM} />
@@ -90,17 +100,10 @@ export default function HomeDashboard() {
           <Text style={styles.userName}>{user?.name || 'User'}!</Text>
         </View>
         <View style={styles.headerRightActions}>
-          <TouchableOpacity
-            style={styles.peanutButton}
-            onPress={() => router.push('/chat' as never)}
-            activeOpacity={0.8}
-          >
+          <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/chat' as never)} activeOpacity={0.8}>
             <Text style={{ fontSize: 18 }}>🥜</Text>
           </TouchableOpacity>
-          <TouchableOpacity
-            style={styles.notificationButton}
-            onPress={() => router.push('/notifications' as never)}
-          >
+          <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
             <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
           </TouchableOpacity>
         </View>
@@ -188,11 +191,14 @@ export default function HomeDashboard() {
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.accountsScrollRow}>
             {accounts.map((acc, idx) => {
               const liveBalance = getAccountBalance(acc.name);
+              // LILINISIN NATIN YUNG "walle" ISSUE DITO
+              const displayIcon = acc.icon && isEmoji(acc.icon) ? acc.icon : getAccountEmoji(acc.name);
+
               return (
                 <View key={acc.id || idx} style={styles.accountCard}>
                   <View style={styles.accountCardHeader}>
                     <View style={styles.accountIconBox}>
-                      <Ionicons name={(acc.icon || "wallet") as any} size={20} color={DEEP_GREEN} />
+                      <Text style={{ fontSize: 22 }}>{displayIcon}</Text>
                     </View>
                     <Ionicons name="ellipsis-horizontal" size={16} color={SAGE} />
                   </View>
@@ -228,13 +234,18 @@ export default function HomeDashboard() {
               const isTransfer = item.type === 'Transfer';
               const color = isTransfer ? TEAL : isIncome ? INCOME : EXPENSE;
               const bgColor = isTransfer ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
-              const iconName = isTransfer ? 'swap-horizontal' : isIncome ? 'arrow-up-outline' : 'arrow-down-outline';
               const prefix = isTransfer ? '' : isIncome ? '+' : '-';
+              
+              // LILINISIN DIN YUNG MGA LUMANG TEXT ICONS DITO
+              const transactionEmoji = isTransfer 
+                ? '🔄' 
+                : getCategoryEmoji(item.category, item.type.toLowerCase());
+
               return (
                 <View key={item.id || index} style={styles.recentFloatingCard}>
                   <View style={styles.recentLeft}>
                     <View style={[styles.recentIconBox, { backgroundColor: bgColor }]}>
-                      <Ionicons name={iconName as any} size={18} color={color} />
+                      <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
                     </View>
                     <View style={styles.recentInfo}>
                       <Text style={styles.recentCategory} numberOfLines={1}>
@@ -307,7 +318,6 @@ const styles = StyleSheet.create({
   },
   scrollContent: { padding: 20, paddingBottom: 110 },
 
-  // AI tip
   aiTipCard: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 20,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
@@ -319,7 +329,6 @@ const styles = StyleSheet.create({
   aiTipAction: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   aiTipActionText: { color: TEAL, fontSize: 13, fontWeight: '700' },
 
-  // Balance hero
   balanceCard: {
     borderRadius: 26, padding: 24, marginBottom: 26,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 8
@@ -340,13 +349,11 @@ const styles = StyleSheet.create({
   progressBarBackground: { height: 6, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 3, overflow: 'hidden' },
   progressBarFill: { height: '100%', borderRadius: 3 },
 
-  // Section headers
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sectionTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800' },
   pillButton: { backgroundColor: 'rgba(237, 178, 50, 0.18)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
   pillButtonText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
 
-  // Wallet cards
   accountsScrollRow: { gap: 16, paddingBottom: 15, paddingTop: 5, paddingHorizontal: 2 },
   accountCard: {
     backgroundColor: '#FFFFFF', borderRadius: 22, padding: 18, width: 155, height: 130,
@@ -362,7 +369,6 @@ const styles = StyleSheet.create({
   emptyAccountsCard: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#ECE7DD', borderStyle: 'dashed', gap: 12 },
   emptyAccountsText: { color: SAGE, fontSize: 13, fontWeight: '600' },
 
-  // Recent transactions
   recentListContainer: { paddingBottom: 10 },
   recentFloatingCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -383,10 +389,9 @@ const styles = StyleSheet.create({
   emptyIconCircle: { width: 56, height: 56, borderRadius: 28, backgroundColor: CREAM, justifyContent: 'center', alignItems: 'center' },
   emptyRecentText: { color: SAGE, fontSize: 14, fontWeight: '600' },
 
-  // FAB
   fabWrapper: {
     position: 'absolute', bottom: 25, right: 25, borderRadius: 32,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.3, shadowRadius: 10, elevation: 8
   },
   fab: { width: 64, height: 64, borderRadius: 32, justifyContent: 'center', alignItems: 'center' }
-});
+}); 

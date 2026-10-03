@@ -7,7 +7,11 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import ReceiptScannerModal from '../../components/ReceiptScannerModal'; 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// ---- FINAI BRAND TOKENS (shared with transactions.tsx / index.tsx) ----
+// 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getAccountEmoji } from '../../utils/accountEmoji';
+
+// ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
 const GOLD = '#edb232';
@@ -64,11 +68,6 @@ export default function TabTwoScreen() {
 
   const displayedCategories = categories.filter((c: any) => c.type === type.toLowerCase());
 
-  // FIX: wrapped in useCallback with [accounts] as a dependency. Previously this was a
-  // plain function closing over `accounts`, and the useFocusEffect below only depended
-  // on params?.id -- so if `accounts` finished loading asynchronously AFTER this closure
-  // was first captured, resetForm could keep resetting to an empty/stale account list on
-  // every refocus, silently blanking the account field on a fresh "New Transaction".
   const resetForm = useCallback(() => {
     setAmount('');
     setNote('');
@@ -135,16 +134,13 @@ export default function TabTwoScreen() {
   const handleAmountChange = (text: string) => {
     const cleaned = text.replace(/[^0-9.]/g, '');
     const parts = cleaned.split('.');
-    if (parts.length > 2) {
-      return; 
-    }
+    if (parts.length > 2) return; 
     const [whole, decimal] = cleaned.split('.');
     setAmount(decimal === undefined ? whole : `${whole}.${decimal.slice(0, 2)}`);
   };
 
   const handleSave = async () => {
     if (isSaving) return;
-
     if (!account) { Alert.alert('Account required', 'Mag-register o pumili muna ng payment account.'); return; }
     if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Pumili ng destination payment account.'); return; }
 
@@ -153,9 +149,7 @@ export default function TabTwoScreen() {
     if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Ops!', 'Hindi valid ang destination account. Pumili ulit.'); return; }
 
     if (!isValidIsoDate(date) || date > formatLocalDate(new Date())) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
-
     if (!isValidAmount(amount)) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
-
     if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
 
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
@@ -180,16 +174,32 @@ export default function TabTwoScreen() {
     }
   };
 
-  const InputRow = ({ label, value, onPress, icon }: any) => (
+  // 👈 DYNAMIC EMOJI GETTERS PARA SA INPUT ROWS
+  const selectedAcc = accounts.find(a => a.name === account);
+  const accEmoji = selectedAcc ? (selectedAcc.icon || getAccountEmoji(selectedAcc.name)) : null;
+
+  const selectedToAcc = accounts.find(a => a.name === toAccount);
+  const toAccEmoji = selectedToAcc ? (selectedToAcc.icon || getAccountEmoji(selectedToAcc.name)) : null;
+
+  const selectedCat = categories.find((c: any) => c.name === category && c.type === type.toLowerCase());
+  const catEmoji = selectedCat ? (selectedCat.icon || getCategoryEmoji(selectedCat.name, type.toLowerCase())) : null;
+
+
+  // 👈 UPDATED INPUT ROW TO ACCEPT EMOJI
+  const InputRow = ({ label, value, onPress, iconName, emoji }: any) => (
     <TouchableOpacity style={styles.inputRow} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.rowLabelContainer}>
         <View style={[styles.rowIconChip, { backgroundColor: getActiveTint() }]}>
-          <Ionicons name={icon} size={17} color={getActiveColor()} />
+          {emoji ? (
+            <Text style={{ fontSize: 16 }}>{emoji}</Text>
+          ) : (
+            <Ionicons name={iconName} size={17} color={getActiveColor()} />
+          )}
         </View>
         <Text style={styles.rowLabel}>{label}</Text>
       </View>
       <View style={styles.rowValueContainer}>
-        <Text style={[styles.rowValue, value === 'Select Category' && { color: '#A2B5B0' }]}>{value}</Text>
+        <Text style={[styles.rowValue, value === 'Select Category' && { color: '#A2B5B0', fontWeight: '500' }]}>{value}</Text>
         <Ionicons name="chevron-forward" size={16} color={SAGE} />
       </View>
     </TouchableOpacity>
@@ -209,7 +219,6 @@ export default function TabTwoScreen() {
         </TouchableOpacity>
         <Text style={styles.headerTitle}>{params && params.id ? 'Edit Transaction' : 'New Transaction'}</Text>
         <View style={styles.headerRightActions}>
-          {/* Ipinapakita lang ang scan button kung hindi edit mode AT nasa Expense tab */}
           {!params?.id && type === 'Expense' && (
             <TouchableOpacity onPress={() => setIsScannerVisible(true)} style={[styles.headerIconButton, { marginRight: 8 }]} activeOpacity={0.7}>
               <Ionicons name="scan-outline" size={20} color={getActiveColor()} />
@@ -253,7 +262,8 @@ export default function TabTwoScreen() {
           </View>
 
           <View style={styles.card}>
-            <InputRow label="Date" value={date} icon="calendar-outline" onPress={() => { setTempDate(dateFromIso(date)); setShowDatePicker(true); }} />
+            <InputRow label="Date" value={date} iconName="calendar-outline" onPress={() => { setTempDate(dateFromIso(date)); setShowDatePicker(true); }} />
+            
             {showDatePicker && (Platform.OS === 'ios' ? (
               <Modal visible={showDatePicker} animationType="slide" transparent={true}>
                 <View style={styles.pickerModalOverlay}>
@@ -271,9 +281,10 @@ export default function TabTwoScreen() {
               <DateTimePicker value={dateFromIso(date)} mode="date" display="default" maximumDate={new Date()} onChange={(e, d) => { setShowDatePicker(false); if (d) setDate(formatLocalDate(d)); }} />
             ))}
             
-            <InputRow label={type === 'Transfer' ? "From" : "Account"} value={account} icon="wallet-outline" onPress={() => { setSelectingTarget('from'); setIsAccModalVisible(true); }} />
-            {type === 'Transfer' && <InputRow label="To" value={toAccount} icon="swap-horizontal-outline" onPress={() => { setSelectingTarget('to'); setIsAccModalVisible(true); }} />}
-            {type !== 'Transfer' && <InputRow label="Category" value={category} icon="grid-outline" onPress={() => setIsCatModalVisible(true)} />}
+            {/* 👈 EMOJI PROPS PASSED TO INPUT ROWS */}
+            <InputRow label={type === 'Transfer' ? "From" : "Account"} value={account} iconName="wallet-outline" emoji={accEmoji} onPress={() => { setSelectingTarget('from'); setIsAccModalVisible(true); }} />
+            {type === 'Transfer' && <InputRow label="To" value={toAccount} iconName="swap-horizontal-outline" emoji={toAccEmoji} onPress={() => { setSelectingTarget('to'); setIsAccModalVisible(true); }} />}
+            {type !== 'Transfer' && <InputRow label="Category" value={category} iconName="grid-outline" emoji={catEmoji} onPress={() => setIsCatModalVisible(true)} />}
 
             <View style={styles.inputRow}>
               <View style={styles.rowLabelContainer}>
@@ -288,6 +299,7 @@ export default function TabTwoScreen() {
         </ScrollView>
       </KeyboardAvoidingView>
 
+      {/* CATEGORY MODAL WITH EMOJIS */}
       <Modal visible={isCatModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -301,19 +313,23 @@ export default function TabTwoScreen() {
               <FlatList data={displayedCategories} keyExtractor={(item: any) => item.id || item.name} numColumns={3} renderItem={({ item }: any) => (
                 <TouchableOpacity style={styles.categoryGridItem} onPress={() => { setCategory(item.name); setIsCatModalVisible(false); }}>
                   <View style={[styles.iconCircle, { backgroundColor: getActiveTint() }]}>
-                    <Ionicons name={item.icon as any} size={22} color={getActiveColor()} />
+                    {/* 👈 EMOJI RENDERER */}
+                    <Text style={{ fontSize: 24 }}>
+                      {item.icon || getCategoryEmoji(item.name, type.toLowerCase())}
+                    </Text>
                   </View>
                   <Text style={styles.categoryText}>{item.name}</Text>
                 </TouchableOpacity>
               )} />
             )}
             <TouchableOpacity onPress={() => setIsCatModalVisible(false)} style={styles.closeModalButton}>
-              <Text style={{color: DEEP_GREEN, fontWeight: '700'}}>Close</Text>
+              <Text style={{color: DEEP_GREEN, fontWeight: '700', fontSize: 15}}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
       </Modal>
 
+      {/* ACCOUNT MODAL WITH EMOJIS */}
       <Modal visible={isAccModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
@@ -321,7 +337,10 @@ export default function TabTwoScreen() {
             {accountOptionsFor(selectingTarget).map((acc) => (
               <TouchableOpacity key={acc.id} style={styles.accOption} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
                 <View style={[styles.accIconChip, { backgroundColor: getActiveTint() }]}>
-                  <Ionicons name={(acc.icon || "wallet-outline") as any} size={18} color={getActiveColor()} />
+                  {/* 👈 EMOJI RENDERER */}
+                  <Text style={{ fontSize: 18 }}>
+                    {acc.icon || getAccountEmoji(acc.name)}
+                  </Text>
                 </View>
                 <Text style={styles.accOptionText}>{acc.name}</Text>
               </TouchableOpacity>
@@ -331,7 +350,7 @@ export default function TabTwoScreen() {
               <Text style={styles.manageAccountsText}>Manage my accounts</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}>
-              <Text style={{color: DEEP_GREEN, fontWeight: '700'}}>Close</Text>
+              <Text style={{color: DEEP_GREEN, fontWeight: '700', fontSize: 15}}>Close</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -344,7 +363,7 @@ export default function TabTwoScreen() {
         userId={scannerUserId}
         onScanComplete={(data) => {
           setAmount(data.amount);
-          setCategory(categories.some((item) => item.name === data.category && item.type === 'expense') ? data.category : 'Select Category');
+          setCategory(categories.some((item: any) => item.name === data.category && item.type === 'expense') ? data.category : 'Select Category');
           setDate(/^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : formatLocalDate(new Date()));
           setNote(data.note);
           setType('Expense'); 
@@ -359,43 +378,49 @@ const styles = StyleSheet.create({
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 54, marginBottom: 22 },
   headerRightActions: { flexDirection: 'row', alignItems: 'center' },
   headerIconButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 1 },
-  saveButtonCircle: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 3 },
-  headerTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: '800', letterSpacing: 0.3 },
+  saveButtonCircle: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
+  headerTitle: { color: DEEP_GREEN, fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
+  
   selectorContainer: { flexDirection: 'row', backgroundColor: '#ECE7DD', borderRadius: 25, padding: 4, marginBottom: 30 },
   selectorItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 20 },
-  selectorText: { color: SAGE, fontWeight: 'bold', fontSize: 12 },
+  selectorText: { color: SAGE, fontWeight: '800', fontSize: 13 },
+  
   form: { flex: 1 },
   amountSection: { alignItems: 'center', marginBottom: 40, marginTop: 10 },
-  currencyLabel: { color: SAGE, fontSize: 14, fontWeight: 'bold', marginBottom: 5, letterSpacing: 1 },
+  currencyLabel: { color: SAGE, fontSize: 14, fontWeight: '800', marginBottom: 5, letterSpacing: 1.5 },
   amountInputRow: { flexDirection: 'row', alignItems: 'flex-start' },
   pesoSign: { fontSize: 40, fontWeight: '300', marginTop: 8, marginRight: 4 },
   amountInput: { fontSize: 54, fontWeight: '300' },
-  card: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 10, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
-  inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 10, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },
+  
+  card: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 10, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
+  inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 12, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },
   rowLabelContainer: { flexDirection: 'row', alignItems: 'center' },
-  rowIconChip: { width: 32, height: 32, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  rowLabel: { color: DEEP_GREEN, fontSize: 14, fontWeight: '600' },
+  rowIconChip: { width: 34, height: 34, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  rowLabel: { color: DEEP_GREEN, fontSize: 14, fontWeight: '700' },
   rowValueContainer: { flexDirection: 'row', alignItems: 'center' },
-  rowValue: { color: DEEP_GREEN, fontSize: 15, marginRight: 5, fontWeight: '700' },
-  noteInput: { color: DEEP_GREEN, fontSize: 15, flex: 1, marginLeft: 20, fontWeight: '500' },
+  rowValue: { color: DEEP_GREEN, fontSize: 15, marginRight: 6, fontWeight: '800' },
+  noteInput: { color: DEEP_GREEN, fontSize: 15, flex: 1, marginLeft: 20, fontWeight: '600' },
+  
   modalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.45)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFFFFF', padding: 25, borderRadius: 28, elevation: 5, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 16 },
-  modalTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800', marginBottom: 20, textAlign: 'center', letterSpacing: 0.3 },
+  modalTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '900', marginBottom: 20, textAlign: 'center', letterSpacing: 0.3 },
   categoryGridItem: { flex: 1/3, alignItems: 'center', marginBottom: 22 },
-  iconCircle: { width: 56, height: 56, borderRadius: 18, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
-  categoryText: { color: DEEP_GREEN, fontSize: 12, textAlign: 'center', fontWeight: '600' },
+  iconCircle: { width: 56, height: 56, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
+  categoryText: { color: DEEP_GREEN, fontSize: 12, textAlign: 'center', fontWeight: '700' },
   emptyModalState: { alignItems: 'center', paddingVertical: 30, gap: 8 },
   emptyModalText: { color: SAGE, fontSize: 13, fontWeight: '500' },
-  closeModalButton: { marginTop: 16, alignItems: 'center', paddingVertical: 10 },
+  closeModalButton: { marginTop: 10, alignItems: 'center', paddingVertical: 12, backgroundColor: '#FAFAFA', borderRadius: 16 },
+  
   accOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },
-  accIconChip: { width: 36, height: 36, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
-  accOptionText: { color: DEEP_GREEN, fontSize: 15, fontWeight: '700' },
-  manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 16, paddingVertical: 12, borderRadius: 14, backgroundColor: 'rgba(237, 178, 50, 0.16)' },
-  manageAccountsText: { color: DEEP_GREEN, fontWeight: '700' },
+  accIconChip: { width: 38, height: 38, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+  accOptionText: { color: DEEP_GREEN, fontSize: 15, fontWeight: '800' },
+  manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(237, 178, 50, 0.16)' },
+  manageAccountsText: { color: DEEP_GREEN, fontWeight: '800' },
+  
   pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.35)', justifyContent: 'flex-end' },
   pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },
-  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 16, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD', width: '100%' },
-  pickerHeaderTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: 'bold' },
-  pickerCancelText: { color: SAGE, fontSize: 15, fontWeight: '500' },
-  pickerDoneText: { color: DEEP_GREEN, fontSize: 15, fontWeight: 'bold' },
+  pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD', width: '100%' },
+  pickerHeaderTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: '800' },
+  pickerCancelText: { color: SAGE, fontSize: 15, fontWeight: '600' },
+  pickerDoneText: { color: TEAL, fontSize: 15, fontWeight: '800' },
 });

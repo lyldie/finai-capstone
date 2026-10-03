@@ -126,11 +126,7 @@ async def update_category(
 
 @router.patch("/{category_id}/archive", response_model=CategoryResponse)
 async def archive_category(category_id: str, admin: dict = Depends(get_current_admin)):
-    """NEW: replaces hard-deleting an admin preset. Any budget or expense
-    that already references this category by name keeps working -- the
-    category document isn't removed, it just disappears from the active
-    list and from "create new" pickers. This makes the old
-    block-delete-if-a-budget-uses-it guard unnecessary for this path."""
+    """NEW: replaces hard-deleting an admin preset."""
     try:
         oid = ObjectId(category_id)
     except:
@@ -164,17 +160,47 @@ async def restore_category(category_id: str, admin: dict = Depends(get_current_a
     return CategoryResponse(**{**updated, "id": str(updated["_id"])})
 
 
+# 👈 BAGONG IDINAGDAG: Permanent Delete endpoint para sa Admin Preset na may active transaction check
+@router.delete("/admin/{category_id}/permanent")
+async def permanent_delete_category(category_id: str, admin: dict = Depends(get_current_admin)):
+    """NEW: Permanently delete an archived admin category preset if no transactions use it."""
+    try:
+        oid = ObjectId(category_id)
+    except:
+        raise HTTPException(status_code=400, detail="Invalid Category ID format")
+
+    category = await db.categories.find_one({"_id": oid})
+    if not category:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    if category.get("category_role") != "admin":
+        raise HTTPException(status_code=400, detail="Only admin category presets can be permanently deleted through this route.")
+
+    category_name = category.get("name")
+    
+    # I-check kung may mga aktibong transaksyon pang nakatali sa kategoryang ito
+    linked_transaction = await db.transactions.find_one({"category": category_name})
+    if linked_transaction:
+        raise HTTPException(
+            status_code=400, 
+            detail="Hindi ma-permanently delete. May mga active transactions pang gumagamit sa kategoryang ito."
+        )
+
+    result = await db.categories.delete_one({"_id": oid})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Category not found")
+
+    await log_action(admin["name"], f"Permanently deleted category preset '{category_name}'")
+    return {"message": "Category permanently deleted successfully"}
+
+
 @router.delete("/{category_id}")
 async def delete_category(
     category_id: str,
     user_id: Optional[str] = None,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ):
-    """CHANGED: admin presets can no longer be hard-deleted through this
-    endpoint -- use PATCH /{id}/archive instead. A regular user deleting
-    their OWN personal category (custom-presets.tsx) is unaffected; that
-    ownership-checked path still hard-deletes, unchanged, active-budget
-    guard included."""
+    """CHANGED: admin presets can no longer be hard-deleted through this endpoint."""
     try:
         oid = ObjectId(category_id)
     except:

@@ -24,7 +24,7 @@ const transactionDate = (value: string) => {
 export default function TransactionsScreen() {
   const {
     transactions,
-    deleteTransaction,
+    deleteTransaction, // Pwede mong palitan/dagdagan ng archiveTransaction sa context kung meron
     fetchTransactions,
     isLoading,
     categories,
@@ -87,12 +87,26 @@ export default function TransactionsScreen() {
     }
   }, [activeTab, selectedMonth]);
 
-  const confirmDelete = useCallback((id: string, swipeableInstance: Swipeable | null) => {
-    Alert.alert("Delete Record", "Sigurado ka ba paps?", [
+  // 👈 BINAGO NATIN MULA DELETE PATUNGONG ARCHIVE LOGIC
+  const confirmArchive = useCallback((id: string, swipeableInstance: Swipeable | null) => {
+    Alert.alert("Archive Record", "Gusto mo bang ilipat sa archive ang record na ito?", [
       { text: "Cancel", style: "cancel", onPress: () => swipeableInstance?.close() },
-      { text: "Delete", style: "destructive", onPress: () => { deleteTransaction(id); swipeableInstance?.close(); } }
+      { 
+        text: "Archive", 
+        style: "default", 
+        onPress: async () => { 
+          try {
+            // Kung may archiveTransaction ka sa context, gamitin mo. O kaya fetch direct sa backend:
+            await deleteTransaction(id); // O papalitan ng endpoint ng archive kung hiwalay
+            swipeableInstance?.close();
+            fetchTransactions(false);
+          } catch (e) {
+            Alert.alert("Error", "Hindi nai-archive ang record.");
+          }
+        } 
+      }
     ]);
-  }, [deleteTransaction]);
+  }, [deleteTransaction, fetchTransactions]);
 
   const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
     swipeableInstance?.close();
@@ -108,12 +122,13 @@ export default function TransactionsScreen() {
         <Ionicons name="pencil-sharp" size={16} color={DEEP_GREEN} />
         <Text style={[styles.actionButtonText, { color: DEEP_GREEN }]}>Edit</Text>
       </TouchableOpacity>
-      <TouchableOpacity style={[styles.actionButton, styles.deleteActionButton]} onPress={() => confirmDelete(item.id, swipeableInstance)}>
-        <Ionicons name="trash-outline" size={16} color="#FFFFFF" />
-        <Text style={styles.actionButtonText}>Delete</Text>
+      {/* 👈 ARCHIVE BUTTON SA SWIPE */}
+      <TouchableOpacity style={[styles.actionButton, styles.archiveActionButton]} onPress={() => confirmArchive(item.id, swipeableInstance)}>
+        <Ionicons name="archive-outline" size={16} color="#FFFFFF" />
+        <Text style={styles.actionButtonText}>Archive</Text>
       </TouchableOpacity>
     </View>
-  ), [handleEditPress, confirmDelete]);
+  ), [handleEditPress, confirmArchive]);
 
   const renderTransactionItem = useCallback(({ item }: { item: Transaction }) => {
     let swipeableRef: Swipeable | null = null;
@@ -238,12 +253,20 @@ export default function TransactionsScreen() {
             <Text style={styles.headerEyebrow}>Your activity</Text>
             <Text style={styles.headerTitle}>Transactions</Text>
           </View>
-          <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
-            <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
-            {unreadNotifications > 0 && (
-              <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications}</Text></View>
-            )}
-          </TouchableOpacity>
+          
+          {/* 👈 HEADER RIGHT ACTIONS (NOTIFICATION + ARCHIVE SHORTCUT) */}
+          <View style={styles.headerRightActions}>
+            <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/archive' as never)}>
+              <Ionicons name="archive-outline" size={20} color={DEEP_GREEN} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/notifications' as never)}>
+              <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
+              {unreadNotifications > 0 && (
+                <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications}</Text></View>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
 
         <View style={styles.tabContainer}>
@@ -489,7 +512,8 @@ const styles = StyleSheet.create({
   headerEyebrow: { color: 'rgba(255,255,255,0.65)', fontSize: 12, fontWeight: '600', marginBottom: 2 },
   headerTitle: { color: '#FFFFFF', fontSize: 26, fontWeight: '800' },
 
-  notificationButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#FFFFFF' },
+  headerRightActions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
+  iconHeaderButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: '#FFFFFF' },
   notificationBadge: { position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: GOLD, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: DEEP_GREEN },
   notificationBadgeText: { color: DEEP_GREEN, fontSize: 9, fontWeight: '800' },
 
@@ -593,7 +617,7 @@ const styles = StyleSheet.create({
   actionsContainer: { flexDirection: 'row', width: 140, paddingBottom: 10, paddingLeft: 8 },
   actionButton: { flex: 1, justifyContent: 'center', alignItems: 'center', borderRadius: 16, marginHorizontal: 2 },
   editActionButton: { backgroundColor: GOLD },
-  deleteActionButton: { backgroundColor: EXPENSE },
+  archiveActionButton: { backgroundColor: TEAL }, // 👈 Ginamit natin ang TEAL para sa Archive button para medyo sementado sa brand
   actionButtonText: { fontSize: 10, fontWeight: '800', color: '#FFFFFF', marginTop: 2 },
 
   // ---- Empty state ----
