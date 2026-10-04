@@ -32,7 +32,7 @@ from auth import create_access_token, get_current_user
 
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export
-from services.budget_service import create_crossed_threshold_notifications
+from services.budget_service import create_crossed_threshold_notifications, ph_today
 
 app = FastAPI(title="FinAi Backend", version="1.0")
 
@@ -939,14 +939,17 @@ class OTPVerify(BaseModel):
 
 class TransactionSchema(BaseModel):
     user_id: str
-    amount: float = Field(..., gt=0)
+    amount: float = Field(..., gt=0, allow_inf_nan=False)
     category: str
     title: Optional[str] = None
     item_name: Optional[str] = None
     note: Optional[str] = None
     type: str = Field(...)
     account: str
+    account_id: Optional[str] = None
     to_account: Optional[str] = None
+    to_account_id: Optional[str] = None
+    category_id: Optional[str] = None
     date: Optional[str] = None
     goal_id: Optional[str] = None
 
@@ -954,10 +957,10 @@ class TransactionSchema(BaseModel):
 class InitialSetupSchema(BaseModel):
     user_id: str
     pin: str = Field(..., min_length=4, max_length=4, pattern=r"^\d{4}$")
-    monthly_income: float = Field(..., gt=0)
-    target_name: str
-    target_amount: float = Field(..., gt=0)
-    target_date: str = Field(..., pattern=r'^\d{4}-\d{2}-\d{2}$')
+    monthly_income: Optional[float] = Field(default=None, ge=0, allow_inf_nan=False)
+    target_name: Optional[str] = Field(default=None, max_length=100)
+    target_amount: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
+    target_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
 
 
 class PinVerify(BaseModel):
@@ -1002,35 +1005,42 @@ def validate_transaction_for_storage(transaction: TransactionSchema):
 
 
 async def validate_transaction_references(transaction: TransactionSchema, user_id: str):
-    """Resolve account/category labels to active records so name typos can't evade budgets."""
-    account_scope = {
-        "is_archived": {"$ne": True},
-        "$or": [{"account_role": "admin"}, {"account_role": "user", "user_id": user_id}],
-    }
+    """Resolve labels to this user's active records and persist their stable IDs."""
     for field in ("account", "to_account"):
         requested = getattr(transaction, field)
         if not requested:
+            setattr(transaction, "account_id" if field == "account" else "to_account_id", None)
             continue
         account = await db.accounts.find_one({
-            **account_scope,
+            "is_archived": {"$ne": True}, "account_role": "user", "user_id": user_id,
             "name": {"$regex": f"^{re.escape(requested)}$", "$options": "i"},
         })
         if not account:
+            account = await db.accounts.find_one({
+                "is_archived": {"$ne": True}, "account_role": "admin",
+                "name": {"$regex": f"^{re.escape(requested)}$", "$options": "i"},
+            })
+        if not account:
             raise HTTPException(status_code=422, detail=f"Choose an active {field.replace('_', ' ')} available to this user.")
         setattr(transaction, field, account["name"])
+        setattr(transaction, "account_id" if field == "account" else "to_account_id", str(account["_id"]))
 
     if transaction.type in {"Transfer", "Contribution"}:
+        transaction.category_id = None
         return
     expected_type = transaction.type.lower()
-    category = await db.categories.find_one({
+    category_match = {
         "is_archived": {"$ne": True},
         "type": {"$regex": f"^{expected_type}$", "$options": "i"},
         "name": {"$regex": f"^{re.escape(transaction.category.strip())}$", "$options": "i"},
-        "$or": [{"category_role": "admin"}, {"category_role": "user", "user_id": user_id}],
-    })
+    }
+    category = await db.categories.find_one({**category_match, "category_role": "user", "user_id": user_id})
+    if not category:
+        category = await db.categories.find_one({**category_match, "category_role": "admin"})
     if not category:
         raise HTTPException(status_code=422, detail=f"Choose an active {expected_type} category available to this user.")
     transaction.category = category["name"]
+    transaction.category_id = str(category["_id"])
 
 
 def send_otp_email(target_email: str, otp_code: str):
@@ -1318,32 +1328,41 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
     if not goal:
         raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
     await validate_transaction_references(transaction, current_user["id"])
-    account_doc = await db.accounts.find_one({
-        "name": transaction.account,
-        "is_archived": {"$ne": True},
-        "$or": [
-            {"user_id": current_user["id"], "account_role": "user"},
-            {"account_role": "admin"},
-        ],
-    })
-    available = await accounts.calculate_account_balance(
-        transaction.account, current_user["id"], float((account_doc or {}).get("initial_balance", 0) or 0)
-    )
-    if transaction.amount > available:
-        raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
+    account_doc = await db.accounts.find_one({"_id": ObjectId(transaction.account_id), "is_archived": {"$ne": True}})
+    if not account_doc:
+        raise HTTPException(status_code=409, detail="The selected account is no longer active.")
     transaction_dict = transaction.dict()
     transaction_dict["goal_id"] = str(transaction.goal_id)
     transaction_dict["created_at"] = datetime.utcnow()
-    inserted = await db.expenses.insert_one(transaction_dict)
-    updated = await db.goals.update_one(
-        {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
-        {"$inc": {"current_savings": float(transaction.amount)}},
-    )
-    if not updated.matched_count:
-        await db.expenses.delete_one({"_id": inserted.inserted_id, "user_id": current_user["id"]})
-        raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
+    lock_id = await accounts.ensure_account_balance_lock(current_user["id"], account_doc["_id"])
+    async def commit_legacy_contribution(session):
+        await accounts.lock_account_balance(session, lock_id)
+        available = await accounts.calculate_account_balance(
+            transaction.account, current_user["id"], float(account_doc.get("initial_balance", 0) or 0),
+            session=session, account_id=transaction.account_id,
+        )
+        if transaction.amount > available:
+            raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
+        current_goal = await db.goals.find_one(
+            {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}, session=session
+        )
+        if not current_goal:
+            raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
+        inserted = await db.expenses.insert_one(transaction_dict, session=session)
+        await db.goals.update_one(
+            {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
+            {"$inc": {"current_savings": float(transaction.amount)}}, session=session,
+        )
+        return inserted.inserted_id
+    try:
+        async with await db.client.start_session() as session:
+            inserted_id = await session.with_transaction(commit_legacy_contribution)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely complete the contribution. Verify MongoDB transaction support and try again.") from exc
 
-    return {"status": "Success", "id": str(inserted.inserted_id), "message": "Naihulog na sa goal!"}
+    return {"status": "Success", "id": str(inserted_id), "message": "Naihulog na sa goal!"}
 
 
 @app.post("/add-expense")
@@ -1355,11 +1374,41 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
     await validate_transaction_references(transaction, current_user["id"])
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
-
-    if transaction_dict.get("goal_id"):
-        transaction_dict["goal_id"] = str(transaction_dict["goal_id"])
-
-    result = await db.expenses.insert_one(transaction_dict)
+    if transaction.type.lower() in {"expense", "transfer"}:
+        source_account = await db.accounts.find_one({"_id": ObjectId(transaction.account_id), "is_archived": {"$ne": True}})
+        if not source_account:
+            raise HTTPException(status_code=409, detail="The selected source account is no longer active.")
+        account_docs = [source_account]
+        if transaction.type.lower() == "transfer":
+            destination = await db.accounts.find_one({"_id": ObjectId(transaction.to_account_id), "is_archived": {"$ne": True}})
+            if not destination:
+                raise HTTPException(status_code=409, detail="The selected destination account is no longer active.")
+            account_docs.append(destination)
+        lock_ids = []
+        for account_doc in account_docs:
+            if account_doc:
+                lock_ids.append(await accounts.ensure_account_balance_lock(current_user["id"], account_doc["_id"]))
+        async def commit_spend(session):
+            for lock_id in sorted(lock_ids):
+                await accounts.lock_account_balance(session, lock_id)
+            available = await accounts.calculate_account_balance(
+                transaction.account, current_user["id"], float((source_account or {}).get("initial_balance", 0) or 0),
+                session=session, account_id=transaction.account_id,
+            )
+            if transaction.amount > available:
+                raise HTTPException(status_code=409, detail="The selected account does not have enough balance.")
+            result = await db.expenses.insert_one(transaction_dict, session=session)
+            return result.inserted_id
+        try:
+            async with await db.client.start_session() as session:
+                inserted_id = await session.with_transaction(commit_spend)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="Could not safely save this transaction. Verify MongoDB transaction support and try again.") from exc
+    else:
+        result = await db.expenses.insert_one(transaction_dict)
+        inserted_id = result.inserted_id
 
     notifications_created = []
     if transaction.type.lower() == "expense":
@@ -1367,7 +1416,7 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
 
         # 2. ðŸš¨ EMAIL ALERT INTEGRATION ðŸš¨
-    return {"status": "Success", "id": str(result.inserted_id), "notifications": notifications_created}
+    return {"status": "Success", "id": str(inserted_id), "notifications": notifications_created}
 
 
 @app.put("/update-expense/{expense_id}")
@@ -1381,7 +1430,11 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
         transaction.goal_id = str(transaction.goal_id)
 
     # 1. Kunin ang lumang transaction para may pagbasehan ng computation
-    old_txn = await db.expenses.find_one({"_id": ObjectId(expense_id), "user_id": current_user["id"], "is_archived": {"$ne": True}})
+    try:
+        expense_oid = ObjectId(expense_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid transaction ID.")
+    old_txn = await db.expenses.find_one({"_id": expense_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}})
     if not old_txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
     if old_txn.get("goal_id"):
@@ -1416,10 +1469,104 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
             await db.goals.update_one({"_id": ObjectId(new_goal)}, {"$inc": {"current_savings": new_amount}})
 
     # 3. I-save yung bagong transaction data
-    result = await db.expenses.update_one(
-        {"_id": ObjectId(expense_id)},
-        {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
-    )
+    update_query = {"_id": expense_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}
+    update_data = {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
+    async def load_account(account_id: Optional[str], name: Optional[str]):
+        if account_id and ObjectId.is_valid(account_id):
+            account_doc = await db.accounts.find_one({"_id": ObjectId(account_id)})
+            if account_doc:
+                return account_doc
+        if not name:
+            return None
+        account_doc = await db.accounts.find_one({
+            "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
+            "user_id": current_user["id"], "account_role": "user",
+        })
+        if not account_doc:
+            account_doc = await db.accounts.find_one({
+                "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"}, "account_role": "admin",
+            })
+        return account_doc
+
+    locked_accounts = {}
+    resolved_account_refs = {}
+    account_refs = [
+        (transaction.account_id, transaction.account),
+        (transaction.to_account_id, transaction.to_account),
+        (old_txn.get("account_id"), old_txn.get("account")),
+        (old_txn.get("to_account_id"), old_txn.get("to_account")),
+    ]
+    for account_id, account_name in account_refs:
+        if not account_name:
+            continue
+        account_doc = await load_account(account_id, account_name)
+        if not account_doc:
+            raise HTTPException(status_code=409, detail="An account linked to this transaction is no longer available.")
+        locked_accounts[str(account_doc["_id"])] = account_doc
+        resolved_account_refs[(str(account_id or ""), str(account_name))] = str(account_doc["_id"])
+    lock_ids = {
+        account_id: await accounts.ensure_account_balance_lock(current_user["id"], account_doc["_id"])
+        for account_id, account_doc in locked_accounts.items()
+    }
+
+    async def commit_update(session):
+        for lock_id in sorted(lock_ids.values()):
+            await accounts.lock_account_balance(session, lock_id)
+        for account_id in (transaction.account_id, transaction.to_account_id):
+            if account_id and not await db.accounts.find_one(
+                {"_id": ObjectId(account_id), "is_archived": {"$ne": True}}, session=session
+            ):
+                raise HTTPException(status_code=409, detail="A selected account is no longer active.")
+        current_old = await db.expenses.find_one(update_query, session=session)
+        if not current_old:
+            raise HTTPException(status_code=404, detail="Transaction not found")
+        old_ids = [str(current_old.get("account_id") or ""), str(current_old.get("to_account_id") or "")]
+        if any(value and ObjectId.is_valid(value) and value not in locked_accounts for value in old_ids):
+            raise HTTPException(status_code=409, detail="This transaction changed while you were editing it. Reload and try again.")
+        if not current_old.get("account_id") and current_old.get("account") != old_txn.get("account"):
+            raise HTTPException(status_code=409, detail="This transaction changed while you were editing it. Reload and try again.")
+        if not current_old.get("to_account_id") and current_old.get("to_account") != old_txn.get("to_account"):
+            raise HTTPException(status_code=409, detail="This transaction changed while you were editing it. Reload and try again.")
+
+        balance_deltas = {account_id: 0.0 for account_id in locked_accounts}
+        old_type = str(current_old.get("type", "")).lower()
+        old_amount = float(current_old.get("amount", 0) or 0)
+        current_old_source_ref = str(current_old.get("account_id") or "")
+        current_old_destination_ref = str(current_old.get("to_account_id") or "")
+        old_source_id = current_old_source_ref if current_old_source_ref in locked_accounts else resolved_account_refs.get((current_old_source_ref, str(current_old.get("account", ""))), "")
+        old_destination_id = current_old_destination_ref if current_old_destination_ref in locked_accounts else resolved_account_refs.get((current_old_destination_ref, str(current_old.get("to_account", ""))), "")
+        if old_source_id and old_source_id in balance_deltas:
+            balance_deltas[old_source_id] += -old_amount if old_type == "income" else old_amount
+        if old_type == "transfer" and old_destination_id in balance_deltas:
+            balance_deltas[old_destination_id] -= old_amount
+
+        new_type = transaction.type.lower()
+        new_amount = float(transaction.amount)
+        new_source_id = str(transaction.account_id or "")
+        new_destination_id = str(transaction.to_account_id or "")
+        if new_source_id in balance_deltas:
+            balance_deltas[new_source_id] += new_amount if new_type == "income" else -new_amount
+        if new_type == "transfer" and new_destination_id in balance_deltas:
+            balance_deltas[new_destination_id] += new_amount
+
+        for account_id, delta in balance_deltas.items():
+            account_doc = locked_accounts[account_id]
+            current_balance = await accounts.calculate_account_balance(
+                account_doc.get("name", ""), current_user["id"],
+                float(account_doc.get("initial_balance", 0) or 0),
+                session=session, account_id=account_id,
+            )
+            if current_balance + delta < -0.005:
+                raise HTTPException(status_code=409, detail="This edit would make an affected account balance negative.")
+        return await db.expenses.update_one(update_query, update_data, session=session)
+
+    try:
+        async with await db.client.start_session() as session:
+            result = await session.with_transaction(commit_update)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely update this transaction. Verify MongoDB transaction support and try again.") from exc
 
     if result.matched_count == 1:
         notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
@@ -1429,14 +1576,17 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
 
 
 @app.get("/get-expenses")
-async def get_expenses(user_id: str, archived: bool = False, current_user: dict = Depends(get_current_user)):
+async def get_expenses(user_id: str, archived: bool = False, limit: int = 500, offset: int = 0, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
+    if limit < 1 or limit > 500 or offset < 0:
+        raise HTTPException(status_code=422, detail="Limit must be 1–500 and offset cannot be negative.")
     query = {"user_id": user_id, "is_archived": True if archived else {"$ne": True}}
-    cursor = db.expenses.find(query).sort("date", -1)
-    expenses = await cursor.to_list(length=500)
+    total = await db.expenses.count_documents(query)
+    cursor = db.expenses.find(query).sort([("date", -1), ("_id", -1)]).skip(offset).limit(limit)
+    expenses = await cursor.to_list(length=limit)
     for item in expenses:
         item["_id"] = str(item["_id"])
-    return {"status": "Success", "data": expenses}
+    return {"status": "Success", "data": expenses, "total": total, "has_more": offset + len(expenses) < total}
 
 
 @app.delete("/delete-expense/{expense_id}")
@@ -1537,41 +1687,53 @@ async def restore_expense(expense_id: str, current_user: dict = Depends(get_curr
     expense = await db.expenses.find_one(expense_query)
     if not expense:
         raise HTTPException(status_code=404, detail="Archived transaction not found")
-    result = await db.expenses.update_one(expense_query, {"$set": {"is_archived": False}})
-    if not result.matched_count:
-        raise HTTPException(status_code=404, detail="Archived transaction not found")
-    if expense.get("goal_contribution_reversed") and expense.get("goal_id"):
-        goal_changed = False
+    txn_type = str(expense.get("type", "")).lower()
+    source_account = None
+    lock_id = None
+    if txn_type in {"expense", "transfer", "contribution"}:
         try:
-            goal_result = await db.goals.update_one(
-                {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
-                {"$inc": {"current_savings": float(expense.get("amount", 0))}},
+            source_account_id = ObjectId(expense.get("account_id", ""))
+            source_account = await db.accounts.find_one({"_id": source_account_id, "is_archived": {"$ne": True}})
+        except Exception:
+            source_account = await db.accounts.find_one({
+                "name": expense.get("account"), "is_archived": {"$ne": True},
+                "$or": [{"user_id": current_user["id"], "account_role": "user"}, {"account_role": "admin"}],
+            })
+        if source_account:
+            lock_id = await accounts.ensure_account_balance_lock(current_user["id"], source_account["_id"])
+    async def commit_restore(session):
+        if lock_id:
+            await accounts.lock_account_balance(session, lock_id)
+            available = await accounts.calculate_account_balance(
+                expense.get("account", ""), current_user["id"],
+                float((source_account or {}).get("initial_balance", 0) or 0), session=session,
+                account_id=str(source_account["_id"]) if source_account else None,
             )
-            if not goal_result.matched_count:
-                raise ValueError("Linked goal not found")
-            goal_changed = True
-            marker_result = await db.expenses.update_one(
-                {"_id": exp_oid, "user_id": current_user["id"], "is_archived": False},
-                {"$unset": {"archived_at": "", "goal_contribution_reversed": ""}},
-            )
-            if not marker_result.matched_count:
-                raise ValueError("Could not record restored goal state")
-        except Exception as exc:
-            if goal_changed:
-                await db.goals.update_one(
-                    {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
-                    {"$inc": {"current_savings": -float(expense.get("amount", 0))}},
-                )
-            await db.expenses.update_one(
-                {"_id": exp_oid, "user_id": current_user["id"], "is_archived": False},
-                {"$set": {"is_archived": True, "archived_at": expense.get("archived_at", datetime.utcnow())}},
-            )
-            raise HTTPException(status_code=409, detail="Could not safely restore the linked goal contribution.") from exc
-    else:
-        await db.expenses.update_one(
-            {"_id": exp_oid, "user_id": current_user["id"], "is_archived": False},
-            {"$unset": {"archived_at": ""}},
+            if float(expense.get("amount", 0) or 0) > available:
+                raise HTTPException(status_code=409, detail="The selected account does not have enough balance to restore this transaction.")
+        changed = await db.expenses.update_one(
+            expense_query, {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}}, session=session
         )
+        if not changed.matched_count:
+            raise HTTPException(status_code=404, detail="Archived transaction not found")
+        if expense.get("goal_contribution_reversed") and expense.get("goal_id"):
+            restored_goal = await db.goals.update_one(
+                {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
+                {"$inc": {"current_savings": float(expense.get("amount", 0))}}, session=session,
+            )
+            if not restored_goal.matched_count:
+                raise HTTPException(status_code=409, detail="The linked goal is unavailable; transaction was not restored.")
+            await db.expenses.update_one(
+                {"_id": exp_oid, "user_id": current_user["id"]},
+                {"$unset": {"goal_contribution_reversed": ""}}, session=session,
+            )
+    try:
+        async with await db.client.start_session() as session:
+            await session.with_transaction(commit_restore)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely restore this transaction. Verify MongoDB transaction support and try again.") from exc
     await create_crossed_threshold_notifications(current_user["id"])
     return {"status": "Success", "message": "Transaction restored successfully"}
 
@@ -1620,31 +1782,44 @@ async def initial_setup(data: InitialSetupSchema, current_user: dict = Depends(g
     if existing_user.get("onboarding_completed"):
         raise HTTPException(status_code=409, detail="Initial setup has already been completed.")
 
+    # A reported monthly baseline and first goal are useful for personalization,
+    # but neither should block students or users with irregular/no income from
+    # securing their account and using transaction tracking.
+    goal_values = (data.target_name, data.target_amount, data.target_date)
+    goal_provided = any(value is not None and str(value).strip() for value in goal_values)
+    if goal_provided and any(value is None or not str(value).strip() for value in goal_values):
+        raise HTTPException(status_code=422, detail="To add a goal now, provide its name, target amount, and target date; otherwise leave all goal fields blank.")
+    if goal_provided:
+        try:
+            target_date = datetime.strptime(data.target_date, "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="Target date must be a real date in YYYY-MM-DD format.")
+        if target_date <= ph_today():
+            raise HTTPException(status_code=422, detail="The goal target date must be in the future.")
+
     # FIX: PIN was previously stored in plaintext (paired with the /verify-pin fix above).
     await db.users.update_one(
         {"_id": user_oid},
         {"$set": {"pin": pwd_context.hash(data.pin), "monthly_income": data.monthly_income, "onboarding_completed": True}}
     )
 
-    # FIX: this goal is inserted directly, bypassing the goals.py router/GoalCreate
-    # schema entirely -- which requires goal_type_id. Without this, every user's very
-    # first goal (created here, during onboarding) would permanently lack a goal type,
-    # unlike every goal created afterward via create-goal.tsx. Best-effort: use whichever
-    # goal type exists first; if none exist yet, proceed without one (no worse than before).
-    default_goal_type = (
-    await db.goal_types.find_one({"is_archived": {"$ne": True}, "name": {"$regex": "^other$", "$options": "i"}})
-    or await db.goal_types.find_one({"is_archived": {"$ne": True}})
-    )
-    goal_document = {
-        "user_id": data.user_id,
-        **data.dict(exclude={"pin", "user_id", "monthly_income"}),
-        "current_savings": 0.0,
-        "created_at": datetime.utcnow()
-    }
-    if default_goal_type:
-        goal_document["goal_type_id"] = str(default_goal_type["_id"])
-
-    await db.goals.insert_one(goal_document)
+    if goal_provided:
+        # Keep onboarding-created goals consistent with goals created later.
+        default_goal_type = (
+            await db.goal_types.find_one({"is_archived": {"$ne": True}, "name": {"$regex": "^other$", "$options": "i"}})
+            or await db.goal_types.find_one({"is_archived": {"$ne": True}})
+        )
+        goal_document = {
+            "user_id": data.user_id,
+            "target_name": data.target_name.strip(),
+            "target_amount": data.target_amount,
+            "target_date": data.target_date,
+            "current_savings": 0.0,
+            "created_at": datetime.utcnow(),
+        }
+        if default_goal_type:
+            goal_document["goal_type_id"] = str(default_goal_type["_id"])
+        await db.goals.insert_one(goal_document)
     return {"status": "Success"}
 
 @app.get("/api/health", tags=["System"])

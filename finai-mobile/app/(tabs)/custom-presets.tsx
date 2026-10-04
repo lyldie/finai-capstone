@@ -5,6 +5,9 @@ import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getAccountEmoji } from '../../utils/accountEmoji';
+import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 
 const GREEN = '#144A3D';
 const API_BASE_URL = `${API_URL}/api`;
@@ -52,9 +55,9 @@ export default function CustomPresetsScreen() {
   useEffect(() => {
     if (!emojiTouched) {
       if (activeTab === 'categories') {
-        setNewEmoji(getSafeCategoryEmoji(newItemName || 'category', newCatType));
+        setNewEmoji(getCategoryEmoji(newItemName || 'category', newCatType));
       } else {
-        setNewEmoji(getSafeAccountEmoji(newItemName || 'account'));
+        setNewEmoji(getAccountEmoji(newItemName || 'account'));
       }
     }
   }, [newItemName, newCatType, emojiTouched, activeTab]);
@@ -90,10 +93,10 @@ export default function CustomPresetsScreen() {
       setNewItemName(item.name);
       if (activeTab === 'categories') {
         setNewCatType(item.type);
-        setNewEmoji(item.icon || getSafeCategoryEmoji(item.name, item.type)); 
+        setNewEmoji(getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type)));
       } else {
         setNewAccBalance(item.initial_balance.toString());
-        setNewEmoji(item.icon || getSafeAccountEmoji(item.name));
+        setNewEmoji(getDisplayEmoji(item.icon, getAccountEmoji(item.name)));
       }
       setEmojiTouched(true); 
     } else {
@@ -117,7 +120,8 @@ export default function CustomPresetsScreen() {
     const method = editingId ? 'PUT' : 'POST'; 
     const url = editingId ? `${API_BASE_URL}/${endpoint}/${editingId}` : `${API_BASE_URL}/${endpoint}/`;
 
-    const finalEmoji = newEmoji.trim() || (activeTab === 'categories' ? getSafeCategoryEmoji(newItemName, newCatType) : getSafeAccountEmoji(newItemName));
+    const fallbackEmoji = activeTab === 'categories' ? getCategoryEmoji(newItemName, newCatType) : getAccountEmoji(newItemName);
+    const finalEmoji = getDisplayEmoji(newEmoji, fallbackEmoji);
 
     const payload = activeTab === 'categories' 
       ? { name: newItemName, type: newCatType, user_id: user?.id, icon: finalEmoji } 
@@ -165,9 +169,9 @@ export default function CustomPresetsScreen() {
   };
 
   const renderItem = ({ item }: { item: any }) => {
-    const displayEmoji = item.icon && !item.icon.match(/^[a-zA-Z]+$/) 
-      ? item.icon 
-      : (activeTab === 'categories' ? getSafeCategoryEmoji(item.name, item.type) : getSafeAccountEmoji(item.name));
+    const displayEmoji = activeTab === 'categories'
+      ? getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type))
+      : getDisplayEmoji(item.icon, getAccountEmoji(item.name));
 
     return (
       <View style={styles.listItem}>
@@ -237,28 +241,19 @@ export default function CustomPresetsScreen() {
             <Text style={styles.modalTitle}>{editingId ? 'Edit' : 'Add Custom'} {activeTab === 'categories' ? 'Category' : 'Account'}</Text>
             
             <View style={{ alignItems: 'center', marginBottom: 16 }}>
-              <TextInput
-                style={[
-                  styles.previewCircle, 
-                  { backgroundColor: activeTab === 'categories' 
-                      ? (newCatType === 'income' ? '#e8f5e9' : '#ffebee') 
-                      : ACCOUNT_TINT 
-                  }
-                ]}
+              <EmojiPicker
                 value={newEmoji}
-                onChangeText={(text) => {
-                  setEmojiTouched(true);
-                  setNewEmoji(text.slice(-2));
-                }}
-                maxLength={4}
-                textAlign="center"
+                onChange={(value) => { setEmojiTouched(true); setNewEmoji(value); }}
+                fallback={activeTab === 'categories' ? getCategoryEmoji(newItemName, newCatType) : getAccountEmoji(newItemName)}
+                tint={activeTab === 'categories' ? (newCatType === 'income' ? '#e8f5e9' : '#ffebee') : ACCOUNT_TINT}
+                accessibilityLabel={activeTab === 'categories' ? 'Choose category emoji' : 'Choose account emoji'}
               />
-              <Text style={styles.previewHint}>Tap to pick your own emoji</Text>
+              <Text style={styles.previewHint}>Choose a recognizable icon</Text>
               {emojiTouched && (
                 <TouchableOpacity onPress={() => {
                   setEmojiTouched(false);
-                  if (activeTab === 'categories') setNewEmoji(getSafeCategoryEmoji(newItemName, newCatType));
-                  else setNewEmoji(getSafeAccountEmoji(newItemName));
+                  if (activeTab === 'categories') setNewEmoji(getCategoryEmoji(newItemName, newCatType));
+                  else setNewEmoji(getAccountEmoji(newItemName));
                 }}>
                   <Text style={[styles.previewHint, { color: GREEN, marginTop: 4, fontWeight: '700' }]}>Reset icon</Text>
                 </TouchableOpacity>

@@ -27,6 +27,10 @@ async def ensure_indexes():
         [("user_id", 1), ("category_id", 1), ("period_type", 1), ("period_key", 1)],
         unique=True,
     )
+    await db.budget_rules.create_index(
+        [("user_id", 1), ("category_id", 1), ("period_type", 1)],
+        unique=True,
+    )
 
     # FIX: pending_signups now backs OTP verification (previously an in-memory dict --
     # see main.py's /register and /verify-otp). This TTL index auto-deletes any

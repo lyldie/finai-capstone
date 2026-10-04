@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getGoalEmoji } from '../../utils/goalEmoji';
+import EmojiPicker from '../../components/EmojiPicker';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -77,18 +78,9 @@ export default function AddGoalTypeScreen() {
       >
         <View style={styles.formCard}>
           <View style={styles.previewRow}>
-            <TextInput
-              style={styles.previewCircle}
-              value={emoji}
-              onChangeText={(text) => {
-                setEmojiTouched(true);
-                setEmoji(text.slice(-2));
-              }}
-              maxLength={4}
-              textAlign="center"
-            />
+            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getGoalEmoji(name || 'goal')} tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
             <View style={{ flex: 1 }}>
-              <Text style={styles.previewHint}>Tap icon to change emoji</Text>
+              <Text style={styles.previewHint}>Choose an icon for this goal type</Text>
               {emojiTouched && (
                 <TouchableOpacity onPress={() => setEmojiTouched(false)}>
                   <Text style={styles.resetLink}>Reset to suggested</Text>

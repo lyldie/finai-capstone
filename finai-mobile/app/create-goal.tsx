@@ -18,6 +18,7 @@ import { useTransactions } from '../context/TransactionContext';
 import { router, useLocalSearchParams } from 'expo-router';
 import { API_URL } from '../config'; 
 import { getGoalEmoji } from '../utils/goalEmoji'; // 👈 IMPORT NATIN YUNG EMOJI HELPER
+import { getDisplayEmoji } from '../components/EmojiPicker';
 
 const FINAI_DEEP_GREEN = '#0D5C3A';
 const FINAI_BG = '#F4F7F5';
@@ -171,7 +172,7 @@ export default function CreateGoal() {
                 {/* 👈 NAGPAPAKITA NA NG EMOJI KUNG MAY SELECTED TYPE */}
                 {selectedType ? (
                   <Text style={{ fontSize: 20, marginRight: 10 }}>
-                    {selectedType.icon || getGoalEmoji(selectedType.name)}
+                    {getDisplayEmoji(selectedType.icon, getGoalEmoji(selectedType.name))}
                   </Text>
                 ) : (
                   <Ionicons name="options-outline" size={20} color={FINAI_DEEP_GREEN} style={styles.inputIcon} />
@@ -297,7 +298,7 @@ export default function CreateGoal() {
                   {/* 👈 DINAGDAG ANG EMOJI SA LISTAHAN NG MODAL */}
                   <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                     <Text style={{ fontSize: 20, marginRight: 12 }}>
-                      {item.icon || getGoalEmoji(item.name)}
+                      {getDisplayEmoji(item.icon, getGoalEmoji(item.name))}
                     </Text>
                     <Text style={[
                       styles.modalItemText,

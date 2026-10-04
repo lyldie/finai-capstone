@@ -38,41 +38,47 @@ export default function SetupPinScreen() {
       return;
     }
 
-    if (!income.trim() || !goalName.trim() || !goalAmount.trim() || !goalDate.trim()) {
-      Alert.alert("Kulang paps!", "Paki-sagutan ang Monthly Income at Goal details para may baseline si FinAi.");
+    const incomeText = income.trim();
+    const parsedIncome = incomeText ? Number(incomeText) : null;
+    if (parsedIncome !== null && (!Number.isFinite(parsedIncome) || parsedIncome < 0)) {
+      Alert.alert("Invalid Amount", "Enter a valid monthly amount, or leave it blank for now.");
       return;
     }
 
-    const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-    if (!dateRegex.test(goalDate.trim())) {
-      Alert.alert("Invalid Date", "Paki-sulat ang Target Date sa format na YYYY-MM-DD (Halimbawa: 2026-12-31).");
+    const goalValues = [goalName.trim(), goalAmount.trim(), goalDate.trim()];
+    const goalProvided = goalValues.some(Boolean);
+    if (goalProvided && !goalValues.every(Boolean)) {
+      Alert.alert("Goal details incomplete", "To add a goal now, fill in its name, target amount, and target date. Otherwise, leave all three blank and add a goal later.");
       return;
     }
 
-    const parsedTargetDate = new Date(goalDate.trim());
-    if (isNaN(parsedTargetDate.getTime())) {
-      Alert.alert("Invalid Date", "Hindi yata totoong petsa 'yan paps.");
-      return;
-    }
+    let parsedGoalAmount: number | undefined;
+    if (goalProvided) {
+      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+      if (!dateRegex.test(goalDate.trim())) {
+        Alert.alert("Invalid Date", "Use YYYY-MM-DD for the target date, for example 2026-12-31.");
+        return;
+      }
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (parsedTargetDate <= today) {
-      Alert.alert("Invalid Date", "Dapat sa future ang target date mo paps, lagpas sa araw na ito!");
-      return;
-    }
+      const [year, month, day] = goalDate.trim().split('-').map(Number);
+      const parsedTargetDate = new Date(year, month - 1, day);
+      if (parsedTargetDate.getFullYear() !== year || parsedTargetDate.getMonth() !== month - 1 || parsedTargetDate.getDate() !== day) {
+        Alert.alert("Invalid Date", "Enter a real calendar date.");
+        return;
+      }
 
-    const parsedIncome = parseFloat(income);
-    const parsedGoalAmount = parseFloat(goalAmount);
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      if (parsedTargetDate <= today) {
+        Alert.alert("Invalid Date", "Choose a target date in the future.");
+        return;
+      }
 
-    if (isNaN(parsedIncome) || parsedIncome <= 0) {
-      Alert.alert("Invalid Amount", "Paki-check ang Monthly Income mo paps.");
-      return;
-    }
-
-    if (isNaN(parsedGoalAmount) || parsedGoalAmount <= 0) {
-      Alert.alert("Invalid Amount", "Paki-check ang Target Savings Amount mo paps.");
-      return;
+      parsedGoalAmount = Number(goalAmount);
+      if (!Number.isFinite(parsedGoalAmount) || parsedGoalAmount <= 0) {
+        Alert.alert("Invalid Amount", "Enter a target amount greater than zero.");
+        return;
+      }
     }
 
     setLoading(true);
@@ -89,9 +95,11 @@ export default function SetupPinScreen() {
         user_id: userId,
         pin: pin,
         monthly_income: parsedIncome,
-        target_name: goalName.trim(),
-        target_amount: parsedGoalAmount,
-        target_date: goalDate.trim()
+        ...(goalProvided ? {
+          target_name: goalName.trim(),
+          target_amount: parsedGoalAmount,
+          target_date: goalDate.trim(),
+        } : {}),
       };
 
       const response = await fetch(`${API_URL}/initial-setup`, {
@@ -107,7 +115,7 @@ export default function SetupPinScreen() {
 
         Alert.alert(
           "Setup Complete! 🚀🛡️", 
-          "Selyado na ang security at financial profile mo paps. Pwede ka nang mag-login!", 
+          "Your app PIN is set. You can add or update your optional money baseline and savings goals later.", 
           [
             { 
               text: "Let's Go!", 
@@ -131,7 +139,7 @@ export default function SetupPinScreen() {
     inputRef.current?.focus();
   };
 
-  const isFormComplete = pin.length === 4 && income && goalName && goalAmount && goalDate;
+  const isFormComplete = pin.length === 4;
 
   return (
     <KeyboardAvoidingView 
@@ -162,7 +170,7 @@ export default function SetupPinScreen() {
           
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>🔒 SECURITY LOCK</Text>
-            <Text style={styles.instruction}>Enter a 4-digit PIN to secure your wallet</Text>
+            <Text style={styles.instruction}>Set a 4-digit PIN to lock this app. This is separate from your account password and bank PIN.</Text>
             
             <Pressable style={styles.pinWrapper} onPress={focusInput} disabled={loading}>
               <View style={styles.pinContainer}>
@@ -185,13 +193,14 @@ export default function SetupPinScreen() {
           </View>
 
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>💰 MONTHLY BASELINE</Text>
-            <Text style={styles.label}>Magkano ang monthly income mo paps?</Text>
+            <Text style={styles.sectionTitle}>💰 MONTHLY MONEY AVAILABLE · OPTIONAL</Text>
+            <Text style={styles.label}>About how much money do you usually have available each month?</Text>
+            <Text style={styles.fieldHint}>Include salary, allowance, family support, or other money. If it varies, enter a typical estimate. Leave blank if you prefer not to estimate or share; enter 0 if you usually have none. You can update this later.</Text>
             <TextInput 
               style={styles.inputField}
-              placeholder="e.g. 25000"
+              placeholder="e.g. 25000 or leave blank"
               placeholderTextColor={SAGE}
-              keyboardType="numeric"
+              keyboardType="decimal-pad"
               value={income}
               onChangeText={setIncome}
               editable={!loading}
@@ -199,8 +208,8 @@ export default function SetupPinScreen() {
           </View>
 
           <View style={styles.sectionCard}>
-            <Text style={styles.sectionTitle}>🎯 FIRST FINANCIAL GOAL</Text>
-            
+            <Text style={styles.sectionTitle}>🎯 FIRST FINANCIAL GOAL · OPTIONAL</Text>
+            <Text style={styles.fieldHint}>You can set a savings goal now or add one later from Insights.</Text>
             <Text style={styles.label}>Target Name (Ano ang pinag-iipunan mo?)</Text>
             <TextInput 
               style={styles.inputField}
@@ -243,10 +252,10 @@ export default function SetupPinScreen() {
               {loading ? (
                 <ActivityIndicator color="#fff" />
               ) : (
-                <Text style={styles.buttonText}>SAVE PROFILE SETUP</Text>
+                <Text style={styles.buttonText}>SAVE AND CONTINUE</Text>
               )}
             </TouchableOpacity>
-            <Text style={styles.footerNote}>PIN, Income baseline, at initial Goal ay pasok sa FinAi scope paps.</Text>
+            <Text style={styles.footerNote}>Your PIN is required. Monthly money details and a first goal are optional and can be added later.</Text>
           </View>
         </View>
       </ScrollView>
@@ -300,6 +309,7 @@ const styles = StyleSheet.create({
   },
   hiddenInput: { position: 'absolute', opacity: 0, width: 1, height: 1 },
   label: { fontSize: 12, color: SAGE, marginBottom: 6, fontWeight: '600' },
+  fieldHint: { fontSize: 12, color: SAGE, lineHeight: 17, marginBottom: 12 },
   inputField: {
     backgroundColor: CREAM,
     color: DEEP_GREEN,

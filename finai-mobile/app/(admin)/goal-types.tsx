@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getGoalEmoji } from '../../utils/goalEmoji';
+import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 
 const { width } = Dimensions.get('window');
 const DEEP_GREEN = '#1c3c36';
@@ -124,7 +125,7 @@ export default function GoalTypesScreen() {
   const openEditModal = (item: GoalType) => {
     setEditingGoalType(item);
     setNewName(item.name);
-    setEditEmoji(item.icon || getGoalEmoji(item.name));
+    setEditEmoji(getDisplayEmoji(item.icon, getGoalEmoji(item.name)));
     setEmojiTouched(false);
     setModalVisible(true);
   };
@@ -157,7 +158,7 @@ export default function GoalTypesScreen() {
     <View style={[styles.card, item.is_archived && styles.cardArchived]}>
       <View style={styles.cardInfo}>
         <View style={[styles.iconBox, item.is_archived && styles.iconBoxArchived]}>
-          <Text style={styles.emojiText}>{item.icon || getGoalEmoji(item.name)}</Text>
+          <Text style={styles.emojiText}>{getDisplayEmoji(item.icon, getGoalEmoji(item.name))}</Text>
         </View>
         <View>
           <Text style={[styles.cardText, item.is_archived && styles.cardTextArchived]}>{item.name}</Text>
@@ -248,24 +249,15 @@ export default function GoalTypesScreen() {
             <Text style={styles.modalTitle}>Edit Goal Type</Text>
             
             <View style={styles.previewRow}>
-              <TextInput
-                style={styles.previewCircle}
-                value={editEmoji}
-                onChangeText={(text) => {
-                  setEmojiTouched(true);
-                  setEditEmoji(text.slice(-2));
-                }}
-                maxLength={4}
-                textAlign="center"
-              />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getGoalEmoji(newName)} tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
               <View style={{ flex: 1 }}>
-                <Text style={styles.previewHint}>Tap icon to change emoji</Text>
+                <Text style={styles.previewHint}>Choose an icon for this goal type</Text>
                 {emojiTouched && (
                   <TouchableOpacity onPress={() => {
                     setEmojiTouched(false);
-                    setEditEmoji(editingGoalType?.icon || getGoalEmoji(newName));
+                    setEditEmoji(getGoalEmoji(newName));
                   }}>
-                    <Text style={styles.resetLink}>Reset icon</Text>
+                    <Text style={styles.resetLink}>Use suggested icon</Text>
                   </TouchableOpacity>
                 )}
               </View>

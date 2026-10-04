@@ -7,7 +7,7 @@ from schemas.goal import GoalCreate, GoalResponse, GoalDeposit
 from datetime import datetime
 from datetime import date
 from auth import get_current_user
-from .accounts import calculate_account_balance
+from .accounts import calculate_account_balance, ensure_account_balance_lock, lock_account_balance
 from services.budget_service import create_crossed_threshold_notifications
 
 router = APIRouter(prefix="/api/goals", tags=["Goals"])
@@ -188,6 +188,14 @@ async def permanent_delete_goal(goal_id: str, current_user: dict = Depends(get_c
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid goal ID format")
 
+    goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"], "is_archived": True})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Archived goal not found")
+    linked = await db.expenses.find_one({
+        "user_id": current_user["id"], "goal_id": {"$in": [str(oid), oid]},
+    })
+    if linked:
+        raise HTTPException(status_code=409, detail="This goal has contribution history and cannot be permanently deleted.")
     result = await db.goals.delete_one({"_id": oid, "user_id": current_user["id"], "is_archived": True})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
@@ -203,6 +211,11 @@ async def delete_goal(goal_id: str, current_user: dict = Depends(get_current_use
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid goal ID format")
 
+    linked = await db.expenses.find_one({
+        "user_id": current_user["id"], "goal_id": {"$in": [str(oid), oid]},
+    })
+    if linked:
+        raise HTTPException(status_code=409, detail="This goal has contribution history. Archive it to preserve its records.")
     result = await db.goals.delete_one({"_id": oid, "user_id": current_user["id"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
@@ -225,15 +238,11 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
     account_name = deposit.account.strip()
     if not account_name:
         raise HTTPException(status_code=422, detail="An account is required.")
-    account = await db.accounts.find_one({"name": account_name, "$or": [{"user_id": current_user["id"], "account_role": "user", "is_archived": {"$ne": True}}, {"account_role": "admin", "is_archived": {"$ne": True}}]})
+    account = await db.accounts.find_one({"name": account_name, "user_id": current_user["id"], "account_role": "user", "is_archived": {"$ne": True}})
+    if not account:
+        account = await db.accounts.find_one({"name": account_name, "account_role": "admin", "is_archived": {"$ne": True}})
     if not account:
         raise HTTPException(status_code=400, detail="Choose an active account available to this user.")
-    available_balance = await calculate_account_balance(
-        account.get("name", ""), current_user["id"], float(account.get("initial_balance", 0) or 0)
-    )
-    if deposit.amount > available_balance:
-        raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
-
     expense_log = {
         "user_id": current_user["id"],
         "amount": deposit.amount,
@@ -243,18 +252,37 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         "note": f"Inihulog sa goal: {goal.get('target_name')}",
         "type": "Contribution",
         "account": account.get("name", account_name),
-        "date": datetime.now().strftime("%Y-%m-%d"),
+        "account_id": str(account["_id"]), "to_account": None, "to_account_id": None, "category_id": None,
+        "date": ph_today().isoformat(),
         "goal_id": str(goal_id)
     }
 
-    inserted = await db.expenses.insert_one(expense_log)
-    updated_goal = await db.goals.update_one(
-        {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
-        {"$inc": {"current_savings": deposit.amount}},
-    )
-    if not updated_goal.matched_count:
-        await db.expenses.delete_one({"_id": inserted.inserted_id, "user_id": current_user["id"]})
-        raise HTTPException(status_code=404, detail="Goal not found")
+    lock_id = await ensure_account_balance_lock(current_user["id"], account["_id"])
+    async def commit_deposit(session):
+        await lock_account_balance(session, lock_id)
+        current_goal = await db.goals.find_one(
+            {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}, session=session
+        )
+        if not current_goal:
+            raise HTTPException(status_code=404, detail="Goal not found")
+        available_balance = await calculate_account_balance(
+            account.get("name", ""), current_user["id"], float(account.get("initial_balance", 0) or 0),
+            session=session, account_id=str(account["_id"]),
+        )
+        if deposit.amount > available_balance:
+            raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
+        await db.expenses.insert_one(expense_log, session=session)
+        await db.goals.update_one(
+            {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
+            {"$inc": {"current_savings": deposit.amount}}, session=session,
+        )
+    try:
+        async with await db.client.start_session() as session:
+            await session.with_transaction(commit_deposit)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely complete the contribution. Verify MongoDB transaction support and try again.") from exc
     await create_crossed_threshold_notifications(current_user["id"])
 
     return {"status": "Success", "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}

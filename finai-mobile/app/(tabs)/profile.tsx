@@ -44,9 +44,13 @@ export default function ProfileScreen() {
 
   // --- HANDLERS ---
   const handleUpdateIncome = async () => {
+    if (!newIncome.trim()) {
+      Alert.alert('Amount needed', 'Enter a monthly amount, or leave your baseline unchanged.');
+      return;
+    }
     const parsedIncome = Number(newIncome);
-    if (!newIncome || isNaN(parsedIncome) || parsedIncome <= 0) {
-      Alert.alert('Oops!', 'Maglagay ng tamang amount paps.');
+    if (!Number.isFinite(parsedIncome) || parsedIncome < 0) {
+      Alert.alert('Oops!', 'Enter a valid amount of zero or more.');
       return;
     }
     
@@ -58,7 +62,7 @@ export default function ProfileScreen() {
       });
       
       if (response.ok) {
-        Alert.alert('Success', `Monthly income updated to ₱${newIncome}!`);
+        Alert.alert('Success', `Monthly money baseline updated to ₱${newIncome}.`);
         setIncomeModalVisible(false);
         setNewIncome('');
       } else {
@@ -244,8 +248,8 @@ export default function ProfileScreen() {
         <View style={styles.cardGroup}>
           <MenuOption 
             icon="wallet-outline" 
-            title="Update Monthly Income" 
-            subtitle="Baseline for AI Budget Advisor"
+            title="Update Monthly Money Baseline" 
+            subtitle="Optional context for the AI Budget Advisor"
             onPress={() => setIncomeModalVisible(true)} 
           />
           <View style={styles.divider} />
@@ -317,8 +321,8 @@ export default function ProfileScreen() {
       <Modal visible={isIncomeModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Update Monthly Income</Text>
-            <Text style={styles.modalDesc}>Ito ang gagamitin ng AI Budget Advisor bilang basehan ng iyong cash flow.</Text>
+            <Text style={styles.modalTitle}>Update Monthly Money Baseline</Text>
+            <Text style={styles.modalDesc}>Use your typical monthly money available, including salary, allowance, or regular support. Enter 0 if you do not have a regular amount. This is optional context for the AI Budget Advisor.</Text>
             
             <View style={styles.inputWrapper}>
               <Text style={styles.currencyPrefix}>₱</Text>

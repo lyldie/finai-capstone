@@ -9,6 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getAccountEmoji } from '../../utils/accountEmoji';
+import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 
 const { width } = Dimensions.get('window');
 const DEEP_GREEN = '#1c3c36';
@@ -128,7 +129,7 @@ export default function AccountsScreen() {
   const openEditModal = (item: Account) => {
     setEditingAccount(item);
     setNewName(item.name);
-    setEditEmoji(item.icon || getAccountEmoji(item.name));
+    setEditEmoji(getDisplayEmoji(item.icon, getAccountEmoji(item.name)));
     setEmojiTouched(false);
     setModalVisible(true);
   };
@@ -165,7 +166,7 @@ export default function AccountsScreen() {
     <View style={[styles.card, item.is_archived && styles.cardArchived]}>
       <View style={styles.cardInfo}>
         <View style={[styles.iconBox, item.is_archived && styles.iconBoxArchived]}>
-          <Text style={styles.emoji}>{item.icon || getAccountEmoji(item.name)}</Text>
+          <Text style={styles.emoji}>{getDisplayEmoji(item.icon, getAccountEmoji(item.name))}</Text>
         </View>
         <View>
           <Text style={[styles.cardText, item.is_archived && styles.cardTextArchived]}>{item.name}</Text>
@@ -256,24 +257,15 @@ export default function AccountsScreen() {
             <Text style={styles.modalTitle}>Edit Account</Text>
 
             <View style={styles.previewRow}>
-              <TextInput
-                style={styles.previewCircle}
-                value={editEmoji}
-                onChangeText={(text) => {
-                  setEmojiTouched(true);
-                  setEditEmoji(text.slice(-2));
-                }}
-                maxLength={4}
-                textAlign="center"
-              />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getAccountEmoji(newName)} tint="#FFF9E6" accessibilityLabel="Choose account emoji" />
               <View style={{ flex: 1 }}>
-                <Text style={styles.previewHint}>Tap icon to change emoji</Text>
+                <Text style={styles.previewHint}>Choose an icon for this account</Text>
                 {emojiTouched && (
                   <TouchableOpacity onPress={() => {
                     setEmojiTouched(false);
-                    setEditEmoji(editingAccount?.icon || getAccountEmoji(newName));
+                    setEditEmoji(getAccountEmoji(newName));
                   }}>
-                    <Text style={styles.resetLink}>Reset icon</Text>
+                    <Text style={styles.resetLink}>Use suggested icon</Text>
                   </TouchableOpacity>
                 )}
               </View>

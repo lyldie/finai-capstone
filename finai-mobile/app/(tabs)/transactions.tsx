@@ -5,6 +5,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -48,7 +50,11 @@ export default function TransactionsScreen() {
   const [endDate, setEndDate] = useState('');
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
 
-  const today = new Date();
+  const phTodayParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const phTodayPart = (type: string) => phTodayParts.find((item) => item.type === type)?.value || '';
+  const today = new Date(Number(phTodayPart('year')), Number(phTodayPart('month')) - 1, Number(phTodayPart('day')));
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth());
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<number | null>(today.getDate());
@@ -146,22 +152,28 @@ export default function TransactionsScreen() {
 
   const renderTransactionItem = useCallback(({ item }: { item: Transaction }) => {
     let swipeableRef: Swipeable | null = null;
-    let iconName: any = "arrow-down-outline", iconColor = EXPENSE, amountColor = DEEP_GREEN, prefix = '-', bgColor = 'rgba(255, 98, 89, 0.12)';
+    let amountColor = DEEP_GREEN, prefix = '-', bgColor = 'rgba(255, 98, 89, 0.12)';
 
     if (item.type === 'Income') {
-      iconName = "arrow-up-outline"; iconColor = INCOME; amountColor = INCOME; prefix = '+'; bgColor = 'rgba(16, 185, 129, 0.12)';
+      amountColor = INCOME; prefix = '+'; bgColor = 'rgba(16, 185, 129, 0.12)';
     } else if (item.type === 'Transfer') {
-      iconName = "swap-horizontal"; iconColor = TEAL; amountColor = DEEP_GREEN; prefix = ''; bgColor = 'rgba(61, 125, 108, 0.12)';
+      amountColor = DEEP_GREEN; prefix = ''; bgColor = 'rgba(61, 125, 108, 0.12)';
     } else if (item.type === 'Contribution' || item.goal_id) {
-      iconName = "flag-outline"; iconColor = TEAL; amountColor = TEAL; prefix = '−'; bgColor = 'rgba(61, 125, 108, 0.12)';
+      amountColor = TEAL; prefix = '−'; bgColor = 'rgba(61, 125, 108, 0.12)';
     }
+    const categoryIcon = categories.find((category) => category.name === item.category && category.type === item.type.toLowerCase())?.icon;
+    const transactionEmoji = item.type === 'Transfer'
+      ? '🔄'
+      : item.type === 'Contribution' || item.goal_id
+        ? '🎯'
+        : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
     return (
       <Swipeable ref={(ref) => { swipeableRef = ref; }} renderRightActions={() => renderRightActions(item, swipeableRef)}>
         <View style={styles.transactionCard}>
           <View style={styles.cardLeft}>
             <View style={[styles.cardIconBox, { backgroundColor: bgColor }]}>
-              <Ionicons name={iconName} size={19} color={iconColor} />
+              <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
             </View>
             <View style={styles.cardInfo}>
               <Text style={styles.cardCategory} numberOfLines={1}>

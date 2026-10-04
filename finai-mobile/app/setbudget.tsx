@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, ActivityIndicator, ScrollView, Switch } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -29,6 +29,7 @@ export default function SetBudgetScreen() {
   const [selectedCategory, setSelectedCategory] = useState<any>(null);
   const [selectedPeriod, setSelectedPeriod] = useState<'weekly' | 'monthly' | 'annual'>('monthly');
   const [amount, setAmount] = useState(initialAmount as string || '');
+  const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
 
   // A category may have a separate weekly, monthly, and annual budget.
@@ -42,7 +43,11 @@ export default function SetBudgetScreen() {
     if (period_type === 'weekly' || period_type === 'monthly' || period_type === 'annual') {
       setSelectedPeriod(period_type);
     }
-  }, [category_id, categories, period_type]);
+    if (id) {
+      const savedBudget = budgets.find((item: any) => item.id === String(id));
+      setRolloverEnabled(Boolean(savedBudget?.rollover_enabled));
+    }
+  }, [category_id, categories, period_type, id, budgets]);
 
   const handleSaveBudget = async () => {
     if (!selectedCategory) {
@@ -58,7 +63,7 @@ export default function SetBudgetScreen() {
     setLoading(true);
     
     if (id) {
-      await updateBudget(id as string, parseFloat(amount));
+      await updateBudget(id as string, parseFloat(amount), rolloverEnabled);
       setLoading(false);
       await fetchTransactions();
       Alert.alert("Ayos paps!", "Na-update na ang budget.", [{ text: "Solid!", onPress: () => router.back() }]);
@@ -73,6 +78,7 @@ export default function SetBudgetScreen() {
         category_id: selectedCategory?.id, 
         amount: parseFloat(amount),
         period_type: selectedPeriod,
+        rollover_enabled: rolloverEnabled,
       };
 
       const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
@@ -147,6 +153,23 @@ export default function SetBudgetScreen() {
             <Text style={styles.currencySymbol}>₱</Text>
             <TextInput style={styles.input} keyboardType="numeric" value={amount} onChangeText={setAmount} />
           </View>
+          <Text style={styles.helperText}>
+            This limit repeats every {selectedPeriod.replace('annual', 'year').replace('monthly', 'month').replace('weekly', 'week')}.
+          </Text>
+        </View>
+
+        <View style={styles.formCard}>
+          <View style={styles.rolloverHeader}>
+            <View style={styles.rolloverCopy}>
+              <Text style={styles.rolloverTitle}>Carry balance forward</Text>
+              <Text style={styles.helperText}>
+                {rolloverEnabled
+                  ? 'Unused money adds to the next period. Spending above the available amount reduces the next period’s limit.'
+                  : 'Off: each period starts with this limit and no carried balance.'}
+              </Text>
+            </View>
+            <Switch value={rolloverEnabled} onValueChange={setRolloverEnabled} trackColor={{ false: '#D1D9D4', true: FINAI_SAGE }} thumbColor={rolloverEnabled ? FINAI_DEEP_GREEN : '#F4F4F4'} />
+          </View>
         </View>
 
         <View style={styles.actionContainer}>
@@ -182,6 +205,10 @@ const styles = StyleSheet.create({
   inputWrapper: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#FAFBFB', borderRadius: 12, borderWidth: 1, borderColor: '#E6ECE9', paddingHorizontal: 14 },
   currencySymbol: { fontSize: 20, fontWeight: '700', color: FINAI_DEEP_GREEN, marginRight: 8 },
   input: { flex: 1, color: FINAI_DEEP_GREEN, paddingVertical: 14, fontSize: 18, fontWeight: '700' },
+  helperText: { color: FINAI_SAGE, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  rolloverHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
+  rolloverCopy: { flex: 1 },
+  rolloverTitle: { color: FINAI_DEEP_GREEN, fontSize: 14, fontWeight: '700' },
   actionContainer: { marginTop: 12 },
   saveButton: { backgroundColor: FINAI_DEEP_GREEN, paddingVertical: 16, borderRadius: 14, alignItems: 'center', elevation: 3 },
   saveButtonText: { color: '#FFF', fontSize: 15, fontWeight: '700' },

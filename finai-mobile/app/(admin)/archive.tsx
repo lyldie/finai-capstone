@@ -5,6 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
+import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getGoalEmoji } from '../../utils/goalEmoji';
+import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -153,11 +157,17 @@ export default function AdminArchiveScreen() {
               <Text style={styles.comingSoonText}>Malinis ang admin archive bin para dito.</Text>
             </View>
           }
-          renderItem={({ item }) => (
+          renderItem={({ item }) => {
+            const presetEmoji = activeTab === 'Accounts'
+              ? getDisplayEmoji(item.icon, getAccountEmoji(item.name || 'account'))
+              : activeTab === 'GoalTypes'
+                ? getDisplayEmoji(item.icon, getGoalEmoji(item.name || ''))
+                : getDisplayEmoji(item.icon, getCategoryEmoji(item.name || '', item.type));
+            return (
             <View style={styles.card}>
               <View style={styles.cardLeft}>
                 <View style={styles.cardInfo}>
-                  <Text style={styles.cardCategory} numberOfLines={1}>{item.name || 'Untitled'}</Text>
+                  <Text style={styles.cardCategory} numberOfLines={1}>{presetEmoji}  {item.name || 'Untitled'}</Text>
                   <Text style={styles.cardNote} numberOfLines={1}>
                     {item.type ? `Type: ${item.type}` : 'Preset Item'}
                   </Text>
@@ -176,7 +186,8 @@ export default function AdminArchiveScreen() {
                 </View>
               </View>
             </View>
-          )}
+          );
+          }}
         />
       )}
     </View>

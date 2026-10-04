@@ -42,14 +42,16 @@ def _amount(item: dict) -> float:
         return 0.0
 
 
-def _goal_projection(goal: dict, today: date) -> dict:
+def _goal_projection(goal: dict, today: date, monthly_available_amount: float) -> dict:
     saved = float(goal.get("current_savings", 0) or 0)
     target = float(goal.get("target_amount", 0) or 0)
     remaining = max(target - saved, 0.0)
     try:
         target_date = date.fromisoformat(str(goal.get("target_date", ""))[:10])
         days_left = (target_date - today).days
-        monthly_saving = round(remaining * 30.4375 / max(days_left, 1), 2)
+        monthly_saving = 0.0 if remaining <= 0 else (
+            round(remaining * 30.4375 / days_left, 2) if days_left > 0 else None
+        )
     except (TypeError, ValueError):
         days_left, monthly_saving = None, None
     return {
@@ -59,7 +61,24 @@ def _goal_projection(goal: dict, today: date) -> dict:
         "remaining": round(remaining, 2),
         "days_to_target": days_left,
         "suggested_monthly_saving": monthly_saving,
+        "target_date_passed": bool(remaining > 0 and days_left is not None and days_left < 0),
+        "target_due_today": bool(remaining > 0 and days_left == 0),
+        "required_monthly_saving_exceeds_reported_available_amount": bool(
+            monthly_saving is not None and monthly_available_amount > 0 and monthly_saving > monthly_available_amount
+        ),
     }
+
+
+def _trailing_category_average(daily: dict, category_keys: List[str], end_exclusive: date, days: int = 28) -> tuple[float, int]:
+    """Mean category spend per calendar day; missing dates count as zero-spend days."""
+    amounts = []
+    active_days = 0
+    for offset in range(days, 0, -1):
+        key = (end_exclusive - timedelta(days=offset)).isoformat()
+        amount = sum(float(daily.get(key, {}).get("categories", {}).get(category_key, 0.0)) for category_key in category_keys)
+        amounts.append(amount)
+        active_days += amount > 0
+    return (sum(amounts) / days if days else 0.0), active_days
 
 
 def _window_totals(daily: dict, start: date, end: date) -> dict:
@@ -70,7 +89,8 @@ def _window_totals(daily: dict, start: date, end: date) -> dict:
         totals = daily.get(cursor.isoformat(), {})
         income += totals.get("income", 0.0)
         expense += totals.get("expense", 0.0)
-        for category, amount in totals.get("categories", {}).items():
+        for category_key, amount in totals.get("categories", {}).items():
+            category = totals.get("category_names", {}).get(category_key, category_key)
             category_totals[category] = category_totals.get(category, 0.0) + amount
         cursor += timedelta(days=1)
     return {
@@ -151,6 +171,11 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
             "_id": {
                 "date": "$date",
                 "type": {"$toLower": {"$ifNull": ["$type", ""]}},
+                "category_key": {"$cond": [
+                    {"$ifNull": ["$category_id", False]},
+                    {"$toString": "$category_id"},
+                    {"$concat": ["legacy:", {"$ifNull": ["$category", "Uncategorized"]}]},
+                ]},
                 "category": {"$ifNull": ["$category", "Uncategorized"]},
             },
             "amount": {"$sum": {"$convert": {
@@ -162,6 +187,7 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
         {"$limit": MAX_DAILY_CATEGORY_BUCKETS},
     ])
     buckets = await daily_cursor.to_list(length=MAX_DAILY_CATEGORY_BUCKETS)
+    history_truncated = len(buckets) >= MAX_DAILY_CATEGORY_BUCKETS
     daily = {}
     for bucket in buckets:
         key = str(bucket["_id"].get("date", ""))[:10]
@@ -169,7 +195,7 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
             date.fromisoformat(key)
         except ValueError:
             continue
-        day = daily.setdefault(key, {"income": 0.0, "expense": 0.0, "categories": {}, "records": 0})
+        day = daily.setdefault(key, {"income": 0.0, "expense": 0.0, "categories": {}, "category_names": {}, "records": 0})
         amount = float(bucket.get("amount", 0) or 0)
         kind = bucket["_id"].get("type")
         day["records"] += int(bucket.get("count", 0))
@@ -178,7 +204,9 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
         elif kind == "expense":
             day["expense"] += amount
             category = str(bucket["_id"].get("category") or "Uncategorized")
-            day["categories"][category] = day["categories"].get(category, 0.0) + amount
+            category_key = str(bucket["_id"].get("category_key") or f"legacy:{category}")
+            day["categories"][category_key] = day["categories"].get(category_key, 0.0) + amount
+            day["category_names"][category_key] = category
 
     period_totals = _period_analytics(daily, today)
     start_90d = (today - timedelta(days=89)).isoformat()
@@ -195,7 +223,7 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
     category_totals = totals_90d["expense_by_category"]
 
     profile = await db.users.find_one({"_id": ObjectId(user_id)}, {"monthly_income": 1})
-    monthly_income = float((profile or {}).get("monthly_income", 0) or 0)
+    monthly_available_amount = float((profile or {}).get("monthly_income", 0) or 0)
     savings_rate = round((total_income - total_expense) / total_income * 100, 1) if total_income else None
     expense_days = sum(
         1 for day_key, day in daily.items()
@@ -204,32 +232,66 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
     daily_expense_rate = round(total_expense / 90, 2)
     active_days_rate = round(total_expense / max(expense_days, 1), 2)
 
-    budget_usage = [item for item in await list_budget_usage(user_id) if item["end_date"] >= today_key]
+    # Only forecast budgets that are active today. A future-dated budget has no
+    # observed days yet, so treating its zero spend as a current pace produces a
+    # meaningless period-end projection.
+    budget_usage = [
+        item for item in await list_budget_usage(user_id)
+        if item["start_date"] <= today_key <= item["end_date"]
+    ]
     budget_summary = []
     for item in budget_usage:
         start, end = date.fromisoformat(item["start_date"]), date.fromisoformat(item["end_date"])
         elapsed_days = max((min(today, end) - start).days + 1, 1)
         period_days = max((end - start).days + 1, 1)
         remaining_days = max((end - today).days, 0)
-        pace = item["spent"] / elapsed_days
-        projected = round(pace * period_days, 2)
-        confidence = "low" if elapsed_days < 7 else "medium" if elapsed_days < 21 else "higher"
+        current_period_daily_rate = item["spent"] / elapsed_days
+        effective_limit = item.get("available_limit", item["amount"])
+        category_keys = [str(item.get("category_id", "")), f"legacy:{item['category_name']}"]
+        historical_daily_rate, historical_active_days = _trailing_category_average(
+            daily, category_keys, today, days=28,
+        )
+        # Blend the current budget's observed pace with the recent calendar-day
+        # average. The history weight grows with sample size and period progress;
+        # zero-spend days are included so occasional purchases don't look daily.
+        history_weight = min(historical_active_days / 14.0, 0.6) * min(elapsed_days / 7.0, 1.0)
+        current_pace_projection = round(current_period_daily_rate * period_days, 2)
+        projected = round(item["spent"] + (
+            current_period_daily_rate * (1.0 - history_weight) + historical_daily_rate * history_weight
+        ) * remaining_days, 2)
+        if history_truncated:
+            confidence = "low"
+        elif elapsed_days >= 14 and historical_active_days >= 8 and item["period_type"] not in {"weekly", "annual"}:
+            confidence = "high"
+        elif elapsed_days >= 5 and historical_active_days >= 3:
+            confidence = "medium"
+        else:
+            confidence = "low"
         budget_summary.append({
             "category": item["category_name"],
             "period": item["period_type"],
-            "limit": item["amount"],
+            "limit": effective_limit,
+            "base_limit": item["amount"],
+            "rollover_enabled": item.get("rollover_enabled", False),
+            "rollover_in": item.get("rollover_in", 0.0),
             "spent": item["spent"],
             "percentage_used": item["percentage_used"],
-            "projected_spend_at_current_pace": projected,
-            "forecast_over_limit": projected > item["amount"],
+            "projected_spend_at_current_pace": current_pace_projection,
+            "projected_period_end_spend": projected,
+            "current_period_daily_rate": round(current_period_daily_rate, 2),
+            "trailing_28_day_daily_average": round(historical_daily_rate, 2),
+            "trailing_28_day_active_days": historical_active_days,
+            "historical_rate_weight": round(history_weight, 2),
+            "forecast_method": "actual spent plus a sample-weighted blend of current-period and trailing 28-day daily rates",
+            "forecast_over_limit": projected > effective_limit,
             "projection_confidence": confidence,
             "projection_elapsed_days": elapsed_days,
             "days_remaining": remaining_days,
-            "daily_remaining_allowance": round(max(item["amount"] - item["spent"], 0) / max(remaining_days, 1), 2),
+            "daily_remaining_allowance": round(max(effective_limit - item["spent"], 0) / max(remaining_days, 1), 2),
         })
 
     goals = await db.goals.find({"user_id": user_id, "is_archived": {"$ne": True}}).to_list(length=50)
-    goal_summary = [_goal_projection(goal, today) for goal in goals]
+    goal_summary = [_goal_projection(goal, today, monthly_available_amount) for goal in goals]
 
     budget_suggestions = []
     for budget in budget_summary:
@@ -248,21 +310,41 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
     goal_suggestions = [
         {"priority": "goal", "suggestion": f"To reach {goal['target']} by its target date, plan for about "
          f"PHP {goal['suggested_monthly_saving']:.2f} per month."}
-        for goal in goal_summary if goal["remaining"] > 0 and goal["suggested_monthly_saving"] is not None
+        for goal in goal_summary
+        if goal["remaining"] > 0 and goal["suggested_monthly_saving"] is not None
+        and not goal["required_monthly_saving_exceeds_reported_available_amount"]
     ]
+    for goal in goal_summary:
+        if goal["target_date_passed"]:
+            goal_suggestions.append({
+                "priority": "review_goal",
+                "suggestion": f"{goal['target']} target date has passed with PHP {goal['remaining']:.2f} remaining. Consider setting a new date or revising the target.",
+            })
+        elif goal["target_due_today"]:
+            goal_suggestions.append({
+                "priority": "review_goal",
+                "suggestion": f"{goal['target']} target date is today with PHP {goal['remaining']:.2f} remaining. Review whether to extend the date or adjust the target.",
+            })
+        elif goal["required_monthly_saving_exceeds_reported_available_amount"]:
+            goal_suggestions.append({
+                "priority": "review_goal",
+                "suggestion": f"The monthly saving pace needed for {goal['target']} is above your reported monthly money baseline. Consider a later target date or lower target; actual affordability also depends on expenses not recorded here.",
+            })
 
     analytics = {
         "as_of_date_philippines": today_key,
         "period_totals_and_comparisons": period_totals,
         "history_note": "Period totals are calculated from active recorded transactions; missing records make totals incomplete.",
-        "analytics_history_truncated": len(buckets) >= MAX_DAILY_CATEGORY_BUCKETS,
+        "analytics_history_truncated": history_truncated,
         "history_window_days_for_category_trends": 90,
+        "budget_forecast_history_days": 28,
+        "budget_forecast_uses_zero_spend_days": True,
         "record_count_in_recent_transactions": len(transactions),
         "average_expense_per_calendar_day_90d": daily_expense_rate,
         "average_expense_per_day_with_expense_records_90d": active_days_rate,
         "recorded_income_minus_expenses_90d": round(total_income - total_expense, 2),
         "savings_rate_percent_90d": savings_rate,
-        "user_reported_monthly_income": round(monthly_income, 2),
+        "user_reported_monthly_available_amount": round(monthly_available_amount, 2),
         "expense_by_category_90d": category_totals,
         "budgets_and_current_pace_forecasts": budget_summary,
         "goals_and_required_savings_pace": goal_summary,
@@ -293,14 +375,20 @@ Guidance rules:
   is not currently included instead of guessing.
 - Compare this month only with previous_month_to_same_day, so partial months are not
   compared with a complete month. Explain when comparison data is zero or unavailable.
-- Forecasts are straight-line estimates from recorded data, not guarantees. State the
-  date window, current budget period, or other basis; include projection_confidence and
-  projection_elapsed_days when discussing a budget projection. Flag sparse data.
+- Budget forecasts combine actual period spending, the current period's daily pace, and
+  the trailing 28-day category average. They are estimates, not guarantees. State the
+  period and method; include projection_confidence and projection_elapsed_days when
+  discussing a forecast. Flag sparse data and never describe low confidence as certain.
+- When a budget has rollover enabled, `limit` is the current available amount after
+  carry-in, while `base_limit` is the recurring planned amount. Explain the carry-in
+  separately when it affects the outlook; do not call rollover funds new income.
 - For budget outlook, explain actual spent, projected period-end spending, and remaining
   daily allowance where relevant. Never claim the user is on track if the projection
   exceeds the limit.
 - For savings goals, compare the remaining amount and target date with the suggested
-  monthly saving pace. Mention when a target date has passed or data is incomplete.
+  monthly saving pace. The optional monthly money baseline may include wages, allowance,
+  or support; if it is missing or zero, do not assume the user has no resources. Mention
+  when a target date has passed or data is incomplete.
 - Give at most three concrete, affordable next steps tied to their numbers. Prefer
   small adjustments, prioritization, and trade-offs; do not shame or pressure them.
 - Ask a brief follow-up if an important fact is missing. Do not invent bills, income,

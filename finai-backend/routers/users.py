@@ -16,7 +16,7 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 class UpdateIncomeSchema(BaseModel):
-    monthly_income: float = Field(..., gt=0)
+    monthly_income: float = Field(..., ge=0, allow_inf_nan=False)
 
 
 class ChangePinSchema(BaseModel):

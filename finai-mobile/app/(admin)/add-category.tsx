@@ -18,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import EmojiPicker from '../../components/EmojiPicker';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -100,21 +101,9 @@ export default function AddCategoryScreen() {
           
           {/* Emoji Picker Section */}
           <View style={styles.previewRow}>
-            <TextInput
-              style={[
-                styles.previewCircle, 
-                { backgroundColor: type === 'income' ? INCOME_TINT : EXPENSE_TINT }
-              ]}
-              value={emoji}
-              onChangeText={(text) => {
-                setEmojiTouched(true);
-                setEmoji(text.slice(-2));
-              }}
-              maxLength={4}
-              textAlign="center"
-            />
+            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getCategoryEmoji(name || 'category', type)} tint={type === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
             <View style={{ flex: 1 }}>
-              <Text style={styles.previewHint}>Tap icon to change emoji</Text>
+              <Text style={styles.previewHint}>Choose an icon for this category</Text>
               {emojiTouched && (
                 <TouchableOpacity onPress={() => setEmojiTouched(false)}>
                   <Text style={styles.resetLink}>Reset to suggested</Text>

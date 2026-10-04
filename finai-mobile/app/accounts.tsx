@@ -12,6 +12,7 @@ import { Account } from '../context/TransactionContext';
 
 // Import natin ang emoji helper
 import { getAccountEmoji } from '../utils/accountEmoji';
+import EmojiPicker, { getDisplayEmoji } from '../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -37,6 +38,7 @@ export default function PersonalAccountsScreen() {
   const [selectedTemplate, setSelectedTemplate] = useState<AccountTemplate | null>(null);
   const [accountName, setAccountName] = useState('');
   const [openingBalance, setOpeningBalance] = useState('0');
+  const [accountEmoji, setAccountEmoji] = useState(getAccountEmoji('account'));
 
   const loadAccounts = useCallback(async () => {
     setIsLoading(true);
@@ -66,6 +68,7 @@ export default function PersonalAccountsScreen() {
     setSelectedTemplate(templates[0] || null);
     setAccountName(templates[0]?.name || '');
     setOpeningBalance('0');
+    setAccountEmoji(getDisplayEmoji(templates[0]?.icon, getAccountEmoji(templates[0]?.name || 'account')));
     setIsModalVisible(true);
   };
 
@@ -74,6 +77,7 @@ export default function PersonalAccountsScreen() {
     setEditingAccount(account);
     setAccountName(account.name);
     setOpeningBalance(String(account.initial_balance || 0));
+    setAccountEmoji(getDisplayEmoji(account.icon, getAccountEmoji(account.name)));
     
     // Hanapin kung may tumutugmang template o gamitin ang icon niya
     const matchedTemplate = templates.find(t => t.name.toLowerCase() === account.name.toLowerCase()) || templates[0] || null;
@@ -84,6 +88,7 @@ export default function PersonalAccountsScreen() {
   const selectTemplate = (template: AccountTemplate) => {
     setSelectedTemplate(template);
     setAccountName(template.name);
+    setAccountEmoji(getDisplayEmoji(template.icon, getAccountEmoji(template.name)));
   };
 
   // Save Account (Gumagana pareho sa CREATE at UPDATE)
@@ -122,12 +127,12 @@ export default function PersonalAccountsScreen() {
       const payload = editingAccount ? {
         name,
         initial_balance: initialBalance,
-        icon: editingAccount.icon || getAccountEmoji(name),
+        icon: accountEmoji || getAccountEmoji(name),
         user_id: userId
       } : {
         name,
         initial_balance: initialBalance,
-        icon: selectedTemplate?.icon || getAccountEmoji(name),
+        icon: accountEmoji || getAccountEmoji(name),
         user_id: userId,
         parent_template_id: selectedTemplate?.id,
       };
@@ -205,7 +210,7 @@ export default function PersonalAccountsScreen() {
             <View style={styles.accountCard}>
               <View style={styles.cardInfo}>
                 <View style={styles.accountIconBox}>
-                  <Text style={{ fontSize: 24 }}>{item.icon || getAccountEmoji(item.name)}</Text>
+                  <Text style={{ fontSize: 24 }}>{getDisplayEmoji(item.icon, getAccountEmoji(item.name))}</Text>
                 </View>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <Text style={styles.accountName}>{item.name}</Text>
@@ -250,7 +255,7 @@ export default function PersonalAccountsScreen() {
                       style={[styles.template, selectedTemplate?.id === template.id && styles.templateSelected]} 
                       onPress={() => selectTemplate(template)}
                     >
-                      <Text style={{ fontSize: 16 }}>{template.icon || getAccountEmoji(template.name)}</Text>
+                      <Text style={{ fontSize: 16 }}>{getDisplayEmoji(template.icon, getAccountEmoji(template.name))}</Text>
                       <Text style={[styles.templateText, selectedTemplate?.id === template.id && styles.templateTextSelected]}>
                         {template.name}
                       </Text>
@@ -260,6 +265,11 @@ export default function PersonalAccountsScreen() {
               </>
             )}
             
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 }}>
+              <EmojiPicker value={accountEmoji} onChange={setAccountEmoji} fallback={getAccountEmoji(accountName || 'account')} tint={ACCOUNT_TINT} accessibilityLabel="Choose personal account emoji" />
+              <Text style={{ flex: 1, color: SAGE, fontSize: 13, fontWeight: '600' }}>Choose an icon for this account</Text>
+            </View>
+
             <Text style={styles.label}>Personal Account Name</Text>
             <TextInput 
               value={accountName} 

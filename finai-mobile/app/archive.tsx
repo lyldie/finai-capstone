@@ -5,6 +5,10 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getAccountEmoji } from '../utils/accountEmoji';
+import { getCategoryEmoji } from '../utils/categoryEmoji';
+import { getGoalEmoji } from '../utils/goalEmoji';
+import { getDisplayEmoji } from '../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -39,9 +43,26 @@ export default function ArchiveScreen() {
         endpoint = `${API_URL}/api/goals/?user_id=${userId}&archived=true`;
       }
 
-      const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token || ''}` } });
-      if (res.ok) {
-        const data = await res.json();
+      let data: any;
+      if (activeTab === 'Transactions') {
+        const all: any[] = [];
+        let offset = 0;
+        while (true) {
+          const pageRes = await fetch(`${endpoint}&limit=500&offset=${offset}`, { headers: { Authorization: `Bearer ${token || ''}` } });
+          if (!pageRes.ok) throw new Error('Failed to load archived transactions.');
+          const page = await pageRes.json();
+          if (!Array.isArray(page.data)) throw new Error('Invalid archived transactions response.');
+          all.push(...page.data);
+          if (!page.has_more || page.data.length === 0) break;
+          offset += page.data.length;
+        }
+        data = { data: all };
+      } else {
+        const res = await fetch(endpoint, { headers: { Authorization: `Bearer ${token || ''}` } });
+        if (!res.ok) throw new Error(`Failed to load archived ${activeTab.toLowerCase()}.`);
+        data = await res.json();
+      }
+      if (data) {
         // Frontend filtering para masiguradong ang mga naka-archive lang ang lalabas
         const filtered = Array.isArray(data)
           ? data.filter((item: any) => item.is_archived === true || item.archived === true)
@@ -168,12 +189,21 @@ export default function ArchiveScreen() {
             const isIncome = item.type === 'Income';
             const isNeutral = item.type === 'Transfer' || item.type === 'Contribution';
             const color = isIncome ? INCOME : isNeutral ? TEAL : EXPENSE;
+            const itemEmoji = activeTab === 'Accounts'
+              ? getDisplayEmoji(item.icon, getAccountEmoji(item.name || 'account'))
+              : activeTab === 'Goals'
+                ? getGoalEmoji(item.target_name || '')
+                : item.type === 'Contribution' || item.goal_id
+                  ? '🎯'
+                  : item.type === 'Transfer'
+                    ? '🔄'
+                    : getCategoryEmoji(item.category || '', String(item.type || 'Expense').toLowerCase());
 
             return (
               <View style={styles.card}>
                 <View style={styles.cardLeft}>
                   <View style={styles.cardInfo}>
-                    <Text style={styles.cardCategory} numberOfLines={1}>{item.category || item.name || 'Untitled'}</Text>
+                    <Text style={styles.cardCategory} numberOfLines={1}>{itemEmoji}  {item.category || item.target_name || item.name || 'Untitled'}</Text>
                     <Text style={styles.cardNote} numberOfLines={1}>
                       {activeTab === 'Transactions' ? `${item.note || 'No description'} • ${item.date}` : `Initial Balance: ₱${item.initial_balance || item.target_amount || 0}`}
                     </Text>

@@ -6,10 +6,11 @@ import { API_URL } from '../config';
 import { useAuth } from './AuthContext';
 
 export type TransactionType = 'Income' | 'Expense' | 'Transfer' | 'Contribution';
-export type Transaction = { id: string; amount: string; category: string; note: string; type: TransactionType; account: string; to_account?: string; date: string; goal_id?: string; };
+export type Transaction = { id: string; amount: string; category: string; category_id?: string; note: string; type: TransactionType; account: string; account_id?: string; to_account?: string; to_account_id?: string; date: string; goal_id?: string; };
 export type Category = { id: string; name: string; type: string; icon: string; };
+export type GoalTypePreset = { id: string; name: string; icon?: string };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
-export type Budget = { id: string; category_id: string; category_name?: string; amount: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
+export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
 export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
 
 export type Goal = {  
@@ -29,6 +30,7 @@ type TransactionContextType = {
   budgets: Budget[];
   notifications: AppNotification[];
   goals: Goal[];
+  goalTypes: GoalTypePreset[];
   isLoading: boolean;
   addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<void>;
   updateTransaction: (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<void>; 
@@ -50,20 +52,13 @@ type TransactionContextType = {
 
 const TransactionContext = createContext<TransactionContextType | undefined>(undefined);
 
-// HELPER: Philippine local date, read directly from the device's local date components.
-// FIX: the previous version did `d.setHours(d.getHours() + 8)` before formatting -- but
-// .getHours() already returns the PHONE's local hour, which for a PH user's device is
-// already PHT. Adding 8 more hours on top of an already-correct local time double-shifts
-// it, rolling the date forward to tomorrow for anything roughly after 4 PM local time.
-// Reading the local Y/M/D components directly (same approach as two.tsx's formatLocalDate)
-// is both simpler and correct, since it relies on the device's own local timezone setting
-// rather than re-deriving it.
+// Use the backend's Philippine business date even if the phone timezone differs.
 const getPhDateString = () => {
-  const d = new Date();
-  const year = d.getFullYear();
-  const month = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
 export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -74,6 +69,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
+  const [archivedGoalSavings, setArchivedGoalSavings] = useState(0);
+  const [archivedAccountBalance, setArchivedAccountBalance] = useState(0);
+  const [goalTypes, setGoalTypes] = useState<GoalTypePreset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const activeUserId = useRef<string | null>(null);
   const fetchRequestId = useRef(0);
@@ -92,6 +90,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setBudgets([]);
         setNotifications([]);
         setGoals([]);
+        setArchivedGoalSavings(0);
+        setArchivedAccountBalance(0);
+        setGoalTypes([]);
         if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
         return; 
       }
@@ -103,6 +104,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setBudgets([]);
         setNotifications([]);
         setGoals([]);
+        setArchivedGoalSavings(0);
+        setArchivedAccountBalance(0);
       }
       const token = user?.token;
       const authHeaders = { Authorization: `Bearer ${token || ''}` };
@@ -134,13 +137,29 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (cachedAccounts) setAccounts(cachedAccounts);
 
       // 2. BACKGROUND SYNC: Subukan kunin ang latest sa server nang may safe fallbacks
-      const [transRes, catRes, accRes, budRes, goalsRes, notificationRes] = await Promise.all([
-        fetch(`${API_URL}/get-expenses?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : { status: "Error", data: [] }).catch(() => ({ status: "Error", data: [] })),
+      const fetchAllTransactions = async () => {
+        const all: any[] = [];
+        let offset = 0;
+        while (true) {
+          const response = await fetch(`${API_URL}/get-expenses?user_id=${userId}&limit=500&offset=${offset}`, { headers: authHeaders });
+          if (!response.ok) throw new Error('Could not load transaction history.');
+          const page = await response.json();
+          if (page.status !== 'Success' || !Array.isArray(page.data)) throw new Error('Invalid transaction history response.');
+          all.push(...page.data);
+          if (!page.has_more || page.data.length === 0) return { status: 'Success', data: all };
+          offset += page.data.length;
+        }
+      };
+      const [transRes, catRes, accRes, archivedAccountsRes, budRes, goalsRes, archivedGoalsRes, notificationRes, goalTypesRes] = await Promise.all([
+        fetchAllTransactions(),
         fetch(`${API_URL}/api/categories/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/accounts/user/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/accounts/user/${userId}?archived=true`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/budgets/get-all/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/goals/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
-        fetch(`${API_URL}/api/notifications/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => [])
+        fetch(`${API_URL}/api/goals/?user_id=${userId}&archived=true`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/notifications/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
+        fetch(`${API_URL}/api/goal-types/`).then(res => res.ok ? res.json() : []).catch(() => [])
       ]);
 
       if (requestId !== fetchRequestId.current || activeUserId.current !== userId) return;
@@ -150,15 +169,21 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       setAccounts(formattedAccounts);
       await AsyncStorage.setItem(accountCacheKey, JSON.stringify(formattedAccounts)); // Cache
 
+      const parsedArchivedAccounts = Array.isArray(archivedAccountsRes) ? archivedAccountsRes : (archivedAccountsRes.data || []);
+      setArchivedAccountBalance(parsedArchivedAccounts.reduce((sum: number, account: any) => sum + (Number(account.current_balance) || 0), 0));
+
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         const formattedTrans = transRes.data.map((i: any) => ({
           id: i._id || i.id, 
           amount: i.amount?.toString() || '0', 
           category: i.category || 'General',
+          category_id: i.category_id ? String(i.category_id) : undefined,
           note: i.title || i.note || i.item_name || i.category || '', 
           type: i.type || 'Expense',
           account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
+          account_id: i.account_id ? String(i.account_id) : undefined,
           to_account: i.to_account || '', 
+          to_account_id: i.to_account_id ? String(i.to_account_id) : undefined,
           goal_id: i.goal_id ? String(i.goal_id) : undefined,
           date: i.date ? i.date.split('T')[0] : getPhDateString() // Ginamit ang PH time helper
         }));
@@ -176,6 +201,12 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       
       const parsedGoals = Array.isArray(goalsRes) ? goalsRes : (goalsRes.data || []);
       setGoals(parsedGoals.map((g: any) => ({ ...g, id: g._id || g.id })));
+
+      const parsedArchivedGoals = Array.isArray(archivedGoalsRes) ? archivedGoalsRes : (archivedGoalsRes.data || []);
+      setArchivedGoalSavings(parsedArchivedGoals.reduce((sum: number, goal: any) => sum + (Number(goal.current_savings) || 0), 0));
+
+      const parsedGoalTypes = Array.isArray(goalTypesRes) ? goalTypesRes : (goalTypesRes.data || []);
+      setGoalTypes(parsedGoalTypes.map((item: any) => ({ ...item, id: item._id || item.id })));
 
       const parsedNotifications = Array.isArray(notificationRes) ? notificationRes : (notificationRes.data || []);
       setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
@@ -289,12 +320,12 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } catch (error) { console.error('Notification read error:', error); }
   };
 
-  const updateBudget = async (id: string, amount: number) => {
+  const updateBudget = async (id: string, amount: number, rollover_enabled?: boolean) => {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const token = await AsyncStorage.getItem('user_token');
-      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, user_id: userId }) });
+      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, user_id: userId }) });
       if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to update budget.");
     } catch (e) { console.error(e); }
   };
@@ -437,11 +468,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     const totalGoalSavings = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
 
-    return totalFromAccounts + totalGoalSavings;
-  }, [accounts, getAccountBalance, totalExpense, totalIncome, goals]); 
+    return totalFromAccounts + archivedAccountBalance + totalGoalSavings + archivedGoalSavings;
+  }, [accounts, getAccountBalance, totalExpense, totalIncome, goals, archivedAccountBalance, archivedGoalSavings]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, goalTypes, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

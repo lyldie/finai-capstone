@@ -21,11 +21,13 @@ async def list_notifications(user_id: str, unread_only: bool = False, current_us
 
 @router.patch("/{notification_id}/read")
 async def mark_notification_read(notification_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        oid = ObjectId(notification_id)
-    except Exception:
+    if ObjectId.is_valid(notification_id):
+        notification_key = ObjectId(notification_id)
+    elif len(notification_id) == 64 and all(char in "0123456789abcdef" for char in notification_id.lower()):
+        notification_key = notification_id.lower()
+    else:
         raise HTTPException(status_code=400, detail="Invalid notification ID")
-    result = await db.notifications.update_one({"_id": oid, "user_id": current_user["id"]}, {"$set": {"is_read": True}})
+    result = await db.notifications.update_one({"_id": notification_key, "user_id": current_user["id"]}, {"$set": {"is_read": True}})
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"status": "Success"}

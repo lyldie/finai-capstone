@@ -9,6 +9,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
 import { getAccountEmoji } from '../../utils/accountEmoji';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -28,6 +29,7 @@ export default function HomeDashboard() {
     totalExpense,
     fetchTransactions,
     accounts,
+    categories,
     budgets,
     getAccountBalance,
     isLoading
@@ -49,10 +51,11 @@ export default function HomeDashboard() {
   }, []);
 
   const localDateKey = (value: Date) => {
-    const year = value.getFullYear();
-    const month = String(value.getMonth() + 1).padStart(2, '0');
-    const day = String(value.getDate()).padStart(2, '0');
-    return `${year}-${month}-${day}`;
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+    }).formatToParts(value);
+    const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+    return `${part('year')}-${part('month')}-${part('day')}`;
   };
   const todayKey = localDateKey(new Date());
   const mostUsedBudget = useMemo(() => budgets
@@ -70,7 +73,7 @@ export default function HomeDashboard() {
     const period = mostUsedBudget.period_type || 'budget';
     const used = mostUsedBudget.usage;
     const spent = Number(mostUsedBudget.spent) || 0;
-    const limit = Number(mostUsedBudget.amount) || 0;
+    const limit = Number(mostUsedBudget.available_limit ?? mostUsedBudget.amount) || 0;
     const remaining = mostUsedBudget.remainingAmount;
     if (used >= 100) return `${category} is over its ${period} limit. You have spent ₱${spent.toLocaleString()} of ₱${limit.toLocaleString()}.`;
     if (used >= 90) return `${category} is close to its ${period} limit (${used.toFixed(0)}% used). ₱${remaining.toLocaleString()} remains.`;
@@ -101,12 +104,6 @@ export default function HomeDashboard() {
     if (!dateString) return '';
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-
-  // HELPER PARA I-CHECK KUNG TUNAY NA EMOJI ANG TEXT (Para sa accounts)
-  const isEmoji = (text: string) => {
-    if (!text) return false;
-    return !/^[a-zA-Z0-9\s.,-]+$/.test(text); // Kung puro letters/numbers lang, hindi emoji 'yun
   };
 
   return (
@@ -212,7 +209,7 @@ export default function HomeDashboard() {
             {accounts.map((acc, idx) => {
               const liveBalance = getAccountBalance(acc.name);
               // LILINISIN NATIN YUNG "walle" ISSUE DITO
-              const displayIcon = acc.icon && isEmoji(acc.icon) ? acc.icon : getAccountEmoji(acc.name);
+              const displayIcon = getDisplayEmoji(acc.icon, getAccountEmoji(acc.name));
 
               return (
                 <View key={acc.id || idx} style={styles.accountCard}>
@@ -257,10 +254,11 @@ export default function HomeDashboard() {
               const bgColor = isTransfer || isContribution ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
               const prefix = isTransfer ? '' : isIncome ? '+' : '-';
               
+              const categoryIcon = categories.find((category) => category.name === item.category && category.type === item.type.toLowerCase())?.icon;
               // LILINISIN DIN YUNG MGA LUMANG TEXT ICONS DITO
               const transactionEmoji = isContribution ? '🎯' : isTransfer
                 ? '🔄' 
-                : getCategoryEmoji(item.category, item.type.toLowerCase());
+                : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
               return (
                 <View key={item.id || index} style={styles.recentFloatingCard}>

@@ -107,7 +107,7 @@ export default function SignupScreen() {
   };
 
   const showPrivacyPolicy = () => {
-    Alert.alert("Data Privacy", "We only collect Name and Email for FinAi account creation.");
+    Alert.alert("Data Privacy", "Account registration uses your name, email, and password. After email verification, you can set your app PIN. Your monthly money baseline and first savings goal are optional and can be skipped or added later.");
   };
 
   return (

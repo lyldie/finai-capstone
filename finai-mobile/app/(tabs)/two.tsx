@@ -10,6 +10,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -25,6 +26,14 @@ const formatLocalDate = (value: Date) => {
   const month = String(value.getMonth() + 1).padStart(2, '0');
   const day = String(value.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+};
+
+const philippineTodayKey = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
 const dateFromIso = (value: string) => {
@@ -55,7 +64,7 @@ export default function TabTwoScreen() {
   const [category, setCategory] = useState('Select Category');
   const [account, setAccount] = useState('');
   const [toAccount, setToAccount] = useState('');
-  const [date, setDate] = useState(formatLocalDate(new Date()));
+  const [date, setDate] = useState(philippineTodayKey());
   const [scannerUserId, setScannerUserId] = useState<string | undefined>();
   const [isSaving, setIsSaving] = useState(false);
 
@@ -74,7 +83,7 @@ export default function TabTwoScreen() {
     setCategory('Select Category');
     setAccount(accounts[0]?.name || '');
     setToAccount(accounts.find((item) => item.name !== accounts[0]?.name)?.name || '');
-    setDate(formatLocalDate(new Date()));
+    setDate(philippineTodayKey());
     setType('Expense');
   }, [accounts]);
 
@@ -148,7 +157,7 @@ export default function TabTwoScreen() {
     if (!validAccountNames.includes(account)) { Alert.alert('Ops!', 'Hindi valid ang napiling account. Pumili ulit.'); return; }
     if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Ops!', 'Hindi valid ang destination account. Pumili ulit.'); return; }
 
-    if (!isValidIsoDate(date) || date > formatLocalDate(new Date())) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
+    if (!isValidIsoDate(date) || date > philippineTodayKey()) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
     if (!isValidAmount(amount)) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
     if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
 
@@ -176,13 +185,13 @@ export default function TabTwoScreen() {
 
   // 👈 DYNAMIC EMOJI GETTERS PARA SA INPUT ROWS
   const selectedAcc = accounts.find(a => a.name === account);
-  const accEmoji = selectedAcc ? (selectedAcc.icon || getAccountEmoji(selectedAcc.name)) : null;
+  const accEmoji = selectedAcc ? getDisplayEmoji(selectedAcc.icon, getAccountEmoji(selectedAcc.name)) : null;
 
   const selectedToAcc = accounts.find(a => a.name === toAccount);
-  const toAccEmoji = selectedToAcc ? (selectedToAcc.icon || getAccountEmoji(selectedToAcc.name)) : null;
+  const toAccEmoji = selectedToAcc ? getDisplayEmoji(selectedToAcc.icon, getAccountEmoji(selectedToAcc.name)) : null;
 
   const selectedCat = categories.find((c: any) => c.name === category && c.type === type.toLowerCase());
-  const catEmoji = selectedCat ? (selectedCat.icon || getCategoryEmoji(selectedCat.name, type.toLowerCase())) : null;
+  const catEmoji = selectedCat ? getDisplayEmoji(selectedCat.icon, getCategoryEmoji(selectedCat.name, type.toLowerCase())) : null;
 
 
   // 👈 UPDATED INPUT ROW TO ACCEPT EMOJI
@@ -315,7 +324,7 @@ export default function TabTwoScreen() {
                   <View style={[styles.iconCircle, { backgroundColor: getActiveTint() }]}>
                     {/* 👈 EMOJI RENDERER */}
                     <Text style={{ fontSize: 24 }}>
-                      {item.icon || getCategoryEmoji(item.name, type.toLowerCase())}
+                      {getDisplayEmoji(item.icon, getCategoryEmoji(item.name, type.toLowerCase()))}
                     </Text>
                   </View>
                   <Text style={styles.categoryText}>{item.name}</Text>
@@ -339,7 +348,7 @@ export default function TabTwoScreen() {
                 <View style={[styles.accIconChip, { backgroundColor: getActiveTint() }]}>
                   {/* 👈 EMOJI RENDERER */}
                   <Text style={{ fontSize: 18 }}>
-                    {acc.icon || getAccountEmoji(acc.name)}
+                    {getDisplayEmoji(acc.icon, getAccountEmoji(acc.name))}
                   </Text>
                 </View>
                 <Text style={styles.accOptionText}>{acc.name}</Text>

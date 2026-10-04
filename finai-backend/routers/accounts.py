@@ -12,27 +12,60 @@ from .logs import log_action
 
 router = APIRouter(prefix="/api/accounts", tags=["Accounts"])
 
-async def calculate_account_balance(account_name: str, user_id: Optional[str], initial_balance: float) -> float:
+async def calculate_account_balance(account_name: str, user_id: Optional[str], initial_balance: float, session=None, account_id: Optional[str] = None) -> float:
     """(unchanged)"""
     if not user_id:
         return float(initial_balance)
     balance = float(initial_balance)
-    query = {"user_id": user_id, "is_archived": {"$ne": True}, "$or": [{"account": account_name}, {"to_account": account_name}]}
-    async for txn in db.expenses.find(query):
+    account_key = str(account_id) if account_id else None
+    account_match = (
+        {"$or": [
+            {"account_id": account_key},
+            {"account_id": {"$exists": False}, "account": account_name},
+            {"to_account_id": account_key},
+            {"to_account_id": {"$exists": False}, "to_account": account_name},
+        ]} if account_key else {"$or": [{"account": account_name}, {"to_account": account_name}]}
+    )
+    query = {"user_id": user_id, "is_archived": {"$ne": True}, **account_match}
+    async for txn in db.expenses.find(query, session=session):
         t_type = txn.get("type", "").capitalize()
         amount = float(txn.get("amount", 0))
         acc_from = txn.get("account")
         acc_to = txn.get("to_account")
-        if t_type == "Income" and acc_from == account_name:
+        from_matches = str(txn.get("account_id")) == account_key if account_key and txn.get("account_id") else acc_from == account_name
+        to_matches = str(txn.get("to_account_id")) == account_key if account_key and txn.get("to_account_id") else acc_to == account_name
+        if t_type == "Income" and from_matches:
             balance += amount
-        elif t_type in {"Expense", "Contribution"} and acc_from == account_name:
+        elif t_type in {"Expense", "Contribution"} and from_matches:
             balance -= amount
         elif t_type == "Transfer":
-            if acc_from == account_name:
+            if from_matches:
                 balance -= amount
-            if acc_to == account_name:
+            if to_matches:
                 balance += amount
     return balance
+
+
+async def ensure_account_balance_lock(user_id: str, account_id: ObjectId) -> str:
+    """Create the lock row before a transaction needs to write it."""
+    lock_id = f"{user_id}:{account_id}"
+    try:
+        await db.account_balance_locks.update_one(
+            {"_id": lock_id}, {"$setOnInsert": {"version": 0}}, upsert=True
+        )
+    except Exception as exc:
+        # Concurrent first use can race to create the same lock row. The unique _id
+        # means one wins; the transaction update below then serializes both callers.
+        if exc.__class__.__name__ != "DuplicateKeyError":
+            raise
+    return lock_id
+
+
+async def lock_account_balance(session, lock_id: str) -> None:
+    """Serialize balance-changing operations for one user/account in Mongo transactions."""
+    await db.account_balance_locks.update_one(
+        {"_id": lock_id}, {"$inc": {"version": 1}}, session=session
+    )
 
 
 async def _check_duplicate_name(name: str, user_id: Optional[str], exclude_id: Optional[ObjectId] = None):
@@ -77,7 +110,7 @@ async def get_accounts(user_id: Optional[str] = None, archived: bool = False, cu
         acc_id = str(acc["_id"])
         acc_name = acc.get("name", "")
         init_bal = float(acc.get("initial_balance", 0.0))
-        live_balance = await calculate_account_balance(acc_name, user_id, init_bal)
+        live_balance = await calculate_account_balance(acc_name, user_id, init_bal, account_id=acc["_id"])
         acc_data = {**acc, "id": acc_id, "current_balance": live_balance}
         if acc_data.get("user_id") is None:
             acc_data["user_id"] = None
@@ -110,7 +143,7 @@ async def get_user_accounts(user_id: str, archived: bool = False, current_user: 
         acc_id = str(acc["_id"])
         acc_name = acc.get("name", "")
         init_bal = float(acc.get("initial_balance", 0.0))
-        live_balance = await calculate_account_balance(acc_name, user_id, init_bal)
+        live_balance = await calculate_account_balance(acc_name, user_id, init_bal, account_id=acc["_id"])
         acc_data = {**acc, "id": acc_id, "current_balance": live_balance}
         accounts.append(AccountResponse(**acc_data))
     return accounts
@@ -203,17 +236,25 @@ async def update_account(
         raise HTTPException(status_code=404, detail="Account not found")
 
     owner_user_id = updated.get("user_id")
-    if owner_user_id and new_name != old_name:
-        await db.expenses.update_many({"user_id": owner_user_id, "account": old_name}, {"$set": {"account": new_name}})
-        await db.expenses.update_many({"user_id": owner_user_id, "to_account": old_name}, {"$set": {"to_account": new_name}})
-    elif not owner_user_id and new_name != old_name:
-        await db.expenses.update_many({"account": old_name}, {"$set": {"account": new_name}})
-        await db.expenses.update_many({"to_account": old_name}, {"$set": {"to_account": new_name}})
+    if new_name != old_name:
+        owner_scope = {"user_id": owner_user_id} if owner_user_id else {}
+        account_key = str(oid)
+        for label_field, id_field in (("account", "account_id"), ("to_account", "to_account_id")):
+            await db.expenses.update_many(
+                {
+                    **owner_scope,
+                    "$or": [
+                        {id_field: account_key},
+                        {id_field: {"$in": [None, ""]}, label_field: old_name},
+                    ],
+                },
+                {"$set": {label_field: new_name, id_field: account_key}},
+            )
 
     acc_name = updated.get("name", "")
     user_id = updated.get("user_id")
     init_bal = float(updated.get("initial_balance", 0.0))
-    live_balance = await calculate_account_balance(acc_name, user_id, init_bal)
+    live_balance = await calculate_account_balance(acc_name, user_id, init_bal, account_id=updated["_id"])
 
     if admin_actor and old_name != new_name:
         await log_action(admin_actor["name"], f"Renamed account '{old_name}' to '{new_name}'")
@@ -241,12 +282,22 @@ async def archive_account(
     elif account.get("account_role") != "user" or str(account.get("user_id")) != current_user["id"]:
         raise HTTPException(status_code=404, detail="Account not found")
 
+    legacy_scope = {"name": account.get("name")}
+    if account.get("account_role") == "user":
+        legacy_scope["user_id"] = current_user["id"]
+    for label_field, id_field in (("account", "account_id"), ("to_account", "to_account_id")):
+        await db.expenses.update_many(
+            {**legacy_scope, id_field: {"$in": [None, ""]}, label_field: account.get("name")},
+            {"$set": {id_field: str(oid)}},
+        )
+
     updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
     if account.get("account_role") == "admin":
         await log_action(admin["name"], f"Archived account '{account.get('name')}'")
 
     init_bal = float(updated.get("initial_balance", 0.0))
-    return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": init_bal})
+    live_balance = await calculate_account_balance(updated.get("name", ""), current_user["id"], init_bal, account_id=oid)
+    return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": live_balance})
 
 
 @router.patch("/{account_id}/restore", response_model=AccountResponse)

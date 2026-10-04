@@ -169,10 +169,14 @@ async def update_category(
 
     new_name = category.name
     if new_name and new_name != old_name:
-        expense_query = {"category": old_name}
+        category_key = str(oid)
+        expense_query = {"$or": [
+            {"category_id": category_key},
+            {"category_id": {"$in": [None, ""]}, "category": old_name},
+        ]}
         if existing_cat.get("category_role") != "admin":
             expense_query["user_id"] = current_user["id"]
-        await db.expenses.update_many(expense_query, {"$set": {"category": new_name}})
+        await db.expenses.update_many(expense_query, {"$set": {"category": new_name, "category_id": str(oid)}})
         if admin_actor:
             await log_action(admin_actor["name"], f"Renamed category '{old_name}' to '{new_name}'")
 
@@ -193,6 +197,17 @@ async def archive_category(category_id: str, admin: dict = Depends(get_current_a
         raise HTTPException(status_code=404, detail="Category not found")
     if category.get("category_role") != "admin":
         raise HTTPException(status_code=400, detail="Only category presets can be archived here. Personal categories are managed by their owner.")
+
+    # Backfill legacy transactions before this label can be reused. Newer records
+    # already carry the stable category ID; older ones can only be resolved by name.
+    await db.expenses.update_many(
+        {
+            "category": category.get("name"),
+            "category_id": {"$in": [None, ""]},
+            "type": {"$regex": f"^{re.escape(str(category.get('type', '')))}$", "$options": "i"},
+        },
+        {"$set": {"category_id": str(oid)}},
+    )
 
     updated = await db.categories.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
     await log_action(admin["name"], f"Archived category '{category.get('name')}'")
@@ -252,6 +267,10 @@ async def permanent_delete_category(category_id: str, admin: dict = Depends(get_
             detail="Hindi ma-permanently delete. May mga active transactions pang gumagamit sa kategoryang ito."
         )
 
+    linked_budget = await db.budgets.find_one({"category_id": {"$in": [str(oid), oid]}})
+    if linked_budget:
+        raise HTTPException(status_code=409, detail="This category is still used by a budget and cannot be permanently deleted.")
+
     result = await db.categories.delete_one({"_id": oid})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Category not found")
@@ -285,7 +304,9 @@ async def delete_category(
         raise HTTPException(status_code=403, detail="You don't have permission to delete this category.")
 
     # 🛡️ FIX: Check kung may BUDGET na gumagamit nito
-    linked_budget = await db.budgets.find_one({"category_id": category_id, "user_id": user_id})
+    linked_budget = await db.budgets.find_one({
+        "category_id": {"$in": [category_id, oid]}, "user_id": user_id,
+    })
     if linked_budget:
         raise HTTPException(status_code=400, detail="This category has an active budget. Delete or reassign that budget first.")
 

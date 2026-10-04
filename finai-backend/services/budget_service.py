@@ -2,6 +2,7 @@
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import asyncio
+import hashlib
 import re
 from zoneinfo import ZoneInfo
 
@@ -105,13 +106,21 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
     category_name = category.get("name") if category else "Unknown"
     query = {
         "user_id": user_id,
+        "is_archived": {"$ne": True},
         "type": {"$regex": "^expense$", "$options": "i"},
         # Legacy goal deposits were stored as expenses; do not let those
         # historical records consume a category budget.
         "goal_id": None,
-        "category": category_name,
         "date": {"$gte": start_date, "$lte": end_date},
     }
+    if category:
+        category_id = str(category["_id"])
+        query["$or"] = [
+            {"category_id": {"$in": [category_id, category["_id"]]}},
+            {"category_id": {"$in": [None, ""]}, "category": category_name},
+        ]
+    else:
+        query["category"] = category_name
     
     # FIX: Hintayin muna natin makuha lahat ng data bago i-compute ang sum
     cursor = db.expenses.find(query, {"amount": 1})
@@ -119,7 +128,7 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
     spent = sum(float(item.get("amount", 0) or 0) for item in expense_items)
     
     amount = float(budget.get("amount", 0) or 0)
-    percentage = (spent / amount * 100) if amount > 0 else 0.0
+    percentage = (spent / amount * 100) if amount > 0 else (100.0 if spent > 0 else 0.0)
 
     return {
         "id": str(budget.get("_id", budget.get("id", ""))),
@@ -127,6 +136,10 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
         "category_id": str(budget.get("category_id", "")),
         "category_name": category_name,
         "amount": amount,
+        "rollover_enabled": bool(budget.get("rollover_enabled", False)),
+        "rollover_in": 0.0,
+        "rollover_out": 0.0,
+        "available_limit": amount,
         "spent": round(spent, 2),
         "remaining": round(max(amount - spent, 0), 2),
         "percentage_used": round(percentage, 2),
@@ -137,9 +150,154 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+async def ensure_current_recurring_budgets(user_id: str) -> None:
+    """Materialize this cycle's budgets from recurring rules, without rolling over spend."""
+    # Upgrade existing budgets into recurring rules once. Deleted budgets are not
+    # present here, so a user-deleted budget will not be silently recreated.
+    existing = await db.budgets.find({"user_id": user_id}).to_list(length=500)
+    latest_by_rule: Dict[Tuple[str, str], Tuple[str, Dict[str, Any]]] = {}
+    for budget in existing:
+        category_id = str(budget.get("category_id", ""))
+        period_type = normalize_period_type(budget.get("period_type") or budget.get("period"))
+        period_key = budget.get("period_key") or legacy_period_key(budget.get("month_year"))
+        if not category_id or not period_key:
+            continue
+        _, _, start_date, _ = period_details(period_type, _period_reference(period_type, period_key))
+        key = (category_id, period_type)
+        if key not in latest_by_rule or start_date > latest_by_rule[key][0]:
+            latest_by_rule[key] = (start_date, budget)
+
+    for (category_id, period_type), (_, budget) in latest_by_rule.items():
+        rule_key = {"user_id": user_id, "category_id": category_id, "period_type": period_type}
+        await db.budget_rules.update_one(
+            rule_key,
+            {"$setOnInsert": {
+                **rule_key,
+                "amount": float(budget.get("amount", 0) or 0),
+                "rollover_enabled": bool(budget.get("rollover_enabled", False)),
+                "is_active": True,
+                "created_at": datetime.now(PH_TZ),
+            }},
+            upsert=True,
+        )
+
+    rules = await db.budget_rules.find({"user_id": user_id, "is_active": True}).to_list(length=500)
+    today = ph_today()
+    for rule in rules:
+        category_id = str(rule.get("category_id", ""))
+        category = await category_for_budget(category_id, user_id)
+        if not category or category.get("is_archived", False) or category.get("type", "").lower() != "expense":
+            continue
+        period_type = normalize_period_type(rule.get("period_type"))
+        existing_periods = await db.budgets.find({
+            "user_id": user_id, "category_id": category_id, "period_type": period_type,
+        }).to_list(length=500)
+        if existing_periods:
+            last_reference = max(
+                (_period_reference(period_type, item.get("period_key") or legacy_period_key(item.get("month_year")))
+                 for item in existing_periods),
+            )
+            _, _, _, last_end = period_details(period_type, last_reference)
+            next_start = date.fromisoformat(last_end) + timedelta(days=1)
+        else:
+            next_start = today
+
+        # Fill any elapsed cycles in which the app was not opened, so rollover
+        # chains remain continuous across empty-spend periods too.
+        while next_start <= today:
+            period_type, period_key, start_date, end_date = period_details(period_type, next_start)
+            budget_key = {
+                "user_id": user_id,
+                "category_id": category_id,
+                "period_type": period_type,
+                "period_key": period_key,
+            }
+            now = datetime.now(PH_TZ)
+            await db.budgets.update_one(
+                budget_key,
+                {"$setOnInsert": {
+                    **budget_key,
+                    "amount": float(rule.get("amount", 0) or 0),
+                    "rollover_enabled": bool(rule.get("rollover_enabled", False)),
+                    "spent": 0.0,
+                    "start_date": start_date,
+                    "end_date": end_date,
+                    "created_at": now,
+                    "updated_at": now,
+                }},
+                upsert=True,
+            )
+            next_start = date.fromisoformat(end_date) + timedelta(days=1)
+
+
+def _period_reference(period_type: str, period_key: str) -> date:
+    """Resolve a stored period key to its first calendar day for migration ordering."""
+    try:
+        if period_type == "weekly":
+            match = re.fullmatch(r"(\d{4})-W(\d{2})", str(period_key))
+            if match:
+                return date.fromisocalendar(int(match.group(1)), int(match.group(2)), 1)
+        elif period_type == "annual":
+            return date(int(period_key), 1, 1)
+        elif period_type == "monthly":
+            return date.fromisoformat(f"{period_key}-01")
+    except (ValueError, TypeError):
+        pass
+    return ph_today()
+
+
 async def list_budget_usage(user_id: str) -> List[Dict[str, Any]]:
+    await ensure_current_recurring_budgets(user_id)
     budgets = await db.budgets.find({"user_id": user_id}).to_list(length=500)
-    return [await budget_usage(budget) for budget in budgets]
+    usage_rows = [await budget_usage(budget) for budget in budgets]
+    grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
+    for item in usage_rows:
+        grouped.setdefault((item["category_id"], item["period_type"]), []).append(item)
+
+    # Carry the signed unused balance forward only across periods where the user
+    # enabled rollover. A negative balance represents prior overspending.
+    for periods in grouped.values():
+        periods.sort(key=lambda item: item["start_date"])
+        rollover_balance = 0.0
+        previous_end = None
+        for item in periods:
+            if not item["rollover_enabled"]:
+                rollover_balance = 0.0
+                item["rollover_in"] = 0.0
+                item["available_limit"] = item["amount"]
+                item["rollover_out"] = 0.0
+            else:
+                # Do not bridge a missing budget period; start fresh rather than
+                # inventing carry from periods whose rule or spending is unknown.
+                if previous_end is not None and item["start_date"] > previous_end:
+                    expected_next_start = _next_period_start(item["period_type"], previous_end)
+                    if item["start_date"] != expected_next_start:
+                        rollover_balance = 0.0
+                item["rollover_in"] = round(rollover_balance, 2)
+                raw_available = item["amount"] + rollover_balance
+                item["available_limit"] = round(max(raw_available, 0.0), 2)
+                item["rollover_out"] = round(raw_available - item["spent"], 2)
+                rollover_balance = item["rollover_out"]
+
+            effective_limit = item["available_limit"]
+            item["remaining"] = round(max(effective_limit - item["spent"], 0.0), 2)
+            item["percentage_used"] = round(
+                item["spent"] / effective_limit * 100 if effective_limit > 0
+                else (100.0 if item["spent"] > 0 else 0.0), 2,
+            )
+            previous_end = item["end_date"]
+
+    return usage_rows
+
+
+def _next_period_start(period_type: str, current_end: str) -> str:
+    end_date = date.fromisoformat(current_end)
+    next_date = end_date + timedelta(days=1)
+    if period_type == "weekly":
+        return next_date.isoformat()
+    if period_type == "annual":
+        return date(next_date.year, 1, 1).isoformat()
+    return next_date.replace(day=1).isoformat()
 
 
 async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str, Any]]:
@@ -157,37 +315,63 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
                 "threshold": threshold, "channel": "in_app",
             })
             if existing:
+                # Retry transient SMTP failures a bounded number of times. The
+                # conditional update claims the retry so concurrent requests do
+                # not send duplicate emails.
+                if existing.get("email_status") == "failed" and int(existing.get("email_attempts", 0)) < 3:
+                    claim = await db.notifications.update_one(
+                        {"_id": existing["_id"], "email_status": "failed", "email_attempts": {"$lt": 3}},
+                        {"$set": {"email_status": "sending"}, "$inc": {"email_attempts": 1}},
+                    )
+                    if claim.matched_count:
+                        await _send_threshold_email(existing["_id"], user_id, summary, threshold)
                 continue
 
             level = "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget"
             message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
-                       f"{summary['period_type']} budget (PHP {summary['spent']:.2f} of PHP {summary['amount']:.2f}).")
+                       f"{summary['period_type']} available budget (PHP {summary['spent']:.2f} of "
+                       f"PHP {summary['available_limit']:.2f}).")
             notification = {
                 "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
                 "period_key": summary["period_key"], "threshold": threshold, "channel": "in_app",
                 "level": level, "message": message, "is_read": False, "created_at": datetime.now(PH_TZ),
+                "email_status": "sending", "email_attempts": 1,
             }
-            result = await db.notifications.insert_one(notification)
-            notification["id"] = str(result.inserted_id)
+            # A deterministic id makes the check-and-insert safe when two requests
+            # cross the same threshold at nearly the same time.
+            stable_key = f"{user_id}:{summary['id']}:{summary['period_key']}:{threshold}:in_app"
+            notification_id = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()
+            notification["_id"] = notification_id
+            try:
+                await db.notifications.insert_one(notification)
+            except Exception as exc:
+                if exc.__class__.__name__ in {"DuplicateKeyError", "BulkWriteError"}:
+                    continue
+                raise
+            notification["id"] = notification_id
             notification.pop("_id", None)
             created.append(notification)
 
-            try:
-                user = await db.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})
-                if user and user.get("email"):
-                    sent = await asyncio.to_thread(
-                        send_threshold_alert, user["email"], summary["category_name"], threshold,
-                        summary["spent"], summary["amount"], summary["period_type"],
-                    )
-                    email_status = "sent" if sent else "failed"
-                else:
-                    email_status = "no_recipient"
-                await db.notifications.update_one(
-                    {"_id": result.inserted_id}, {"$set": {"email_status": email_status}},
-                )
-            except Exception as exc:
-                await db.notifications.update_one(
-                    {"_id": result.inserted_id}, {"$set": {"email_status": "failed"}},
-                )
-                print(f"Could not send budget alert email: {exc}")
+            await _send_threshold_email(notification_id, user_id, summary, threshold)
     return created
+
+
+async def _send_threshold_email(notification_id, user_id: str, summary: Dict[str, Any], threshold: int) -> None:
+    try:
+        user = await db.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})
+        if user and user.get("email"):
+            sent = await asyncio.to_thread(
+                send_threshold_alert, user["email"], summary["category_name"], threshold,
+                summary["spent"], summary["available_limit"], summary["period_type"],
+            )
+            email_status = "sent" if sent else "failed"
+        else:
+            email_status = "no_recipient"
+        await db.notifications.update_one(
+            {"_id": notification_id, "email_status": "sending"}, {"$set": {"email_status": email_status}},
+        )
+    except Exception as exc:
+        await db.notifications.update_one(
+            {"_id": notification_id, "email_status": "sending"}, {"$set": {"email_status": "failed"}},
+        )
+        print(f"Could not send budget alert email: {exc}")

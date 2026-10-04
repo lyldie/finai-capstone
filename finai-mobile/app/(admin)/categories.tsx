@@ -7,6 +7,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 
@@ -132,7 +133,7 @@ export default function CategoriesScreen() {
     setEditingCategory(item);
     setNewName(item.name);
     setNewType(item.type);
-    setEditEmoji(item.icon || getCategoryEmoji(item.name, item.type));
+    setEditEmoji(getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type)));
     setEmojiTouched(false);
     setModalVisible(true);
   };
@@ -181,7 +182,7 @@ export default function CategoriesScreen() {
             styles.iconBox,
             { backgroundColor: item.is_archived ? '#E5E7EB' : (item.type === 'income' ? INCOME_TINT : EXPENSE_TINT) }
           ]}>
-            <Text style={styles.emoji}>{item.icon || getCategoryEmoji(item.name, item.type)}</Text>
+            <Text style={styles.emoji}>{getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type))}</Text>
           </View>
           <View>
             <Text style={[styles.cardText, item.is_archived && styles.cardTextArchived]}>{item.name}</Text>
@@ -276,24 +277,15 @@ export default function CategoriesScreen() {
             <Text style={styles.modalTitle}>Edit Category</Text>
 
             <View style={styles.previewRow}>
-              <TextInput
-                style={[styles.previewCircle, { backgroundColor: newType === 'income' ? INCOME_TINT : EXPENSE_TINT }]}
-                value={editEmoji}
-                onChangeText={(text) => {
-                  setEmojiTouched(true);
-                  setEditEmoji(text.slice(-2));
-                }}
-                maxLength={4}
-                textAlign="center"
-              />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getCategoryEmoji(newName, newType)} tint={newType === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
               <View style={{ flex: 1 }}>
-                <Text style={styles.previewHint}>Tap icon to change emoji</Text>
+                <Text style={styles.previewHint}>Choose an icon for this category</Text>
                 {emojiTouched && (
                   <TouchableOpacity onPress={() => {
                     setEmojiTouched(false);
-                    setEditEmoji(editingCategory?.icon || getCategoryEmoji(newName, newType));
+                    setEditEmoji(getCategoryEmoji(newName, newType));
                   }}>
-                    <Text style={styles.resetLink}>Reset icon</Text>
+                    <Text style={styles.resetLink}>Use suggested icon</Text>
                   </TouchableOpacity>
                 )}
               </View>

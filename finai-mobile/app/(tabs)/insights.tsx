@@ -10,6 +10,9 @@ import { BarChart, PieChart } from 'react-native-gifted-charts';
 
 import { useAuth } from '../../context/AuthContext';
 import ChatModal from '../../components/ChatModal';
+import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { getGoalEmoji } from '../../utils/goalEmoji';
+import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS (standardized to match transactions.tsx / index.tsx) ----
 const DEEP_GREEN = '#1c3c36';
@@ -38,10 +41,11 @@ const parseTransactionDate = (value: string) => {
 };
 
 const localDateKey = (value: Date) => {
-  const year = value.getFullYear();
-  const month = String(value.getMonth() + 1).padStart(2, '0');
-  const day = String(value.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
 const screenWidth = Dimensions.get('window').width;
@@ -75,8 +79,9 @@ export default function InsightsScreen() {
 
   const periodTypeForTimeframe = { Week: 'weekly', Month: 'monthly', Year: 'annual' } as const;
   const selectedPeriodType = periodTypeForTimeframe[timeframe];
-  const today = new Date();
-  const todayKey = localDateKey(today);
+  // Use the same business timezone as backend budgets and advisor analytics.
+  const todayKey = localDateKey(new Date());
+  const today = parseTransactionDate(todayKey);
   const activeBudgets = useMemo(() => budgets.filter((budget) =>
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
   ), [budgets, todayKey]);
@@ -89,17 +94,19 @@ export default function InsightsScreen() {
     const d = parseTransactionDate(dateString);
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
-    if (timeframe === 'Year') return d.getFullYear() === currentYear;
-    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth;
+    if (timeframe === 'Year') return d.getFullYear() === currentYear && d <= today;
+    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth && d <= today;
     const startOfWeek = new Date(today);
     startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
     startOfWeek.setHours(0, 0, 0, 0);
-    return d >= startOfWeek;
+    const startOfNextWeek = new Date(startOfWeek);
+    startOfNextWeek.setDate(startOfWeek.getDate() + 7);
+    return d >= startOfWeek && d < startOfNextWeek;
   };
 
   const stats = useMemo(() => {
     const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
-    const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.amount) || 0), 0);
+    const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.available_limit ?? b.amount) || 0), 0);
     const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
 
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
@@ -136,7 +143,7 @@ export default function InsightsScreen() {
       transactions.forEach(t => {
         if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
           const d = parseTransactionDate(t.date);
-          if (d.getFullYear() === currentYear) {
+          if (d.getFullYear() === currentYear && d <= today) {
             monthlyTotals[d.getMonth()] += Number(t.amount) || 0;
           }
         }
@@ -152,22 +159,25 @@ export default function InsightsScreen() {
         });
       });
     } else if (timeframe === 'Month') {
-      const weeklyTotals = new Array(5).fill(0);
+      // Group the month into real Monday–Sunday calendar weeks. Using day
+      // chunks (1–7, 8–14, ...) split weeks differently from the budget/advisor.
+      const firstDayOffset = (new Date(currentYear, currentMonth, 1).getDay() + 6) % 7;
+      const weeklyTotals = new Array(6).fill(0);
 
       transactions.forEach(t => {
         if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
           const d = parseTransactionDate(t.date);
-          if (d.getFullYear() === currentYear && d.getMonth() === currentMonth) {
-            const weekIndex = Math.min(Math.floor((d.getDate() - 1) / 7), 4);
+          if (d.getFullYear() === currentYear && d.getMonth() === currentMonth && d <= today) {
+            const weekIndex = Math.floor((d.getDate() - 1 + firstDayOffset) / 7);
             weeklyTotals[weekIndex] += Number(t.amount) || 0;
           }
         }
       });
 
-      ['W1', 'W2', 'W3', 'W4', 'W5'].forEach((w, index) => {
+      weeklyTotals.forEach((value, index) => {
         data.push({
-          value: weeklyTotals[index],
-          label: w,
+          value,
+          label: `W${index + 1}`,
           frontColor: barColor,
           gradientColor: subTab === 'Income' ? '#5FE3B3' : '#FF9B93',
           labelTextStyle: { color: SAGE, fontSize: 11, textAlign: 'center', width: 24 }
@@ -179,11 +189,13 @@ export default function InsightsScreen() {
       const startOfWeek = new Date(today);
       startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
       startOfWeek.setHours(0, 0, 0, 0);
+      const startOfNextWeek = new Date(startOfWeek);
+      startOfNextWeek.setDate(startOfWeek.getDate() + 7);
 
       transactions.forEach(t => {
         if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
           const d = parseTransactionDate(t.date);
-          if (d >= startOfWeek) {
+          if (d >= startOfWeek && d < startOfNextWeek) {
             dailyTotals[(d.getDay() + 6) % 7] += Number(t.amount) || 0;
           }
         }
@@ -211,7 +223,7 @@ export default function InsightsScreen() {
     const totals: { [key: string]: number } = {};
 
     transactions.forEach(t => {
-      if (t.type !== subTab) return;
+      if (t.type !== subTab || (subTab === 'Expense' && Boolean(t.goal_id))) return;
       if (!isInSelectedWindow(t.date)) return;
       const cat = t.category || 'General';
       totals[cat] = (totals[cat] || 0) + (Number(t.amount) || 0);
@@ -223,10 +235,11 @@ export default function InsightsScreen() {
     return entries.map(([category, value], index) => ({
       value,
       category,
+      icon: getDisplayEmoji(categories.find((item) => item.name === category && item.type === subTab.toLowerCase())?.icon, getCategoryEmoji(category, subTab.toLowerCase())),
       percentage: total > 0 ? (value / total) * 100 : 0,
       color: CATEGORY_PALETTE[index % CATEGORY_PALETTE.length],
     }));
-  }, [transactions, timeframe, subTab]);
+  }, [transactions, timeframe, subTab, categories]);
 
   const categoryChartTotal = useMemo(
     () => categoryChartData.reduce((sum, d) => sum + d.value, 0),
@@ -246,16 +259,6 @@ export default function InsightsScreen() {
     return '✅';
   };
 
-  const getCategoryIcon = (category: string) => {
-    switch (category) {
-      case 'Food & Dining': return 'fast-food-outline';
-      case 'Transportation': return 'car-outline';
-      case 'Entertainment': return 'film-outline';
-      case 'Shopping': return 'shirt-outline';
-      case 'Utilities': return 'flash-outline';
-      default: return 'wallet-outline';
-    }
-  };
 
   const resolvePresetName = (goal: any) => {
     if (goal.goal_type_name) return goal.goal_type_name;
@@ -443,7 +446,10 @@ export default function InsightsScreen() {
                       <View key={entry.category} style={styles.legendRow}>
                         <View style={[styles.legendDot, { backgroundColor: entry.color }]} />
                         <View style={{ flex: 1 }}>
-                          <Text style={styles.legendCategory} numberOfLines={1}>{entry.category}</Text>
+                          <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                            <Text style={{ fontSize: 16, marginRight: 7 }}>{entry.icon}</Text>
+                            <Text style={styles.legendCategory} numberOfLines={1}>{entry.category}</Text>
+                          </View>
                           <Text style={styles.legendAmount}>{formatCurrency(entry.value)} · {entry.percentage.toFixed(0)}%</Text>
                         </View>
                       </View>
@@ -502,7 +508,9 @@ export default function InsightsScreen() {
                 const categoryInfo = categories.find(c => c.id === item.category_id);
                 const categoryName = item.category_name || categoryInfo?.name || 'Unknown';
                 const spent = Number(item.spent) || 0;
-                const limitAmount = item.amount || 0;
+                const baseLimit = Number(item.amount) || 0;
+                const limitAmount = Number(item.available_limit ?? item.amount) || 0;
+                const rolloverIn = Number(item.rollover_in) || 0;
                 const percentageUsed = Number(item.percentage_used) || 0;
                 const periodLabel = `${item.period_type[0].toUpperCase()}${item.period_type.slice(1)} · ${item.period_key}`;
 
@@ -524,7 +532,7 @@ export default function InsightsScreen() {
                     <View style={styles.categoryMainRow}>
                       <View style={styles.categoryLeftPart}>
                         <View style={[styles.categoryIconCircle, { backgroundColor: 'rgba(28, 60, 54, 0.08)' }]}>
-                          <Ionicons name={getCategoryIcon(categoryName)} size={18} color={DEEP_GREEN} />
+                          <Text style={{ fontSize: 18 }}>{getDisplayEmoji(categories.find((category) => category.name === categoryName && category.type === 'expense')?.icon, getCategoryEmoji(categoryName, 'expense'))}</Text>
                         </View>
                         <View style={{ marginLeft: 12 }}>
                           <Text style={styles.categoryTitle}>{categoryName}</Text>
@@ -533,6 +541,11 @@ export default function InsightsScreen() {
                       </View>
                       <View style={styles.categoryRightPart}>
                         <Text style={styles.categoryUsageStats}>{formatCurrency(spent)} / {formatCurrency(limitAmount)}</Text>
+                        {item.rollover_enabled && (
+                          <Text style={styles.categoryPeriodText}>
+                            Base {formatCurrency(baseLimit)} · carry {rolloverIn >= 0 ? '+' : '−'}{formatCurrency(Math.abs(rolloverIn))}
+                          </Text>
+                        )}
                         <Text style={[styles.categoryRemainingText, { color: getAlertColor(percentageUsed) }]}>
                           {formatCurrency(Math.max(limitAmount - spent, 0))} left
                         </Text>
@@ -572,6 +585,8 @@ export default function InsightsScreen() {
                 const saved = Number(goal.current_savings) || 0;
                 const progress = target > 0 ? (saved / target) * 100 : 0;
                 const presetName = resolvePresetName(goal);
+                const preset = goalTypes.find((item: any) => item.id === goal.goal_type_id || item._id === goal.goal_type_id);
+                const goalIcon = getDisplayEmoji(preset?.icon, getGoalEmoji(presetName || goal.target_name));
 
                 return (
                   <TouchableOpacity
@@ -585,7 +600,7 @@ export default function InsightsScreen() {
                   >
                     <View style={styles.goalMainLayout}>
                       <View style={styles.goalLeftColumn}>
-                        <View style={styles.targetIconCircle}><Text style={{ fontSize: 18 }}>🎯</Text></View>
+                        <View style={styles.targetIconCircle}><Text style={{ fontSize: 18 }}>{goalIcon}</Text></View>
                         <View style={{ marginLeft: 10 }}>
                           <Text style={styles.finaiGoalTitle}>{goal.target_name}</Text>
                           {presetName ? (
