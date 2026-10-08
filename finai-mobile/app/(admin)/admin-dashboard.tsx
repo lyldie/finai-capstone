@@ -21,6 +21,7 @@ export default function AdminDashboard() {
   const { user, logoutUser } = useAuth();
   
   const [activeUserCount, setActiveUserCount] = useState<number | null>(null);
+  const [canManageAdmins, setCanManageAdmins] = useState(false);
   
   // NEW: Dynamic System Health State
   const [systemHealth, setSystemHealth] = useState<'Optimal' | 'Degraded' | 'Offline' | 'Checking...'>('Checking...');
@@ -29,6 +30,16 @@ export default function AdminDashboard() {
     useCallback(() => {
       const fetchDashboardData = async () => {
         if (!user?.token) return;
+
+        try {
+          const accessRes = await fetch(`${API_URL}/api/users/admin-accounts/access`, {
+            headers: { Authorization: `Bearer ${user.token}` },
+          });
+          const accessData = accessRes.ok ? await accessRes.json() : null;
+          setCanManageAdmins(accessData?.can_manage_admins === true);
+        } catch {
+          setCanManageAdmins(false);
+        }
 
         // 1. Fetch Active Users
         try {
@@ -138,6 +149,7 @@ export default function AdminDashboard() {
         <Text style={[styles.sectionTitle, { marginTop: 10 }]}>System Management</Text>
         <View style={styles.grid}>
           <MenuCard title="Users" subtitle="Active & Archived" icon="people" color="#6C5CE7" onPress={() => router.push('/(admin)/users' as any)} />
+          {canManageAdmins && <MenuCard title="Admin Accounts" subtitle="Manage administrator access" icon="shield-checkmark" color="#1976D2" onPress={() => router.push('/(admin)/admin-accounts' as any)} />}
           <MenuCard title="Audit Logs" subtitle="History of Actions" icon="receipt" color={SAGE} onPress={() => router.push('/(admin)/logs' as any)} />
         </View>
       </ScrollView>

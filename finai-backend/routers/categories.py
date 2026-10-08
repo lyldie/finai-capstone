@@ -101,7 +101,7 @@ async def create_admin_category(category: CategoryCreate, admin: dict = Depends(
         "is_archived": {"$ne": True}
     })
     if existing_cat:
-        raise HTTPException(status_code=400, detail="Mayroon nang admin preset na may ganitong pangalan.")
+        raise HTTPException(status_code=400, detail="An admin preset with this name already exists.")
 
     cat_data["user_id"] = None
     cat_data["category_role"] = "admin"
@@ -264,7 +264,7 @@ async def permanent_delete_category(category_id: str, admin: dict = Depends(get_
     if linked_transaction:
         raise HTTPException(
             status_code=400, 
-            detail="Hindi ma-permanently delete. May mga active transactions pang gumagamit sa kategoryang ito."
+            detail="This category cannot be permanently deleted because active transactions still use it."
         )
 
     linked_budget = await db.budgets.find_one({"category_id": {"$in": [str(oid), oid]}})
@@ -313,7 +313,7 @@ async def delete_category(
     # 🛡️ FIX: Check kung may TRANSACTIONS na gumagamit nito para hindi magka-multong data
     linked_expense = await db.expenses.find_one({"category": existing.get("name"), "user_id": user_id})
     if linked_expense:
-        raise HTTPException(status_code=400, detail="Hindi mabura ang kategorya. Mayroon ka pang mga transaksyon na gumagamit nito. I-delete o i-edit muna ang mga transaksyon.")
+        raise HTTPException(status_code=400, detail="This category cannot be deleted while transactions use it. Edit or remove those transactions first.")
 
     result = await db.categories.delete_one({"_id": oid})
     if result.deleted_count == 0:
@@ -349,7 +349,7 @@ async def seed_categories(admin: dict = Depends(get_current_admin)):
     all_data = expense_categories + income_categories
     existing_count = await db.categories.count_documents({})
     if existing_count > 0:
-        return {"status": "Info", "message": f"May {existing_count} items na sa DB. Hindi na kailangan i-seed!"}
+        return {"status": "Info", "message": f"The database already contains {existing_count} items. No seeding is needed."}
 
     await db.categories.insert_many(all_data)
     await db.accounts.insert_many(accounts_list)

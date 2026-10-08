@@ -8,7 +8,6 @@ from typing import Optional, List
 from passlib.context import CryptContext
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-import smtplib
 import random
 import string
 import os
@@ -21,11 +20,11 @@ import asyncio
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-from email.message import EmailMessage
 import uvicorn
 
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db, ensure_indexes
+from email_utils import send_otp_email
 
 # JWT session creation for user and admin authentication.
 from auth import create_access_token, get_current_user
@@ -53,13 +52,32 @@ async def on_startup():
 # 1. Terminal Truth - Error Debugger
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    print("---------- TERMINAL TRUTH: VALIDATION ERROR ----------")
-    print(f"Bakit error? -> {exc.errors()}")
-    print(f"Anong data ang pumasok? -> {exc.body}")
-    print("------------------------------------------------------")
+    errors = exc.errors()
+    fields = {
+        str(issue.get("loc", [])[-1])
+        for issue in errors
+        if issue.get("loc")
+    }
+    has_missing_fields = any(issue.get("type") == "missing" for issue in errors)
+    has_invalid_email = any(
+        issue.get("loc") and str(issue["loc"][-1]) == "email" and issue.get("type") != "missing"
+        for issue in errors
+    )
+    if has_invalid_email:
+        detail = "Enter a valid email address."
+    elif "otp" in fields:
+        detail = "Enter the verification code from your email."
+    elif "pin" in fields:
+        detail = "Enter a valid PIN."
+    elif has_missing_fields:
+        detail = "Complete all required fields and try again."
+    else:
+        detail = "Please check the information you entered and try again."
+
+    print(f"[Validation] {request.method} {request.url.path} rejected invalid fields: {', '.join(sorted(fields)) or 'request'}.")
     return JSONResponse(
         status_code=422,
-        content={"detail": exc.errors(), "body": exc.body},
+        content={"detail": detail},
     )
 
 
@@ -76,22 +94,28 @@ app.add_middleware(
 # 3. Security, Gemini Client & Email Config
 load_dotenv()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+try:
+    # The Google GenAI SDK enforces a 10-second minimum HTTP timeout.
+    GEMINI_OCR_TIMEOUT_SECONDS = max(10, min(20, float(os.getenv("GEMINI_OCR_TIMEOUT_SECONDS", "10"))))
+except (TypeError, ValueError):
+    GEMINI_OCR_TIMEOUT_SECONDS = 10.0
 
-# Initialize Google GenAI Client
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+# A single SDK attempt plus a network timeout keeps quota retries from making
+# the receipt endpoint wait much longer than its configured deadline.
+ai_client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(
+        timeout=int(GEMINI_OCR_TIMEOUT_SECONDS * 1000),
+        retry_options=types.HttpRetryOptions(attempts=1),
+    ),
+) if GEMINI_API_KEY else None
 
 
 # --- 4. EASYOCR INITIALIZATION ---
-print("Initializing EasyOCR Reader for FinAi (Primary Local Engine)...")
-try:
-    reader = easyocr.Reader(["en"], gpu=False)
-    print("EasyOCR Initialized successfully!")
-except Exception as e:
-    print(f"EasyOCR init failed: {e}")
-    reader = None
+# EasyOCR remains available as an optional local utility, but the scan flow
+# uses Gemini as its primary extractor and does not silently substitute OCR.
+reader = None
 
 
 # --- 5. EXPANDED LOCAL MERCHANT & ITEM MATCHING DICTIONARY ---
@@ -644,7 +668,7 @@ def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Option
     local_amount = normalize_amount_value(local_result.get("amount"))
     gemini_amount = normalize_amount_value(gemini_result.get("amount"))
     if local_amount is not None and gemini_amount is not None and abs(local_amount - gemini_amount) < 0.01:
-        fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.98, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+        fields["amount"] = {"value": f"{gemini_amount:.2f}", "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
     elif gemini_amount is not None and local_amount is not None:
         # Gemini interprets receipt semantics (for example, "Total Amt Due"),
         # while EasyOCR can mistake an item price for the total. Keep Gemini's
@@ -652,42 +676,41 @@ def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Option
         print(f"[Reconcile] Amount conflict: EasyOCR={local_amount:.2f}, Gemini={gemini_amount:.2f}. Suggesting Gemini value for review.")
         fields["amount"] = {
             "value": f"{gemini_amount:.2f}",
-            "confidence": 0.72,
             "status": "needs_review",
             "engines": ["EasyOCR", "Gemini"],
             "reason": "EasyOCR and Gemini found different amounts; Gemini's receipt-total interpretation is suggested."
         }
     elif gemini_amount is not None and local_amount is None:
-        fields["amount"] = {"value": f"{gemini_amount:.2f}", "confidence": 0.76, "status": "needs_review", "engines": ["Gemini"]}
+        fields["amount"] = {"value": f"{gemini_amount:.2f}", "status": "needs_review", "engines": ["Gemini"]}
     elif local_amount is not None and gemini_amount is None:
-        fields["amount"] = {"value": f"{local_amount:.2f}", "confidence": 0.68, "status": "needs_review", "engines": ["EasyOCR"]}
+        fields["amount"] = {"value": f"{local_amount:.2f}", "status": "needs_review", "engines": ["EasyOCR"]}
     else:
-        fields["amount"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+        fields["amount"] = {"value": None, "status": "needs_review", "engines": []}
 
     local_merchant = _known_text(local_result.get("merchant"))
     gemini_merchant = _known_text(gemini_result.get("merchant"))
     if _same_merchant(local_merchant, gemini_merchant):
-        fields["merchant"] = {"value": gemini_merchant, "confidence": 0.95, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+        fields["merchant"] = {"value": gemini_merchant, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
     elif gemini_merchant and not local_merchant:
-        fields["merchant"] = {"value": gemini_merchant, "confidence": 0.74, "status": "needs_review", "engines": ["Gemini"]}
+        fields["merchant"] = {"value": gemini_merchant, "status": "needs_review", "engines": ["Gemini"]}
     elif local_merchant and not gemini_merchant:
-        fields["merchant"] = {"value": local_merchant, "confidence": 0.62, "status": "needs_review", "engines": ["EasyOCR"]}
+        fields["merchant"] = {"value": local_merchant, "status": "needs_review", "engines": ["EasyOCR"]}
     else:
-        fields["merchant"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+        fields["merchant"] = {"value": None, "status": "needs_review", "engines": []}
 
     local_date = local_result.get("date")
     gemini_date = gemini_result.get("date")
     if local_date and gemini_date and local_date == gemini_date:
-        fields["date"] = {"value": gemini_date, "confidence": 0.96, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
+        fields["date"] = {"value": gemini_date, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
     elif gemini_date and not local_date:
-        fields["date"] = {"value": gemini_date, "confidence": 0.74, "status": "needs_review", "engines": ["Gemini"]}
+        fields["date"] = {"value": gemini_date, "status": "needs_review", "engines": ["Gemini"]}
     elif local_date and not gemini_date:
-        fields["date"] = {"value": local_date, "confidence": 0.68, "status": "needs_review", "engines": ["EasyOCR"]}
+        fields["date"] = {"value": local_date, "status": "needs_review", "engines": ["EasyOCR"]}
     else:
-        fields["date"] = {"value": None, "confidence": 0.0, "status": "needs_review", "engines": []}
+        fields["date"] = {"value": None, "status": "needs_review", "engines": []}
 
     category = resolve_supported_category(gemini_result.get("category") or local_result.get("category"), available_categories)
-    fields["category"] = {"value": category, "confidence": 0.70 if category != "General" else 0.35,
+    fields["category"] = {"value": category,
                           "status": "suggested", "engines": ["Gemini"] if gemini_result else ["EasyOCR"]}
 
     needs_review = [name for name, field in fields.items() if field["status"] == "needs_review"]
@@ -783,6 +806,9 @@ def _sort_easyocr_results_into_lines(results) -> List[str]:
 
 def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories: List[str]):
     """Run EasyOCR as a layout-aware verifier, not an unstructured text source."""
+    global reader
+    if reader is None:
+        reader = easyocr.Reader(["en"], gpu=False)
     all_extracted_texts = []
 
     for img_bytes in images_bytes_list:
@@ -828,7 +854,7 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     # Code rejection guardrail
     is_code = any(pattern in full_text_block for pattern in CODE_REJECTION_PATTERNS)
     if is_code:
-        raise HTTPException(status_code=400, detail="Hindi valid na resibo! Nakadetect ng code.")
+        raise HTTPException(status_code=400, detail="This receipt is not valid. A barcode or QR code was detected instead of receipt details.")
 
     total_amount_value = extract_total_amount(all_extracted_texts)
     detected_amount = f"{total_amount_value:.2f}" if total_amount_value is not None else None
@@ -854,9 +880,9 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     }
 
 
-def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
+def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
     """Vision extractor. Fields it cannot visibly read must remain null."""
-    print("ðŸ¤– Triggering Gemini 3.5 Flash Vision Processor...")
+    print("[OCR] Running Gemini 3.6 Flash vision extraction.")
 
     if not ai_client:
         raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
@@ -913,7 +939,7 @@ def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_catego
         "merchant": merchant_value,
         "category": category_value,
         "date": sanitized_date,
-        "raw_text": f"Parsed via Gemini 3.5 Vision ({len(images_bytes_list)} image frames)",
+        "raw_text": f"Parsed via Gemini 3.6 Flash ({len(images_bytes_list)} image frame(s))",
         "amount_is_fallback": amount_value is None,
         "merchant_is_fallback": merchant_value is None,
         "date_is_fallback": sanitized_date is None
@@ -922,9 +948,9 @@ def gemini_multi_photo_fallback(images_bytes_list: List[bytes], available_catego
 
 # --- 6. MODELS ---
 class UserSignup(BaseModel):
-    name: str = Field(..., min_length=2, description="Pangalan ng user")
+    name: str = Field(..., min_length=2, max_length=100, description="User's first and last name")
     email: EmailStr
-    password: str = Field(..., min_length=6, description="Password must be at least 6 characters")
+    password: str = Field(..., min_length=10, description="Password must be at least 10 characters")
 
 
 class UserLogin(BaseModel):
@@ -961,6 +987,7 @@ class InitialSetupSchema(BaseModel):
     target_name: Optional[str] = Field(default=None, max_length=100)
     target_amount: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     target_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
+    goal_type_id: Optional[str] = Field(default=None, min_length=24, max_length=24, pattern=r'^[0-9a-fA-F]{24}$')
 
 
 class PinVerify(BaseModel):
@@ -1043,35 +1070,31 @@ async def validate_transaction_references(transaction: TransactionSchema, user_i
     transaction.category_id = str(category["_id"])
 
 
-def send_otp_email(target_email: str, otp_code: str):
+async def safely_refresh_budget_notifications(user_id: str) -> list:
+    """Keep a committed money transaction successful if alert delivery has a temporary failure."""
     try:
-        msg = EmailMessage()
-        msg["Subject"] = "FinAi - Verify Your Account ðŸ¿ï¸"
-        msg["From"] = EMAIL_SENDER
-        msg["To"] = target_email
-        msg.set_content(
-            f"Mabuhay paps!\n\nHeto ang iyong OTP Verification Code: {otp_code}\n\nValid ito sa loob ng 10 minuto.\n\n- FinAi Team"
-        )
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
-            smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            smtp.send_message(msg)
-        return True
-    except Exception as e:
-        print(f"SMTP Error: {e}")
-        return False
+        return await create_crossed_threshold_notifications(user_id)
+    except Exception as exc:
+        print(f"Could not refresh budget notifications for user {user_id}: {exc}")
+        return []
 
 
 # --- 8. AUTH ENDPOINTS ---
 @app.post("/register")
 async def register(user: UserSignup):
     clean_email = user.email.lower().strip()
+    password = user.password
+    if len(password.encode('utf-8')) > 72:
+        raise HTTPException(status_code=400, detail="Password must be no more than 72 bytes.")
+    if not (re.search(r"[a-z]", password) and re.search(r"[A-Z]", password) and re.search(r"\d", password)):
+        raise HTTPException(status_code=400, detail="Use uppercase and lowercase letters and at least one number in your password.")
     existing_user = await db.users.find_one({"email": clean_email})
     if existing_user:
-        raise HTTPException(status_code=400, detail="Email na gamit na paps!")
+        raise HTTPException(status_code=400, detail="This email address is already registered.")
 
     otp_code = "".join(random.choices(string.digits, k=6))
     if send_otp_email(clean_email, otp_code):
-        hashed_password = pwd_context.hash(user.password[:72])
+        hashed_password = pwd_context.hash(password)
         # FIX: OTPs previously lived in a plain in-memory dict (otp_storage = {}).
         # That means: (1) every pending registration is lost if the server restarts,
         # and (2) if this ever runs with more than one worker process, a /register
@@ -1100,11 +1123,11 @@ async def verify_otp(data: OTPVerify):
 
     pending = await db.pending_signups.find_one({"email": clean_email})
     if not pending:
-        raise HTTPException(status_code=400, detail="Walang pending registration paps o nag-expire na.")
+        raise HTTPException(status_code=400, detail="No pending registration was found, or it has expired.")
 
     if datetime.utcnow() - pending["timestamp"] > timedelta(minutes=10):
         await db.pending_signups.delete_one({"email": clean_email})
-        raise HTTPException(status_code=400, detail="Expired na ang OTP code paps. Mag-register uli.")
+        raise HTTPException(status_code=400, detail="This verification code has expired. Please register again.")
 
     if pending["otp"] == user_otp:
         new_user = {
@@ -1119,7 +1142,7 @@ async def verify_otp(data: OTPVerify):
         await db.pending_signups.delete_one({"email": clean_email})
         return {"status": "Success", "user_id": str(result.inserted_id), "name": new_user["name"], "role": "user", "token": create_access_token(str(result.inserted_id), "user")}
 
-    raise HTTPException(status_code=400, detail="Mali ang OTP code paps.")
+    raise HTTPException(status_code=400, detail="The verification code is incorrect.")
 
 
 @app.post("/login")
@@ -1128,17 +1151,18 @@ async def login(user: UserLogin):
     db_user = await db.users.find_one({"email": clean_email})
 
     if not db_user:
-        raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
+        raise HTTPException(status_code=400, detail="The email or password is incorrect.")
 
     # ðŸ‘‡ Inayos natin ang spacing dito para pumantay sa taas
     password_to_verify = user.password[:72]
 
     try:
-        if not pwd_context.verify(password_to_verify, db_user["password"]):
-            raise HTTPException(status_code=400, detail="Mali yata credentials mo paps.")
+        password_is_valid = pwd_context.verify(password_to_verify, db_user["password"])
     except Exception as e:
         print(f"Bcrypt verification error: {e}")
-        raise HTTPException(status_code=500, detail="Error sa pag-verify ng password.")
+        raise HTTPException(status_code=500, detail="Unable to verify the password. Please try again.")
+    if not password_is_valid:
+        raise HTTPException(status_code=400, detail="The email or password is incorrect.")
 
     if db_user.get("is_archived"):
         raise HTTPException(status_code=403, detail="This account has been archived. Please contact an administrator.")
@@ -1187,10 +1211,10 @@ async def verify_pin(data: PinVerify):
             await db.users.update_one({"_id": user["_id"]}, {"$set": {"pin": pwd_context.hash(input_pin)}})
             return {"status": "Success"}
 
-    raise HTTPException(status_code=400, detail="Mali ang PIN mo paps!")
+    raise HTTPException(status_code=400, detail="The PIN is incorrect.")
 
 
-# --- 9. DUAL ENGINE OCR RECEIPT SCANNER ENDPOINT ---
+# --- 9. GEMINI-FIRST OCR RECEIPT SCANNER ENDPOINT ---
 @app.post("/ocr-scan")
 async def ocr_scan(
     files: List[UploadFile] = File(...),
@@ -1199,7 +1223,7 @@ async def ocr_scan(
 ):
     try:
         if not files or len(files) == 0:
-            raise HTTPException(status_code=400, detail="Walang litratong naipasa paps!")
+            raise HTTPException(status_code=400, detail="No receipt images were provided.")
         if len(files) > 4:
             raise HTTPException(status_code=413, detail="Scan up to four receipt images at a time.")
         user_id = current_user["id"]
@@ -1249,52 +1273,48 @@ async def ocr_scan(
             except Exception as e:
                 print(f"Could not fetch user categories: {e}")
 
-        # --- STEP 1: PRIMARY LOCAL ENGINE (EASYOCR) ---
-        print(f"ðŸš€ Running EasyOCR Primary Engine on {len(processed_images_bytes)} photo(s)...")
-        # Start Gemini immediately, then run CPU-bound EasyOCR in a worker
-        # thread. Both engines process the same prepared receipt concurrently.
-        gemini_task = asyncio.create_task(asyncio.to_thread(gemini_multi_photo_fallback, processed_images_bytes, user_categories)) if GEMINI_API_KEY else None
-        if gemini_task:
-            print("[Gemini] Started concurrently with EasyOCR.")
-        easyocr_result = None
+        if not ai_client:
+            raise HTTPException(
+                status_code=503,
+                detail="Receipt scanning is temporarily unavailable. You can retry or enter the details manually.",
+            )
+
+        print(f"[OCR] Sending {len(processed_images_bytes)} receipt image(s) to Gemini.")
         try:
-            easyocr_result = await asyncio.to_thread(process_multi_photo_easyocr, processed_images_bytes, user_categories)
-        except Exception as easyocr_err:
-            print(f"EasyOCR parsing error or rejected: {easyocr_err}")
+            gemini_result = await asyncio.wait_for(
+                asyncio.to_thread(gemini_extract_receipt, processed_images_bytes, user_categories),
+                timeout=GEMINI_OCR_TIMEOUT_SECONDS + 0.5,
+            )
+        except asyncio.TimeoutError:
+            print(f"[OCR] Gemini request exceeded the {GEMINI_OCR_TIMEOUT_SECONDS:g}s deadline.")
+            raise HTTPException(
+                status_code=504,
+                detail="Receipt scanning took too long. Please retry or enter the details manually.",
+            )
+        except Exception as gemini_err:
+            # Preserve the provider's actionable status while stripping any
+            # accidental credential echo from SDK exception text.
+            safe_error = str(gemini_err).replace(GEMINI_API_KEY, "[REDACTED]").replace("\r", " ").replace("\n", " ")
+            safe_error = safe_error[:500]
+            error_code = getattr(gemini_err, "code", None)
+            print(
+                f"[OCR] Gemini request failed ({type(gemini_err).__name__}; "
+                f"code={error_code}; detail={safe_error})."
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Receipt scanning is temporarily unavailable. Please retry or enter the details manually.",
+            )
 
-        # --- STEP 2: RIGOROUS ACCURACY GATEKEEPER CHECK ---
-        raw_text = str(easyocr_result.get("raw_text", "")) if easyocr_result else ""
-        easyocr_score = _score_receipt_candidate(easyocr_result, raw_text) if easyocr_result else 0
-
-        gemini_result = None
-        if GEMINI_API_KEY:
-            try:
-                print("âš ï¸ Running Gemini 2.0 Flash fallback to compare and improve OCR consistency...")
-                gemini_result = await gemini_task if gemini_task else None
-                extracted_fields = [field for field in ("merchant", "date", "amount") if gemini_result.get(field) is not None]
-                print(f"Gemini Vision succeeded. Read fields: {', '.join(extracted_fields) or 'none'}.")
-            except Exception as gemini_err:
-                print(f"Gemini API Error: {gemini_err}")
-
-        final_result = reconcile_receipt_fields(easyocr_result, gemini_result, user_categories)
-        final_result["raw_text"] = raw_text
+        extracted_fields = [field for field in ("merchant", "date", "amount") if gemini_result.get(field) is not None]
+        print(f"[OCR] Gemini extraction completed. Read fields: {', '.join(extracted_fields) or 'none'}.")
+        final_result = reconcile_receipt_fields(None, gemini_result, user_categories)
+        final_result["raw_text"] = ""
         final_result["amount_is_fallback"] = final_result["amount"] is None
         final_result["merchant_is_fallback"] = final_result["merchant"] is None
         final_result["date_is_fallback"] = final_result["date"] is None
-        final_engine = "EasyOCR + Gemini" if gemini_result else "EasyOCR"
 
-        if final_engine == "Gemini" and gemini_result:
-            print("âœ… Gemini provided the stronger receipt extraction.")
-        elif easyocr_score >= 100:
-            print("âœ… EasyOCR produced a strong receipt extraction.")
-        else:
-            print("âš ï¸ OCR confidence was moderate; returning the best available result.")
-
-        return {
-            "status": "Success",
-            "engine": final_engine,
-            "data": final_result
-        }
+        return {"status": "Success", "engine": "Gemini", "data": final_result}
 
     except HTTPException as http_ex:
         raise http_ex
@@ -1302,7 +1322,7 @@ async def ocr_scan(
         print(f"Scan API Fatal Error -> {err}")
         raise HTTPException(
             status_code=500,
-            detail="Hindi mabasa ang resibo. Siguraduhing malinaw ang kuha ng resibo."
+            detail="We couldn't read the receipt. Please make sure the image is clear and try again."
         )
 
 
@@ -1316,7 +1336,7 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
     validate_transaction_for_storage(transaction)
 
     if not transaction.goal_id:
-        raise HTTPException(status_code=400, detail="Kailangan ng Goal ID para makapag-hulog paps!")
+        raise HTTPException(status_code=400, detail="A goal ID is required to make a contribution.")
 
     try:
         goal_oid = ObjectId(transaction.goal_id)
@@ -1326,7 +1346,7 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
         {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
     )
     if not goal:
-        raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
+        raise HTTPException(status_code=404, detail="The selected goal could not be found.")
     await validate_transaction_references(transaction, current_user["id"])
     account_doc = await db.accounts.find_one({"_id": ObjectId(transaction.account_id), "is_archived": {"$ne": True}})
     if not account_doc:
@@ -1337,6 +1357,10 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
     lock_id = await accounts.ensure_account_balance_lock(current_user["id"], account_doc["_id"])
     async def commit_legacy_contribution(session):
         await accounts.lock_account_balance(session, lock_id)
+        if not await db.accounts.find_one(
+            {"_id": account_doc["_id"], "is_archived": {"$ne": True}}, session=session
+        ):
+            raise HTTPException(status_code=409, detail="The selected account is no longer active.")
         available = await accounts.calculate_account_balance(
             transaction.account, current_user["id"], float(account_doc.get("initial_balance", 0) or 0),
             session=session, account_id=transaction.account_id,
@@ -1347,7 +1371,7 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
             {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}, session=session
         )
         if not current_goal:
-            raise HTTPException(status_code=404, detail="Hindi nahanap ang target goal.")
+            raise HTTPException(status_code=404, detail="The selected goal could not be found.")
         inserted = await db.expenses.insert_one(transaction_dict, session=session)
         await db.goals.update_one(
             {"_id": goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
@@ -1374,7 +1398,7 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
     await validate_transaction_references(transaction, current_user["id"])
     transaction_dict = transaction.dict()
     transaction_dict["created_at"] = datetime.utcnow()
-    if transaction.type.lower() in {"expense", "transfer"}:
+    if transaction.type.lower() in {"income", "expense", "transfer"}:
         source_account = await db.accounts.find_one({"_id": ObjectId(transaction.account_id), "is_archived": {"$ne": True}})
         if not source_account:
             raise HTTPException(status_code=409, detail="The selected source account is no longer active.")
@@ -1391,12 +1415,21 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
         async def commit_spend(session):
             for lock_id in sorted(lock_ids):
                 await accounts.lock_account_balance(session, lock_id)
-            available = await accounts.calculate_account_balance(
-                transaction.account, current_user["id"], float((source_account or {}).get("initial_balance", 0) or 0),
-                session=session, account_id=transaction.account_id,
-            )
-            if transaction.amount > available:
-                raise HTTPException(status_code=409, detail="The selected account does not have enough balance.")
+            for account_doc in account_docs:
+                if not await db.accounts.find_one(
+                    {"_id": account_doc["_id"], "is_archived": {"$ne": True}}, session=session
+                ):
+                    raise HTTPException(status_code=409, detail="A selected account is no longer active.")
+            if transaction.type.lower() in {"expense", "transfer"}:
+                available = await accounts.calculate_account_balance(
+                    transaction.account, current_user["id"], float((source_account or {}).get("initial_balance", 0) or 0),
+                    session=session, account_id=transaction.account_id,
+                )
+                if transaction.amount > available:
+                    raise HTTPException(
+                        status_code=409,
+                        detail="This transaction is more than the available balance in the selected account.",
+                    )
             result = await db.expenses.insert_one(transaction_dict, session=session)
             return result.inserted_id
         try:
@@ -1405,7 +1438,7 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
         except HTTPException:
             raise
         except Exception as exc:
-            raise HTTPException(status_code=503, detail="Could not safely save this transaction. Verify MongoDB transaction support and try again.") from exc
+            raise HTTPException(status_code=503, detail="We couldn't save this transaction right now. Please try again.") from exc
     else:
         result = await db.expenses.insert_one(transaction_dict)
         inserted_id = result.inserted_id
@@ -1413,7 +1446,7 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
     notifications_created = []
     if transaction.type.lower() == "expense":
         # 1. Che-check ng system kung may na-hit na budget limit
-        notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
+        notifications_created = await safely_refresh_budget_notifications(transaction.user_id)
 
         # 2. ðŸš¨ EMAIL ALERT INTEGRATION ðŸš¨
     return {"status": "Success", "id": str(inserted_id), "notifications": notifications_created}
@@ -1557,7 +1590,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
                 session=session, account_id=account_id,
             )
             if current_balance + delta < -0.005:
-                raise HTTPException(status_code=409, detail="This edit would make an affected account balance negative.")
+                raise HTTPException(status_code=409, detail="This change is more than the available balance in an affected account.")
         return await db.expenses.update_one(update_query, update_data, session=session)
 
     try:
@@ -1566,10 +1599,10 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=503, detail="Could not safely update this transaction. Verify MongoDB transaction support and try again.") from exc
+        raise HTTPException(status_code=503, detail="We couldn't update this transaction right now. Please try again.") from exc
 
     if result.matched_count == 1:
-        notifications_created = await create_crossed_threshold_notifications(transaction.user_id)
+        notifications_created = await safely_refresh_budget_notifications(transaction.user_id)
         return {"status": "Success", "notifications": notifications_created}
 
     raise HTTPException(status_code=404, detail="Failed to update transaction.")
@@ -1589,179 +1622,203 @@ async def get_expenses(user_id: str, archived: bool = False, limit: int = 500, o
     return {"status": "Success", "data": expenses, "total": total, "has_more": offset + len(expenses) < total}
 
 
-@app.delete("/delete-expense/{expense_id}")
-async def delete_expense(expense_id: str, user_id: str, current_user: dict = Depends(get_current_user)):
-    user_id = current_user["id"]
+async def _lifecycle_account(transaction: dict, field: str, user_id: str):
+    account_id = transaction.get(f"{field}_id")
+    if account_id and ObjectId.is_valid(str(account_id)):
+        return await db.accounts.find_one({
+            "_id": ObjectId(str(account_id)),
+            "$or": [{"account_role": "admin"}, {"account_role": "user", "user_id": user_id}],
+        })
+    name = transaction.get(field)
+    if not name:
+        return None
+    account = await db.accounts.find_one({
+        "name": {"$regex": f"^{re.escape(str(name))}$", "$options": "i"},
+        "account_role": "user", "user_id": user_id,
+    })
+    if not account:
+        account = await db.accounts.find_one({
+            "name": {"$regex": f"^{re.escape(str(name))}$", "$options": "i"}, "account_role": "admin",
+        })
+    return account
+
+
+def _transaction_lifecycle_signature(transaction: dict) -> tuple:
+    return (
+        str(transaction.get("type", "")).lower(),
+        float(transaction.get("amount", 0) or 0),
+        str(transaction.get("account_id") or ""),
+        str(transaction.get("account") or ""),
+        str(transaction.get("to_account_id") or ""),
+        str(transaction.get("to_account") or ""),
+        str(transaction.get("goal_id") or ""),
+    )
+
+
+async def _transition_transaction_lifecycle(expense_id: str, user_id: str, action: str):
+    """Atomically change transaction state, account balances, and linked goal savings."""
     try:
-        exp_oid = ObjectId(expense_id)
+        expense_oid = ObjectId(expense_id)
     except Exception:
-        raise HTTPException(status_code=400, detail="Maling format ng Expense ID")
+        raise HTTPException(status_code=400, detail="Invalid transaction ID.")
 
-    expense = await db.expenses.find_one({"_id": exp_oid, "user_id": user_id, "is_archived": {"$ne": True}})
-    if not expense:
-        raise HTTPException(status_code=404, detail="Transaction not found")
+    was_archived = action in {"restore", "permanent_delete"}
+    state_query = {"is_archived": True} if was_archived else {"is_archived": {"$ne": True}}
+    transaction_query = {"_id": expense_oid, "user_id": user_id, **state_query}
+    transaction = await db.expenses.find_one(transaction_query)
+    if not transaction:
+        label = "Archived transaction" if was_archived else "Transaction"
+        raise HTTPException(status_code=404, detail=f"{label} not found.")
 
-    # FIX: verify ownership before allowing the delete. Previously this endpoint took
-    # no user_id at all -- any expense_id could be deleted by anyone. Same gap fixed
-    # for delete_budget.
-    if str(expense.get("user_id", "")) != str(user_id):
-        raise HTTPException(status_code=403, detail="You don't have permission to delete this transaction.")
+    transaction_type = str(transaction.get("type", "")).lower()
+    source_account = await _lifecycle_account(transaction, "account", user_id)
+    destination_account = await _lifecycle_account(transaction, "to_account", user_id) if transaction_type == "transfer" else None
+    if not source_account or (transaction_type == "transfer" and not destination_account):
+        raise HTTPException(status_code=409, detail="A linked account is unavailable, so this transaction cannot be changed safely.")
+    if action == "restore" and any(account.get("is_archived") for account in (source_account, destination_account) if account):
+        raise HTTPException(status_code=409, detail="Restore the linked account first, then restore this transaction.")
 
-    # Bawiin ang pera sa goal savings kung naka-link ito
-    goal_id = expense.get("goal_id")
-    if goal_id:
-        try:
-            rollback = await db.goals.update_one(
-                {"_id": ObjectId(goal_id), "user_id": user_id},
-                {"$inc": {"current_savings": -float(expense["amount"])}}
+    affected_accounts = {str(source_account["_id"]): source_account}
+    if destination_account:
+        affected_accounts[str(destination_account["_id"])] = destination_account
+    lock_ids = {
+        account_id: await accounts.ensure_account_balance_lock(user_id, account["_id"])
+        for account_id, account in affected_accounts.items()
+    }
+    expected_signature = _transaction_lifecycle_signature(transaction)
+    amount = float(transaction.get("amount", 0) or 0)
+    goal_id = transaction.get("goal_id")
+
+    async def commit_transition(session):
+        for lock_id in sorted(lock_ids.values()):
+            await accounts.lock_account_balance(session, lock_id)
+        current = await db.expenses.find_one(transaction_query, session=session)
+        if not current:
+            raise HTTPException(status_code=404, detail="Transaction state changed. Reload and try again.")
+        if _transaction_lifecycle_signature(current) != expected_signature:
+            raise HTTPException(status_code=409, detail="This transaction changed. Reload and try again.")
+
+        direction = 1 if action == "restore" else (0 if action == "permanent_delete" else -1)
+        deltas = {account_id: 0.0 for account_id in affected_accounts}
+        source_id = str(source_account["_id"])
+        destination_id = str(destination_account["_id"]) if destination_account else None
+        if transaction_type == "income":
+            deltas[source_id] += direction * amount
+        elif transaction_type in {"expense", "contribution"}:
+            deltas[source_id] -= direction * amount
+        elif transaction_type == "transfer":
+            deltas[source_id] -= direction * amount
+            deltas[destination_id] += direction * amount
+        else:
+            raise HTTPException(status_code=409, detail="This transaction type cannot be safely changed.")
+
+        for account_id, delta in deltas.items():
+            if delta >= 0:
+                continue
+            account = affected_accounts[account_id]
+            current_balance = await accounts.calculate_account_balance(
+                account.get("name", ""), user_id,
+                float(account.get("initial_balance", 0) or 0), session=session, account_id=account_id,
             )
-            if not rollback.matched_count:
-                raise HTTPException(status_code=409, detail="The linked savings goal is unavailable; transaction was not deleted.")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=409, detail="Could not safely remove the linked goal contribution.") from e
+            if current_balance + delta < -0.005:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"This change would leave {account.get('name', 'the linked account')} without enough balance. Keep the transaction active or add funds first.",
+                )
 
-    result = await db.expenses.delete_one({"_id": exp_oid})
-    if result.deleted_count == 1:
-        await create_crossed_threshold_notifications(str(expense.get("user_id", "")))
-        return {"status": "Success", "message": "Transaction deleted successfully"}
+        goal_oid = None
+        if goal_id:
+            try:
+                goal_oid = ObjectId(str(goal_id))
+            except Exception:
+                raise HTTPException(status_code=409, detail="The linked savings goal is unavailable.")
 
-    raise HTTPException(status_code=500, detail="Failed to delete transaction")
+        if action == "archive":
+            values = {"is_archived": True, "archived_at": datetime.utcnow()}
+            if goal_oid and not current.get("goal_contribution_reversed"):
+                goal_result = await db.goals.update_one(
+                    {"_id": goal_oid, "user_id": user_id, "current_savings": {"$gte": amount}},
+                    {"$inc": {"current_savings": -amount}}, session=session,
+                )
+                if not goal_result.matched_count:
+                    raise HTTPException(status_code=409, detail="The goal balance no longer matches this contribution. Refresh and try again.")
+                values["goal_contribution_reversed"] = True
+            changed = await db.expenses.update_one(transaction_query, {"$set": values}, session=session)
+            if not changed.matched_count:
+                raise HTTPException(status_code=409, detail="Transaction state changed. Reload and try again.")
+            return changed
+
+        if action == "restore":
+            changed = await db.expenses.update_one(
+                transaction_query, {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}}, session=session
+            )
+            if changed.matched_count and goal_oid and current.get("goal_contribution_reversed"):
+                goal_result = await db.goals.update_one(
+                    {"_id": goal_oid, "user_id": user_id}, {"$inc": {"current_savings": amount}}, session=session
+                )
+                if not goal_result.matched_count:
+                    raise HTTPException(status_code=409, detail="The linked goal is unavailable; transaction was not restored.")
+                marker = await db.expenses.update_one(
+                    {"_id": expense_oid, "user_id": user_id}, {"$unset": {"goal_contribution_reversed": ""}}, session=session
+                )
+                if not marker.matched_count:
+                    raise HTTPException(status_code=409, detail="The linked goal update could not be completed safely.")
+            return changed
+
+        if action in {"delete", "permanent_delete"}:
+            if goal_oid and not current.get("goal_contribution_reversed"):
+                goal_result = await db.goals.update_one(
+                    {"_id": goal_oid, "user_id": user_id, "current_savings": {"$gte": amount}},
+                    {"$inc": {"current_savings": -amount}}, session=session,
+                )
+                if not goal_result.matched_count:
+                    raise HTTPException(status_code=409, detail="The goal balance no longer matches this contribution. Refresh and try again.")
+            deleted = await db.expenses.delete_one(transaction_query, session=session)
+            if not deleted.deleted_count:
+                raise HTTPException(status_code=409, detail="Transaction state changed. Reload and try again.")
+            return deleted
+
+        raise HTTPException(status_code=400, detail="Unsupported transaction action.")
+
+    try:
+        async with await db.client.start_session() as session:
+            result = await session.with_transaction(commit_transition)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="We couldn't safely update this transaction. Please try again.") from exc
+
+    changed = result.deleted_count == 1 if action in {"delete", "permanent_delete"} else result.matched_count == 1
+    if not changed:
+        raise HTTPException(status_code=409, detail="Transaction state changed. Reload and try again.")
+
+
+@app.delete("/delete-expense/{expense_id}")
+async def delete_expense(expense_id: str, user_id: Optional[str] = None, current_user: dict = Depends(get_current_user)):
+    await _transition_transaction_lifecycle(expense_id, current_user["id"], "delete")
+    await safely_refresh_budget_notifications(current_user["id"])
+    return {"status": "Success", "message": "Transaction deleted successfully"}
 
 
 @app.patch("/archive-expense/{expense_id}")
 async def archive_expense(expense_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        exp_oid = ObjectId(expense_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid transaction ID")
-    expense_query = {"_id": exp_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}
-    expense = await db.expenses.find_one(expense_query)
-    if not expense:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    result = await db.expenses.update_one(
-        expense_query,
-        {"$set": {"is_archived": True, "archived_at": datetime.utcnow()}},
-    )
-    if not result.matched_count:
-        raise HTTPException(status_code=404, detail="Transaction not found")
-    if expense.get("goal_id"):
-        goal_changed = False
-        try:
-            goal_result = await db.goals.update_one(
-                {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
-                {"$inc": {"current_savings": -float(expense.get("amount", 0))}},
-            )
-            if not goal_result.matched_count:
-                raise ValueError("Linked goal not found")
-            goal_changed = True
-            marker_result = await db.expenses.update_one(
-                {"_id": exp_oid, "user_id": current_user["id"], "is_archived": True},
-                {"$set": {"goal_contribution_reversed": True}},
-            )
-            if not marker_result.matched_count:
-                raise ValueError("Could not record goal rollback state")
-        except Exception as exc:
-            if goal_changed:
-                await db.goals.update_one(
-                    {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
-                    {"$inc": {"current_savings": float(expense.get("amount", 0))}},
-                )
-            await db.expenses.update_one(
-                {"_id": exp_oid, "user_id": current_user["id"], "is_archived": True},
-                {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}},
-            )
-            raise HTTPException(status_code=409, detail="Could not safely archive the linked goal contribution.") from exc
-    await create_crossed_threshold_notifications(current_user["id"])
+    await _transition_transaction_lifecycle(expense_id, current_user["id"], "archive")
+    await safely_refresh_budget_notifications(current_user["id"])
     return {"status": "Success", "message": "Transaction archived successfully"}
 
 
 @app.patch("/restore-expense/{expense_id}")
 async def restore_expense(expense_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        exp_oid = ObjectId(expense_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid transaction ID")
-    expense_query = {"_id": exp_oid, "user_id": current_user["id"], "is_archived": True}
-    expense = await db.expenses.find_one(expense_query)
-    if not expense:
-        raise HTTPException(status_code=404, detail="Archived transaction not found")
-    txn_type = str(expense.get("type", "")).lower()
-    source_account = None
-    lock_id = None
-    if txn_type in {"expense", "transfer", "contribution"}:
-        try:
-            source_account_id = ObjectId(expense.get("account_id", ""))
-            source_account = await db.accounts.find_one({"_id": source_account_id, "is_archived": {"$ne": True}})
-        except Exception:
-            source_account = await db.accounts.find_one({
-                "name": expense.get("account"), "is_archived": {"$ne": True},
-                "$or": [{"user_id": current_user["id"], "account_role": "user"}, {"account_role": "admin"}],
-            })
-        if source_account:
-            lock_id = await accounts.ensure_account_balance_lock(current_user["id"], source_account["_id"])
-    async def commit_restore(session):
-        if lock_id:
-            await accounts.lock_account_balance(session, lock_id)
-            available = await accounts.calculate_account_balance(
-                expense.get("account", ""), current_user["id"],
-                float((source_account or {}).get("initial_balance", 0) or 0), session=session,
-                account_id=str(source_account["_id"]) if source_account else None,
-            )
-            if float(expense.get("amount", 0) or 0) > available:
-                raise HTTPException(status_code=409, detail="The selected account does not have enough balance to restore this transaction.")
-        changed = await db.expenses.update_one(
-            expense_query, {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}}, session=session
-        )
-        if not changed.matched_count:
-            raise HTTPException(status_code=404, detail="Archived transaction not found")
-        if expense.get("goal_contribution_reversed") and expense.get("goal_id"):
-            restored_goal = await db.goals.update_one(
-                {"_id": ObjectId(expense["goal_id"]), "user_id": current_user["id"]},
-                {"$inc": {"current_savings": float(expense.get("amount", 0))}}, session=session,
-            )
-            if not restored_goal.matched_count:
-                raise HTTPException(status_code=409, detail="The linked goal is unavailable; transaction was not restored.")
-            await db.expenses.update_one(
-                {"_id": exp_oid, "user_id": current_user["id"]},
-                {"$unset": {"goal_contribution_reversed": ""}}, session=session,
-            )
-    try:
-        async with await db.client.start_session() as session:
-            await session.with_transaction(commit_restore)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=503, detail="Could not safely restore this transaction. Verify MongoDB transaction support and try again.") from exc
-    await create_crossed_threshold_notifications(current_user["id"])
+    await _transition_transaction_lifecycle(expense_id, current_user["id"], "restore")
+    await safely_refresh_budget_notifications(current_user["id"])
     return {"status": "Success", "message": "Transaction restored successfully"}
 
 
 @app.delete("/permanent-delete-expense/{expense_id}")
 async def permanently_delete_expense(expense_id: str, current_user: dict = Depends(get_current_user)):
-    try:
-        exp_oid = ObjectId(expense_id)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid transaction ID")
-    expense = await db.expenses.find_one({"_id": exp_oid, "user_id": current_user["id"], "is_archived": True})
-    if not expense:
-        raise HTTPException(status_code=404, detail="Archived transaction not found")
-    goal_id = expense.get("goal_id")
-    if goal_id and not expense.get("goal_contribution_reversed"):
-        try:
-            goal_result = await db.goals.update_one(
-                {"_id": ObjectId(goal_id), "user_id": current_user["id"]},
-                {"$inc": {"current_savings": -float(expense.get("amount", 0))}},
-            )
-            if not goal_result.matched_count:
-                raise ValueError("Linked goal not found")
-        except Exception as exc:
-            raise HTTPException(status_code=409, detail="Could not safely remove the linked goal contribution.") from exc
-    await db.expenses.delete_one({"_id": exp_oid, "user_id": current_user["id"], "is_archived": True})
-    await create_crossed_threshold_notifications(current_user["id"])
+    await _transition_transaction_lifecycle(expense_id, current_user["id"], "permanent_delete")
+    await safely_refresh_budget_notifications(current_user["id"])
     return {"message": "Transaction permanently deleted"}
-
 
 # --- 11. ONBOARDING ---
 @app.post("/initial-setup")
@@ -1796,6 +1853,17 @@ async def initial_setup(data: InitialSetupSchema, current_user: dict = Depends(g
             raise HTTPException(status_code=422, detail="Target date must be a real date in YYYY-MM-DD format.")
         if target_date <= ph_today():
             raise HTTPException(status_code=422, detail="The goal target date must be in the future.")
+    elif data.goal_type_id:
+        raise HTTPException(status_code=422, detail="A goal type can only be provided with a goal.")
+
+    selected_goal_type = None
+    if goal_provided and data.goal_type_id:
+        selected_goal_type = await db.goal_types.find_one({
+            "_id": ObjectId(data.goal_type_id),
+            "is_archived": {"$ne": True},
+        })
+        if not selected_goal_type:
+            raise HTTPException(status_code=422, detail="Choose an active goal type preset.")
 
     # FIX: PIN was previously stored in plaintext (paired with the /verify-pin fix above).
     await db.users.update_one(
@@ -1805,7 +1873,7 @@ async def initial_setup(data: InitialSetupSchema, current_user: dict = Depends(g
 
     if goal_provided:
         # Keep onboarding-created goals consistent with goals created later.
-        default_goal_type = (
+        default_goal_type = selected_goal_type or (
             await db.goal_types.find_one({"is_archived": {"$ne": True}, "name": {"$regex": "^other$", "$options": "i"}})
             or await db.goal_types.find_one({"is_archived": {"$ne": True}})
         )

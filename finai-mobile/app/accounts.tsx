@@ -1,7 +1,7 @@
 import React, { useCallback, useState } from 'react';
-import { 
-  ActivityIndicator, Alert, FlatList, Modal, StyleSheet, 
-  Text, TextInput, TouchableOpacity, View, StatusBar, SafeAreaView, KeyboardAvoidingView, Platform 
+import {
+  ActivityIndicator, Alert, FlatList, Modal, StyleSheet,
+  Text, TextInput, TouchableOpacity, View, StatusBar, SafeAreaView, KeyboardAvoidingView, Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -11,8 +11,8 @@ import { API_URL } from '../config';
 import { Account } from '../context/TransactionContext';
 
 // Import natin ang emoji helper
-import { getAccountEmoji } from '../utils/accountEmoji';
-import EmojiPicker, { getDisplayEmoji } from '../components/EmojiPicker';
+import { getAccountDisplayEmoji, getAccountEmoji } from '../utils/accountEmoji';
+import EmojiPicker from '../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -68,7 +68,7 @@ export default function PersonalAccountsScreen() {
     setSelectedTemplate(templates[0] || null);
     setAccountName(templates[0]?.name || '');
     setOpeningBalance('0');
-    setAccountEmoji(getDisplayEmoji(templates[0]?.icon, getAccountEmoji(templates[0]?.name || 'account')));
+    setAccountEmoji(getAccountDisplayEmoji(templates[0]?.icon, templates[0]?.name || 'account'));
     setIsModalVisible(true);
   };
 
@@ -77,8 +77,8 @@ export default function PersonalAccountsScreen() {
     setEditingAccount(account);
     setAccountName(account.name);
     setOpeningBalance(String(account.initial_balance || 0));
-    setAccountEmoji(getDisplayEmoji(account.icon, getAccountEmoji(account.name)));
-    
+    setAccountEmoji(getAccountDisplayEmoji(account.icon, account.name));
+
     // Hanapin kung may tumutugmang template o gamitin ang icon niya
     const matchedTemplate = templates.find(t => t.name.toLowerCase() === account.name.toLowerCase()) || templates[0] || null;
     setSelectedTemplate(matchedTemplate);
@@ -88,31 +88,31 @@ export default function PersonalAccountsScreen() {
   const selectTemplate = (template: AccountTemplate) => {
     setSelectedTemplate(template);
     setAccountName(template.name);
-    setAccountEmoji(getDisplayEmoji(template.icon, getAccountEmoji(template.name)));
+    setAccountEmoji(getAccountDisplayEmoji(template.icon, template.name));
   };
 
   // Save Account (Gumagana pareho sa CREATE at UPDATE)
   const saveAccount = async () => {
     const name = accountName.trim();
     const initialBalance = Number(openingBalance);
-    
-    if (!selectedTemplate && !editingAccount) { 
-      Alert.alert('Account type required', 'Pumili muna ng account template.'); 
-      return; 
+
+    if (!selectedTemplate && !editingAccount) {
+      Alert.alert('Account type required', 'Select an account template first.');
+      return;
     }
-    if (!name) { 
-      Alert.alert('Account name required', 'Bigyan ng pangalan ang personal account mo.'); 
-      return; 
+    if (!name) {
+      Alert.alert('Account name required', 'Enter a name for your personal account.');
+      return;
     }
-    if (!Number.isFinite(initialBalance) || initialBalance < 0) { 
-      Alert.alert('Invalid opening balance', 'Maglagay ng zero o positibong halaga.'); 
-      return; 
+    if (!Number.isFinite(initialBalance) || initialBalance < 0) {
+      Alert.alert('Invalid opening balance', 'Enter zero or a positive amount.');
+      return;
     }
-    
+
     // I-check kung may duplicate name (maliban kung sarili niya ang ini-edit)
-    if (accounts.some((account) => account.name.toLowerCase() === name.toLowerCase() && account.id !== editingAccount?.id)) { 
-      Alert.alert('Duplicate account', 'Mayroon nang ganitong pangalan ng account.'); 
-      return; 
+    if (accounts.some((account) => account.name.toLowerCase() === name.toLowerCase() && account.id !== editingAccount?.id)) {
+      Alert.alert('Name already in use', 'You already have a personal account with this name. Choose a different name or edit the existing account.');
+      return;
     }
 
     setIsSaving(true);
@@ -157,7 +157,7 @@ export default function PersonalAccountsScreen() {
 
   // Archive keeps the account and its transaction history recoverable.
   const deleteAccount = (account: Account) => {
-    Alert.alert('Archive account?', 'Ililipat ang account sa Archive Center. Maaari mo itong ibalik anumang oras.', [
+    Alert.alert('Archive account?', 'This account will move to the archive. You can restore it later.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Archive', style: 'destructive', onPress: async () => {
         const token = await AsyncStorage.getItem('user_token');
@@ -172,7 +172,7 @@ export default function PersonalAccountsScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-      
+
       {/* Modern Gradient Header */}
       <LinearGradient colors={[TEAL, DEEP_GREEN]} style={styles.header}>
         <View style={styles.headerTop}>
@@ -210,7 +210,7 @@ export default function PersonalAccountsScreen() {
             <View style={styles.accountCard}>
               <View style={styles.cardInfo}>
                 <View style={styles.accountIconBox}>
-                  <Text style={{ fontSize: 24 }}>{getDisplayEmoji(item.icon, getAccountEmoji(item.name))}</Text>
+                  <Text style={{ fontSize: 24 }}>{getAccountDisplayEmoji(item.icon, item.name)}</Text>
                 </View>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <Text style={styles.accountName}>{item.name}</Text>
@@ -244,55 +244,56 @@ export default function PersonalAccountsScreen() {
                 <Ionicons name="close" size={22} color={DEEP_GREEN} />
               </TouchableOpacity>
             </View>
-            
+
             {!editingAccount && (
               <>
                 <Text style={styles.label}>Select Account Preset</Text>
                 <View style={styles.templateList}>
                   {templates.map((template) => (
-                    <TouchableOpacity 
-                      key={template.id} 
-                      style={[styles.template, selectedTemplate?.id === template.id && styles.templateSelected]} 
+                    <TouchableOpacity
+                      key={template.id}
+                      style={[styles.template, selectedTemplate?.id === template.id && styles.templateSelected]}
                       onPress={() => selectTemplate(template)}
                     >
-                      <Text style={{ fontSize: 16 }}>{getDisplayEmoji(template.icon, getAccountEmoji(template.name))}</Text>
+                      <Text style={{ fontSize: 16 }}>{getAccountDisplayEmoji(template.icon, template.name)}</Text>
                       <Text style={[styles.templateText, selectedTemplate?.id === template.id && styles.templateTextSelected]}>
                         {template.name}
                       </Text>
                     </TouchableOpacity>
                   ))}
                 </View>
+                <Text style={styles.fieldHint}>The preset chooses the account type. You can give your own account the same name as the preset.</Text>
               </>
             )}
-            
+
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 }}>
-              <EmojiPicker value={accountEmoji} onChange={setAccountEmoji} fallback={getAccountEmoji(accountName || 'account')} tint={ACCOUNT_TINT} accessibilityLabel="Choose personal account emoji" />
+              <EmojiPicker value={accountEmoji} onChange={setAccountEmoji} fallback={getAccountEmoji(accountName || 'account')} context="account" tint={ACCOUNT_TINT} accessibilityLabel="Choose personal account emoji" />
               <Text style={{ flex: 1, color: SAGE, fontSize: 13, fontWeight: '600' }}>Choose an icon for this account</Text>
             </View>
 
-            <Text style={styles.label}>Personal Account Name</Text>
-            <TextInput 
-              value={accountName} 
-              onChangeText={setAccountName} 
-              placeholder="e.g., My Personal GCash" 
-              placeholderTextColor={SAGE} 
-              style={styles.input} 
-              maxLength={40} 
+            <Text style={styles.label}>Your Account Name</Text>
+            <TextInput
+              value={accountName}
+              onChangeText={setAccountName}
+              placeholder="e.g., GCash or My GCash"
+              placeholderTextColor={SAGE}
+              style={styles.input}
+              maxLength={40}
             />
-            
+
             <Text style={styles.label}>Opening Balance</Text>
-            <TextInput 
-              value={openingBalance} 
-              onChangeText={(value) => setOpeningBalance(value.replace(/[^0-9.]/g, ''))} 
-              placeholder="0.00" 
-              placeholderTextColor={SAGE} 
-              keyboardType="decimal-pad" 
-              style={styles.input} 
+            <TextInput
+              value={openingBalance}
+              onChangeText={(value) => setOpeningBalance(value.replace(/[^0-9.]/g, ''))}
+              placeholder="0.00"
+              placeholderTextColor={SAGE}
+              keyboardType="decimal-pad"
+              style={styles.input}
             />
-            
-            <TouchableOpacity 
-              style={[styles.primaryButton, isSaving && styles.disabledButton, { marginTop: 25 }]} 
-              onPress={saveAccount} 
+
+            <TouchableOpacity
+              style={[styles.primaryButton, isSaving && styles.disabledButton, { marginTop: 25 }]}
+              onPress={saveAccount}
               disabled={isSaving}
             >
               {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{editingAccount ? 'Update Account' : 'Save Account'}</Text>}
@@ -306,13 +307,13 @@ export default function PersonalAccountsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  
-  header: { 
-    paddingHorizontal: 20, 
-    paddingTop: 25, 
-    paddingBottom: 25, 
-    borderBottomLeftRadius: 30, 
-    borderBottomRightRadius: 30, 
+
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 25,
+    paddingBottom: 25,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
     elevation: 6,
     shadowColor: DEEP_GREEN,
     shadowOpacity: 0.2,
@@ -324,48 +325,49 @@ const styles = StyleSheet.create({
   title: { fontSize: 22, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.5 },
   addBtnHeader: { width: 38, height: 38, borderRadius: 12, backgroundColor: GOLD, justifyContent: 'center', alignItems: 'center', elevation: 2 },
   subtitle: { color: 'rgba(255, 255, 255, 0.8)', fontSize: 13, fontWeight: '500', paddingLeft: 4 },
-  
+
   loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  
+
   list: { padding: 20, paddingTop: 20, paddingBottom: 40 },
   emptyList: { flexGrow: 1, justifyContent: 'center', padding: 30 },
-  
+
   emptyState: { alignItems: 'center', paddingBottom: 50 },
   emptyIconCircle: { width: 70, height: 70, borderRadius: 35, backgroundColor: ACCOUNT_TINT, justifyContent: 'center', alignItems: 'center', marginBottom: 15 },
   emptyTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800', marginBottom: 8 },
   emptyText: { color: SAGE, textAlign: 'center', lineHeight: 22, marginBottom: 25, fontSize: 13, paddingHorizontal: 10 },
-  
-  accountCard: { 
+
+  accountCard: {
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 12,
-    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', 
+    flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
     shadowColor: DEEP_GREEN, shadowOpacity: 0.05, shadowRadius: 8, shadowOffset: { width: 0, height: 3 }, elevation: 2,
   },
   cardInfo: { flexDirection: 'row', alignItems: 'center', flexShrink: 1, flex: 1 },
   accountIconBox: { width: 50, height: 50, borderRadius: 16, backgroundColor: ACCOUNT_TINT, alignItems: 'center', justifyContent: 'center', marginRight: 14 },
   accountName: { color: DEEP_GREEN, fontSize: 16, fontWeight: '800', marginBottom: 3 },
   openingBalance: { color: SAGE, fontSize: 12, fontWeight: '600' },
-  
+
   actionButtonsRow: { flexDirection: 'row', gap: 8 },
   editBtn: { padding: 10, backgroundColor: '#E0F2FE', borderRadius: 12 },
   deleteBtn: { padding: 10, backgroundColor: '#FFEDED', borderRadius: 12 },
-  
+
   overlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(28, 60, 54, 0.5)' },
   modalContent: { backgroundColor: '#FFFFFF', padding: 25, paddingBottom: Platform.OS === 'ios' ? 40 : 30, borderTopLeftRadius: 30, borderTopRightRadius: 30, elevation: 10 },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   modalTitle: { color: DEEP_GREEN, fontWeight: '900', fontSize: 20 },
   closeBtn: { padding: 6, backgroundColor: '#F4F7F6', borderRadius: 12 },
-  
+
   label: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800', marginTop: 15, marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 },
-  
+
   templateList: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 5 },
   template: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10, paddingHorizontal: 14, borderRadius: 16, backgroundColor: '#F9FAFB', borderWidth: 1, borderColor: '#E5E7EB' },
   templateSelected: { backgroundColor: '#E8F5E9', borderColor: TEAL },
   templateText: { color: SAGE, fontWeight: '700', fontSize: 14 },
   templateTextSelected: { color: TEAL, fontWeight: '800' },
-  
+  fieldHint: { color: SAGE, fontSize: 12, lineHeight: 17, marginTop: 6 },
+
   parserContainer: { flexDirection: 'row', alignItems: 'center' },
   input: { backgroundColor: '#F9FAFB', borderColor: '#E5E7EB', borderWidth: 1, borderRadius: 16, padding: 16, color: DEEP_GREEN, fontSize: 15, fontWeight: '600' },
-  
+
   primaryButton: { minHeight: 54, borderRadius: 16, backgroundColor: TEAL, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 20, elevation: 2, shadowColor: TEAL, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
   primaryButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 16, letterSpacing: 0.5 },
   disabledButton: { opacity: 0.7 },

@@ -33,7 +33,7 @@ const isValidDateOnly = (value: string) => {
 export default function TransactionsScreen() {
   const {
     transactions,
-    deleteTransaction, // Pwede mong palitan/dagdagan ng archiveTransaction sa context kung meron
+    archiveTransaction,
     fetchTransactions,
     isLoading,
     categories,
@@ -102,24 +102,23 @@ export default function TransactionsScreen() {
 
   // 👈 BINAGO NATIN MULA DELETE PATUNGONG ARCHIVE LOGIC
   const confirmArchive = useCallback((id: string, swipeableInstance: Swipeable | null) => {
-    Alert.alert("Archive Record", "Gusto mo bang ilipat sa archive ang record na ito?", [
+    Alert.alert('Archive record', 'Move this record to the archive?', [
       { text: "Cancel", style: "cancel", onPress: () => swipeableInstance?.close() },
       { 
         text: "Archive", 
         style: "default", 
         onPress: async () => { 
           try {
-            // Kung may archiveTransaction ka sa context, gamitin mo. O kaya fetch direct sa backend:
-            await deleteTransaction(id); // O papalitan ng endpoint ng archive kung hiwalay
+            await archiveTransaction(id);
             swipeableInstance?.close();
             fetchTransactions(false);
-          } catch (e) {
-            Alert.alert("Error", "Hindi nai-archive ang record.");
+          } catch (error) {
+            Alert.alert("Couldn't archive transaction", error instanceof Error ? error.message : "Please try again.");
           }
         } 
       }
     ]);
-  }, [deleteTransaction, fetchTransactions]);
+  }, [archiveTransaction, fetchTransactions]);
 
   const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
     if (item.goal_id) {

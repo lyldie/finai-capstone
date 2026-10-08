@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
-import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getGoalEmoji } from '../../utils/goalEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
@@ -69,10 +69,10 @@ export default function AdminArchiveScreen() {
         headers: { Authorization: `Bearer ${user?.token}` }
       });
       if (res.ok) {
-        Alert.alert('Success 🎉', 'Naibalik na ang preset sa active list!');
+        Alert.alert('Success 🎉', 'The preset has been restored to the active list.');
         fetchArchivedData();
       } else {
-        Alert.alert('Error', 'Hindi naibalik ang item.');
+        Alert.alert('Could not restore item', 'Please try again.');
       }
     } catch (error) {
       Alert.alert('Error', 'May nangyaring problema sa pag-restore.');
@@ -82,7 +82,7 @@ export default function AdminArchiveScreen() {
   const handlePermanentDelete = (id: string) => {
     Alert.alert(
       'Permanent Delete',
-      'Sigurado ka bang gusto mong burahin ito nang tuluyan? Hindi na ito mababawi.',
+      'Are you sure you want to permanently delete this item? This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
@@ -101,7 +101,7 @@ export default function AdminArchiveScreen() {
               if (res.ok) {
                 fetchArchivedData();
               } else {
-                Alert.alert('Error', 'Hindi mabura ang item.');
+                Alert.alert('Could not delete item', 'Please try again.');
               }
             } catch (error) {
               Alert.alert('Error', 'May nangyaring problema.');
@@ -153,13 +153,13 @@ export default function AdminArchiveScreen() {
               <View style={styles.emptyIconCircle}>
                 <Ionicons name="archive-outline" size={36} color={GOLD} />
               </View>
-              <Text style={styles.emptyTitle}>Walang na-archive na {activeTab.toLowerCase()}</Text>
-              <Text style={styles.comingSoonText}>Malinis ang admin archive bin para dito.</Text>
+              <Text style={styles.emptyTitle}>No archived {activeTab.toLowerCase()}.</Text>
+              <Text style={styles.comingSoonText}>There are no archived items in this section.</Text>
             </View>
           }
           renderItem={({ item }) => {
             const presetEmoji = activeTab === 'Accounts'
-              ? getDisplayEmoji(item.icon, getAccountEmoji(item.name || 'account'))
+              ? getAccountDisplayEmoji(item.icon, item.name || 'account')
               : activeTab === 'GoalTypes'
                 ? getDisplayEmoji(item.icon, getGoalEmoji(item.name || ''))
                 : getDisplayEmoji(item.icon, getCategoryEmoji(item.name || '', item.type));

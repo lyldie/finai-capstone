@@ -48,6 +48,15 @@ const localDateKey = (value: Date) => {
   return `${part('year')}-${part('month')}-${part('day')}`;
 };
 
+const getNiceChartMax = (value: number, sections = 4) => {
+  const safeMax = Math.max(Number.isFinite(value) ? value : 0, 100);
+  const rawStep = safeMax / sections;
+  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
+  const normalizedStep = rawStep / magnitude;
+  const niceMultiplier = [1, 2, 2.5, 5, 10].find((step) => step >= normalizedStep) || 10;
+  return Math.max(100, niceMultiplier * magnitude * sections);
+};
+
 const screenWidth = Dimensions.get('window').width;
 
 export default function InsightsScreen() {
@@ -215,7 +224,8 @@ export default function InsightsScreen() {
     return data;
   }, [transactions, timeframe, subTab]);
 
-  const chartMaxValue = Math.max(...chartData.map(d => d.value), 100);
+  const chartMaxValue = getNiceChartMax(Math.max(...chartData.map((item) => Number(item.value) || 0), 0));
+  const chartStepValue = chartMaxValue / 4;
 
   // NEW: Category breakdown for the selected type + timeframe (no backend changes needed —
   // every transaction already carries `category`, this is a pure client-side aggregation).
@@ -285,7 +295,7 @@ export default function InsightsScreen() {
           </View>
           <View>
             <Text style={styles.headerTitle}>Financial Insights</Text>
-            <Text style={styles.headerSubtitle}>AI-powered financial monitoring</Text>
+
           </View>
         </View>
       </View>
@@ -365,18 +375,18 @@ export default function InsightsScreen() {
 
             <View style={styles.finaiFullKpiCard}>
               <View style={styles.fullCardHeader}>
-                <View style={{ flexDirection: 'row', alignItems: 'flex-start' }}>
+                <View style={styles.fullCardLeftSide}>
                   <View style={[styles.kpiIconBadge, { backgroundColor: 'rgba(237, 178, 50, 0.16)', marginRight: 12, marginBottom: 0 }]}>
                     <Ionicons name="flag-outline" size={16} color={GOLD} />
                   </View>
-                  <View>
-                    <Text style={styles.kpiMetaText}>Total Savings Progress (All Goals)</Text>
-                    <Text style={[styles.kpiMainValue, { color: DEEP_GREEN }]}>{formatCurrency(stats.totalSavings)}</Text>
+                  <View style={styles.fullCardTextColumn}>
+                    <Text style={styles.kpiMetaText} numberOfLines={2}>Total Savings Progress (All Goals)</Text>
+                    <Text style={[styles.kpiMainValue, { color: DEEP_GREEN }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{formatCurrency(stats.totalSavings)}</Text>
                   </View>
                 </View>
                 <View style={styles.fullCardRightSide}>
-                  <Text style={styles.goalPercentageText}>{stats.overallGoalProgress.toFixed(0)}% Total Saved</Text>
-                  <Text style={styles.miniGoalTarget}>Combined Target: {formatCurrency(stats.totalTarget)}</Text>
+                  <Text style={styles.goalPercentageText} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{stats.overallGoalProgress.toFixed(0)}% Total Saved</Text>
+                  <Text style={styles.miniGoalTarget} numberOfLines={2}>Combined Target: {formatCurrency(stats.totalTarget)}</Text>
                 </View>
               </View>
               <View style={styles.analyticsProgressBarWrapper}><View style={[styles.analyticsProgressBarFill, { width: `${Math.min(stats.overallGoalProgress, 100)}%` }]} /></View>
@@ -403,6 +413,12 @@ export default function InsightsScreen() {
                   yAxisTextStyle={{ color: SAGE, fontSize: 10 }}
                   noOfSections={4}
                   maxValue={chartMaxValue}
+                  stepValue={chartStepValue}
+                  roundToDigits={0}
+                  showFractionalValues={false}
+                  yAxisLabelPrefix={String.fromCharCode(0x20B1)}
+                  yAxisLabelWidth={58}
+                  formatYLabel={(label) => (Number(label) || 0).toLocaleString('en-PH', { maximumFractionDigits: 0 })}
                   isAnimated={false}
                   showGradient
                   initialSpacing={10}
@@ -424,7 +440,7 @@ export default function InsightsScreen() {
 
               {categoryChartData.length === 0 ? (
                 <View style={styles.emptyCategoryState}>
-                  <Text style={styles.emptyCategoryText}>Walang {subTab.toLowerCase()} record para sa {timeframe.toLowerCase()} na ito.</Text>
+                  <Text style={styles.emptyCategoryText}>No {subTab.toLowerCase()} records for this {timeframe.toLowerCase()}.</Text>
                 </View>
               ) : (
                 <View style={styles.donutRow}>
@@ -500,7 +516,7 @@ export default function InsightsScreen() {
                   <Ionicons name="wallet-outline" size={28} color={GOLD} />
                 </View>
                 <Text style={styles.emptyStateText}>
-                  Walang nakaset na budget limit paps. Pindutin ang "Set Limit" sa itaas para mag-add! 🐿️
+                  No budget limits yet. Select "Set Limit" above to add one.
                 </Text>
               </View>
             ) : (
@@ -523,7 +539,7 @@ export default function InsightsScreen() {
                       params: { id: item.id, category_id: item.category_id, amount: item.amount, period_type: item.period_type }
                     })}
                     onLongPress={() => {
-                      Alert.alert("Burahin ang budget?", `Sigurado ka bang buburahin ang budget limit para sa ${categoryName}?`, [
+                      Alert.alert('Delete budget?', `Are you sure you want to delete the budget limit for ${categoryName}?`, [
                         { text: "Cancel", style: "cancel" },
                         { text: "Delete", style: "destructive", onPress: () => deleteBudget(item.id) }
                       ]);
@@ -576,7 +592,7 @@ export default function InsightsScreen() {
                   <Ionicons name="flag-outline" size={28} color={GOLD} />
                 </View>
                 <Text style={styles.emptyStateText}>
-                  Walang nakaset na financial goals paps. Gumawa na para sa capstone! 🎯
+                  No financial goals yet. Create one to start tracking your savings progress.
                 </Text>
               </View>
             ) : (
@@ -601,14 +617,14 @@ export default function InsightsScreen() {
                     <View style={styles.goalMainLayout}>
                       <View style={styles.goalLeftColumn}>
                         <View style={styles.targetIconCircle}><Text style={{ fontSize: 18 }}>{goalIcon}</Text></View>
-                        <View style={{ marginLeft: 10 }}>
-                          <Text style={styles.finaiGoalTitle}>{goal.target_name}</Text>
+                        <View style={styles.goalTitleColumn}>
+                          <Text style={styles.finaiGoalTitle} numberOfLines={1} ellipsizeMode="tail">{goal.target_name}</Text>
                           {presetName ? (
                             <View style={styles.presetBadge}>
-                              <Text style={styles.presetBadgeText}>{presetName}</Text>
+                              <Text style={styles.presetBadgeText} numberOfLines={1} ellipsizeMode="tail">{presetName}</Text>
                             </View>
                           ) : null}
-                          <Text style={styles.finaiGoalDate}>Target: {goal.target_date || 'N/A'}</Text>
+                          <Text style={styles.finaiGoalDate} numberOfLines={1} ellipsizeMode="tail">Target: {goal.target_date || 'N/A'}</Text>
                         </View>
                       </View>
 
@@ -634,8 +650,8 @@ export default function InsightsScreen() {
                           style={[styles.actionIconButton, { backgroundColor: 'rgba(255, 98, 89, 0.14)', marginLeft: 6 }]}
                           onPress={() => {
                             Alert.alert(
-                              "I-archive ang Goal?",
-                              `Ililipat ang "${goal.target_name}" sa Archive Center. Maaari mo itong ibalik anumang oras.`,
+                              "Archive goal?",
+                              `"${goal.target_name}" will move to the Trash Bin. You can restore it at any time.`,
                               [
                                 { text: "Cancel", style: "cancel" },
                                 {
@@ -652,10 +668,10 @@ export default function InsightsScreen() {
                     </View>
 
                     <View style={styles.goalProgressInfoRow}>
-                      <Text style={styles.goalProgressStats}>
+                      <Text style={styles.goalProgressStats} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                         {formatCurrency(saved)} / {formatCurrency(target)}
                       </Text>
-                      <Text style={styles.goalPercentageText}>{progress.toFixed(0)}% Saved</Text>
+                      <Text style={styles.goalPercentageText} numberOfLines={1}>{progress.toFixed(0)}% Saved</Text>
                     </View>
 
                     <View style={styles.goalProgressBarWrapper}>
@@ -731,9 +747,11 @@ const styles = StyleSheet.create({
   kpiGridRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
   finaiKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '48%', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
   finaiFullKpiCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, width: '100%', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2, marginBottom: 16 },
-  fullCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  fullCardRightSide: { alignItems: 'flex-end' },
-  miniGoalTarget: { fontSize: 11, color: SAGE, marginTop: 2 },
+  fullCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: 10 },
+  fullCardLeftSide: { flexDirection: 'row', alignItems: 'flex-start', flex: 1, minWidth: 0 },
+  fullCardTextColumn: { flex: 1, minWidth: 0 },
+  fullCardRightSide: { alignItems: 'flex-end', flexShrink: 1, maxWidth: '43%' },
+  miniGoalTarget: { fontSize: 11, color: SAGE, marginTop: 2, textAlign: 'right', flexShrink: 1 },
   kpiMetaText: { fontSize: 11, color: SAGE, fontWeight: '600' },
   kpiMainValue: { fontSize: 18, fontWeight: '800', marginVertical: 4 },
   kpiIconBadge: { width: 30, height: 30, borderRadius: 10, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
@@ -785,16 +803,17 @@ const styles = StyleSheet.create({
   catProgressBarFill: { height: '100%', borderRadius: 3 },
   finaiGoalCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 14, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 6, elevation: 1, flexDirection: 'column' },
   goalMainLayout: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
-  goalLeftColumn: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  goalLeftColumn: { flexDirection: 'row', alignItems: 'center', flex: 1, minWidth: 0, marginRight: 8 },
+  goalTitleColumn: { marginLeft: 10, flex: 1, minWidth: 0 },
   targetIconCircle: { width: 38, height: 38, borderRadius: 19, backgroundColor: 'rgba(237, 178, 50, 0.16)', justifyContent: 'center', alignItems: 'center' },
   finaiGoalTitle: { fontSize: 13, fontWeight: '700', color: DEEP_GREEN },
   finaiGoalDate: { fontSize: 10, color: SAGE, marginTop: 2 },
   presetBadge: { backgroundColor: 'rgba(61, 125, 108, 0.12)', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, alignSelf: 'flex-start', marginVertical: 3 },
   presetBadgeText: { fontSize: 10, fontWeight: '700', color: DEEP_GREEN },
-  goalActionsRow: { flexDirection: 'row', alignItems: 'center' },
+  goalActionsRow: { flexDirection: 'row', alignItems: 'center', flexShrink: 0 },
   actionIconButton: { width: 30, height: 30, borderRadius: 15, backgroundColor: 'rgba(28, 60, 54, 0.08)', justifyContent: 'center', alignItems: 'center' },
-  goalProgressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12 },
-  goalProgressStats: { fontSize: 12, fontWeight: '700', color: DEEP_GREEN },
+  goalProgressInfoRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 12, gap: 8 },
+  goalProgressStats: { fontSize: 12, fontWeight: '700', color: DEEP_GREEN, flexShrink: 1 },
   goalPercentageText: { fontSize: 11, color: '#10B981', fontWeight: '600' },
   goalProgressBarWrapper: { height: 6, backgroundColor: '#ECE7DD', borderRadius: 3, overflow: 'hidden', marginTop: 8, width: '100%' },
   goalProgressBarFill: { height: '100%', backgroundColor: '#10B981', borderRadius: 3 },

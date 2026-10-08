@@ -119,7 +119,7 @@ async def permanent_delete_goal_type(gt_id: str, admin: dict = Depends(get_curre
     if linked_goal:
         raise HTTPException(
             status_code=400, 
-            detail="Hindi ma-permanently delete. May mga active user goals pang gumagamit sa goal type na ito."
+            detail="This goal type cannot be permanently deleted because active user goals still use it."
         )
 
     result = await db.goal_types.delete_one({"_id": oid})

@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { 
-  StyleSheet, Text, View, TouchableOpacity, TextInput, 
+  StyleSheet, Text, View, TouchableOpacity, TextInput, Modal, FlatList,
   Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard 
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +9,9 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import { getGoalEmoji } from '../utils/goalEmoji';
+import { getDisplayEmoji } from '../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -17,12 +20,42 @@ const GOLD = '#edb232';
 const SAGE = '#8BA19D';
 const CREAM = '#FAF7F2';
 
+interface GoalType {
+  id: string;
+  name: string;
+  icon?: string;
+}
+
+const formatLocalDate = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+
+const philippineTodayKey = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(new Date());
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+};
+
+const getTomorrowInPhilippines = () => {
+  const [year, month, day] = philippineTodayKey().split('-').map(Number);
+  return new Date(year, month - 1, day + 1, 12, 0, 0);
+};
+
 export default function SetupPinScreen() {
   const [pin, setPin] = useState('');
   const [income, setIncome] = useState('');
   const [goalName, setGoalName] = useState('');
   const [goalAmount, setGoalAmount] = useState('');
-  const [goalDate, setGoalDate] = useState(''); 
+  const [goalDate, setGoalDate] = useState<Date | null>(null);
+  const [showGoalDatePicker, setShowGoalDatePicker] = useState(false);
+  const [goalTypes, setGoalTypes] = useState<GoalType[]>([]);
+  const [selectedGoalType, setSelectedGoalType] = useState<GoalType | null>(null);
+  const [showGoalTypePicker, setShowGoalTypePicker] = useState(false);
   const [loading, setLoading] = useState(false);
 
   const inputRef = useRef<TextInput>(null); 
@@ -30,11 +63,27 @@ export default function SetupPinScreen() {
   
   const { user } = useAuth();
 
+  React.useEffect(() => {
+    let active = true;
+    fetch(`${API_URL}/api/goal-types/`)
+      .then(async (response) => response.ok ? response.json() : [])
+      .then((types: GoalType[]) => {
+        if (active) setGoalTypes(Array.isArray(types) ? types.filter((item) => item && item.id && item.name) : []);
+      })
+      .catch(() => { if (active) setGoalTypes([]); });
+    return () => { active = false; };
+  }, []);
+
+  const onGoalDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+    if (Platform.OS === 'android') setShowGoalDatePicker(false);
+    if (selectedDate) setGoalDate(selectedDate);
+  };
+
   const handleConfirmPinAndSetup = async () => {
     Keyboard.dismiss();
 
     if (pin.length !== 4) {
-      Alert.alert("Wait lang paps!", "Kailangan 4 digits ang PIN mo para safe.");
+      Alert.alert('Invalid PIN', 'Enter all 4 digits to continue.');
       return;
     }
 
@@ -45,31 +94,20 @@ export default function SetupPinScreen() {
       return;
     }
 
-    const goalValues = [goalName.trim(), goalAmount.trim(), goalDate.trim()];
+    const goalValues = [goalName.trim(), goalAmount.trim(), goalDate ? formatLocalDate(goalDate) : ''];
     const goalProvided = goalValues.some(Boolean);
     if (goalProvided && !goalValues.every(Boolean)) {
-      Alert.alert("Goal details incomplete", "To add a goal now, fill in its name, target amount, and target date. Otherwise, leave all three blank and add a goal later.");
+      Alert.alert("Goal details incomplete", "To add a goal now, fill in its name, target amount, goal type, and target date. Otherwise, leave the goal blank and add it later.");
       return;
     }
 
     let parsedGoalAmount: number | undefined;
     if (goalProvided) {
-      const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-      if (!dateRegex.test(goalDate.trim())) {
-        Alert.alert("Invalid Date", "Use YYYY-MM-DD for the target date, for example 2026-12-31.");
+      if (!selectedGoalType) {
+        Alert.alert("Choose a goal type", "Select a goal type preset, or leave the optional goal for later.");
         return;
       }
-
-      const [year, month, day] = goalDate.trim().split('-').map(Number);
-      const parsedTargetDate = new Date(year, month - 1, day);
-      if (parsedTargetDate.getFullYear() !== year || parsedTargetDate.getMonth() !== month - 1 || parsedTargetDate.getDate() !== day) {
-        Alert.alert("Invalid Date", "Enter a real calendar date.");
-        return;
-      }
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      if (parsedTargetDate <= today) {
+      if (goalValues[2] <= philippineTodayKey()) {
         Alert.alert("Invalid Date", "Choose a target date in the future.");
         return;
       }
@@ -86,7 +124,7 @@ export default function SetupPinScreen() {
     try {
       const userId = user?.id || await AsyncStorage.getItem('user_id');
       if (!userId) {
-        Alert.alert("Session Error", "Hindi mahanap ang user session. Subukang mag-register ulit paps.");
+        Alert.alert('Session error', 'Your user session could not be found. Please sign in again.');
         router.replace('/signup');
         return;
       }
@@ -98,7 +136,8 @@ export default function SetupPinScreen() {
         ...(goalProvided ? {
           target_name: goalName.trim(),
           target_amount: parsedGoalAmount,
-          target_date: goalDate.trim(),
+          target_date: formatLocalDate(goalDate!),
+          goal_type_id: selectedGoalType!.id,
         } : {}),
       };
 
@@ -114,22 +153,22 @@ export default function SetupPinScreen() {
         await AsyncStorage.setItem('user_pin', pin);
 
         Alert.alert(
-          "Setup Complete! 🚀🛡️", 
+          'Setup complete',
           "Your app PIN is set. You can add or update your optional money baseline and savings goals later.", 
           [
             { 
-              text: "Let's Go!", 
+              text: 'Continue',
               onPress: () => router.replace('/login') 
             }
           ]
         );
       } else {
-        Alert.alert("Backend Error", res.detail || "May mali sa pagsisave ng profile setup paps.");
+        Alert.alert('Setup error', typeof res.detail === 'string' ? res.detail : 'Could not save your setup. Please try again.');
       }
 
     } catch (error) {
       console.error(error);
-      Alert.alert("Connection Error", "Hindi maabot ang server. Siguraduhing tumatakbo ang backend paps.");
+      Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -210,7 +249,7 @@ export default function SetupPinScreen() {
           <View style={styles.sectionCard}>
             <Text style={styles.sectionTitle}>🎯 FIRST FINANCIAL GOAL · OPTIONAL</Text>
             <Text style={styles.fieldHint}>You can set a savings goal now or add one later from Insights.</Text>
-            <Text style={styles.label}>Target Name (Ano ang pinag-iipunan mo?)</Text>
+            <Text style={styles.label}>Goal name</Text>
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. Emergency Fund / Laptop"
@@ -220,26 +259,68 @@ export default function SetupPinScreen() {
               editable={!loading}
             />
 
-            <Text style={styles.label}>Target Savings Amount (Magkano ang target ipon?)</Text>
+            <Text style={styles.label}>Goal Type</Text>
+            <TouchableOpacity
+              style={styles.pickerButton}
+              onPress={() => { Keyboard.dismiss(); setShowGoalTypePicker(true); }}
+              disabled={loading}
+              activeOpacity={0.75}
+            >
+              <View style={styles.pickerButtonContent}>
+                {selectedGoalType ? (
+                  <Text style={styles.goalTypeEmoji}>{getDisplayEmoji(selectedGoalType.icon, getGoalEmoji(selectedGoalType.name))}</Text>
+                ) : (
+                  <Ionicons name="options-outline" size={19} color={TEAL} style={{ marginRight: 10 }} />
+                )}
+                <Text style={[styles.pickerButtonText, !selectedGoalType && styles.placeholderText]}>
+                  {selectedGoalType?.name || 'Choose a goal type preset'}
+                </Text>
+              </View>
+              <Ionicons name="chevron-down" size={19} color={SAGE} />
+            </TouchableOpacity>
+
+            <Text style={styles.label}>Target savings amount</Text>
             <TextInput 
               style={styles.inputField}
               placeholder="e.g. 15000"
               placeholderTextColor={SAGE}
-              keyboardType="numeric"
+              keyboardType="decimal-pad"
               value={goalAmount}
               onChangeText={setGoalAmount}
               editable={!loading}
             />
 
-            <Text style={styles.label}>Target Date (Kailan mo gustong makamit? YYYY-MM-DD)</Text>
-            <TextInput 
-              style={styles.inputField}
-              placeholder="e.g. 2026-12-31"
-              placeholderTextColor={SAGE}
-              value={goalDate}
-              onChangeText={setGoalDate}
-              editable={!loading}
-            />
+            <Text style={styles.label}>Target date</Text>
+            <TouchableOpacity
+              style={styles.pickerButton}
+              onPress={() => { Keyboard.dismiss(); setShowGoalDatePicker((current) => !current); }}
+              disabled={loading}
+              activeOpacity={0.75}
+            >
+              <View style={styles.pickerButtonContent}>
+                <Ionicons name="calendar-outline" size={19} color={TEAL} style={{ marginRight: 10 }} />
+                <Text style={[styles.pickerButtonText, !goalDate && styles.placeholderText]}>
+                  {goalDate ? goalDate.toLocaleDateString('en-PH', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Choose a target date'}
+                </Text>
+              </View>
+              <Ionicons name={showGoalDatePicker ? 'chevron-up' : 'chevron-down'} size={19} color={SAGE} />
+            </TouchableOpacity>
+            {showGoalDatePicker && (
+              <View style={styles.datePickerContainer}>
+                <DateTimePicker
+                  value={goalDate || getTomorrowInPhilippines()}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  minimumDate={getTomorrowInPhilippines()}
+                  onChange={onGoalDateChange}
+                />
+                {Platform.OS === 'ios' && (
+                  <TouchableOpacity style={styles.datePickerDone} onPress={() => setShowGoalDatePicker(false)}>
+                    <Text style={styles.datePickerDoneText}>Done</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            )}
           </View>
 
           <View style={styles.buttonWrapper}>
@@ -259,6 +340,46 @@ export default function SetupPinScreen() {
           </View>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showGoalTypePicker}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowGoalTypePicker(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Choose a goal type</Text>
+              <TouchableOpacity onPress={() => setShowGoalTypePicker(false)} style={styles.modalCloseButton}>
+                <Ionicons name="close" size={20} color={DEEP_GREEN} />
+              </TouchableOpacity>
+            </View>
+            <Text style={styles.modalHint}>These presets are managed by your app administrator.</Text>
+            <FlatList
+              data={goalTypes}
+              keyExtractor={(item) => item.id}
+              style={{ maxHeight: 330 }}
+              keyboardShouldPersistTaps="handled"
+              ListEmptyComponent={<Text style={styles.emptyGoalTypes}>No active goal presets are available. You can skip this optional goal and add one later.</Text>}
+              renderItem={({ item }) => {
+                const isSelected = selectedGoalType?.id === item.id;
+                return (
+                  <TouchableOpacity
+                    style={[styles.goalTypeOption, isSelected && styles.goalTypeOptionSelected]}
+                    onPress={() => { setSelectedGoalType(item); setShowGoalTypePicker(false); }}
+                    activeOpacity={0.75}
+                  >
+                    <Text style={styles.goalTypeEmoji}>{getDisplayEmoji(item.icon, getGoalEmoji(item.name))}</Text>
+                    <Text style={styles.goalTypeOptionText}>{item.name}</Text>
+                    {isSelected && <Ionicons name="checkmark-circle" size={20} color={TEAL} />}
+                  </TouchableOpacity>
+                );
+              }}
+            />
+          </View>
+        </View>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -319,6 +440,39 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginBottom: 12,
   },
+  pickerButton: {
+    minHeight: 48,
+    backgroundColor: CREAM,
+    borderRadius: 10,
+    paddingHorizontal: 13,
+    marginBottom: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  pickerButtonContent: { flexDirection: 'row', alignItems: 'center', flex: 1 },
+  pickerButtonText: { color: DEEP_GREEN, fontSize: 14, fontWeight: '600', flexShrink: 1 },
+  placeholderText: { color: SAGE, fontWeight: '500' },
+  goalTypeEmoji: { fontSize: 20, marginRight: 10 },
+  datePickerContainer: {
+    backgroundColor: CREAM,
+    borderRadius: 12,
+    marginBottom: 14,
+    paddingVertical: 8,
+    alignItems: 'center',
+  },
+  datePickerDone: { alignSelf: 'flex-end', paddingHorizontal: 18, paddingVertical: 10 },
+  datePickerDoneText: { color: TEAL, fontSize: 14, fontWeight: '700' },
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(10, 25, 22, 0.48)', justifyContent: 'flex-end' },
+  modalCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24, paddingHorizontal: 20, paddingTop: 20, paddingBottom: 30 },
+  modalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  modalTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800' },
+  modalCloseButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: CREAM, alignItems: 'center', justifyContent: 'center' },
+  modalHint: { color: SAGE, fontSize: 12, lineHeight: 18, marginTop: 6, marginBottom: 12 },
+  goalTypeOption: { minHeight: 52, flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, borderRadius: 12, marginBottom: 6 },
+  goalTypeOptionSelected: { backgroundColor: '#EDF5F1' },
+  goalTypeOptionText: { flex: 1, color: DEEP_GREEN, fontSize: 15, fontWeight: '600' },
+  emptyGoalTypes: { textAlign: 'center', color: SAGE, fontSize: 13, lineHeight: 19, paddingVertical: 22, paddingHorizontal: 10 },
   buttonWrapper: { width: '100%', alignItems: 'center', marginTop: 10 },
   button: { 
     backgroundColor: DEEP_GREEN, 

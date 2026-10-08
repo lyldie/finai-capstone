@@ -34,7 +34,7 @@ export default function AddAccountScreen() {
 
   const handleAddAccount = async () => {
     if (!name.trim()) {
-      Alert.alert("Error", "Paki-fill up yung pangalan ng account, paps.");
+      Alert.alert('Name required', 'Enter a name for the account.');
       return;
     }
 
@@ -60,10 +60,10 @@ export default function AddAccountScreen() {
       } else {
         const errorData = await response.json();
         console.error(errorData); 
-        Alert.alert("Error", "Hindi makapag-add ng account.");
+        Alert.alert('Could not add account', 'Please try again.');
       }
     } catch (error) {
-      Alert.alert("Network Error", "Check mo server, paps.");
+      Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -90,7 +90,7 @@ export default function AddAccountScreen() {
       >
         <View style={styles.formCard}>
           <View style={styles.previewRow}>
-            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getAccountEmoji(name || 'account')} tint={ACCOUNT_TINT} accessibilityLabel="Choose account emoji" />
+            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getAccountEmoji(name || 'account')} context="account" tint={ACCOUNT_TINT} accessibilityLabel="Choose account emoji" />
             <View style={{ flex: 1 }}>
               <Text style={styles.previewHint}>Choose an icon for this account</Text>
               {emojiTouched && (

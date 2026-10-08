@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -11,9 +11,9 @@ import { isAvailableAsync, shareAsync } from 'expo-sharing';
 
 // 👈 Document Picker at readAsStringAsync para sa Restore (Import)
 import * as DocumentPicker from 'expo-document-picker';
-import { readAsStringAsync } from 'expo-file-system';
 
 import { useAuth } from '../../context/AuthContext';
+import { useTransactions } from '../../context/TransactionContext';
 import { API_URL } from '../../config';
 
 // ---- FINAI BRAND TOKENS ----
@@ -25,14 +25,19 @@ const CREAM = '#FAF7F2';
 const EXPENSE = '#FF6259';
 
 const API_BASE_URL = `${API_URL}/api/users`;
+const formatBaseline = (amount: number) => `${String.fromCharCode(0x20B1)}${amount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function ProfileScreen() {
   const { user, logoutUser } = useAuth();
+  const { fetchTransactions } = useTransactions();
   const router = useRouter();
 
   // --- MODAL STATES ---
   const [isIncomeModalVisible, setIncomeModalVisible] = useState(false);
   const [newIncome, setNewIncome] = useState('');
+  const [monthlyBaseline, setMonthlyBaseline] = useState<number | null | undefined>(undefined);
+  const [baselineLoading, setBaselineLoading] = useState(true);
+  const [baselineLoadFailed, setBaselineLoadFailed] = useState(false);
 
   const [isPinModalVisible, setPinModalVisible] = useState(false);
   const [oldPin, setOldPin] = useState('');
@@ -41,6 +46,47 @@ export default function ProfileScreen() {
   const [isPasswordModalVisible, setPasswordModalVisible] = useState(false);
   const [oldPassword, setOldPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [showNewPassword, setShowNewPassword] = useState(false);
+
+  const newPasswordChecks = [
+    { label: 'At least 10 characters', valid: newPassword.length >= 10 },
+    { label: 'An uppercase and a lowercase letter', valid: /[A-Z]/.test(newPassword) && /[a-z]/.test(newPassword) },
+    { label: 'At least one number', valid: /\d/.test(newPassword) },
+  ];
+  const newPasswordStrong = newPasswordChecks.every((check) => check.valid);
+  const newPasswordHasSymbol = /[^A-Za-z0-9]/.test(newPassword);
+
+  useEffect(() => {
+    if (!user?.id || !user?.token) {
+      setBaselineLoading(false);
+      if (user?.id) setBaselineLoadFailed(true);
+      return;
+    }
+
+    let cancelled = false;
+    setBaselineLoading(true);
+    fetch(`${API_BASE_URL}/me/profile`, {
+      headers: { Authorization: `Bearer ${user.token}` },
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Profile request failed');
+        return response.json();
+      })
+      .then((profile) => {
+        if (cancelled) return;
+        const value = profile?.monthly_income;
+        setMonthlyBaseline(typeof value === 'number' && Number.isFinite(value) ? value : null);
+        setBaselineLoadFailed(false);
+      })
+      .catch(() => {
+        if (!cancelled) setBaselineLoadFailed(true);
+      })
+      .finally(() => {
+        if (!cancelled) setBaselineLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [user?.id, user?.token]);
 
   // --- HANDLERS ---
   const handleUpdateIncome = async () => {
@@ -62,12 +108,14 @@ export default function ProfileScreen() {
       });
       
       if (response.ok) {
-        Alert.alert('Success', `Monthly money baseline updated to ₱${newIncome}.`);
+        setMonthlyBaseline(parsedIncome);
+        setBaselineLoadFailed(false);
+        Alert.alert('Success', `Monthly money budget updated to ${formatBaseline(parsedIncome)}.`);
         setIncomeModalVisible(false);
         setNewIncome('');
       } else {
         const data = await response.json().catch(() => ({}));
-        Alert.alert('Error', data.detail || 'Hindi ma-update ang income. Subukan ulit.');
+        Alert.alert('Could not update baseline', typeof data.detail === 'string' ? data.detail : 'Please try again.');
       }
     } catch (error) {
       Alert.alert('Connection Error', 'Check your backend server.');
@@ -95,7 +143,7 @@ export default function ProfileScreen() {
         setOldPin('');
         setNewPin('');
       } else {
-        Alert.alert('Error', data.detail || 'Mali ang nilagay mong lumang PIN.');
+        Alert.alert('Could not change PIN', typeof data.detail === 'string' ? data.detail : 'Check your current PIN and try again.');
       }
     } catch (error) {
       Alert.alert('Connection Error', 'Check your backend server.');
@@ -103,8 +151,12 @@ export default function ProfileScreen() {
   };
 
   const handleChangePassword = async () => {
-    if (!oldPassword || !newPassword || newPassword.length < 6) {
-      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang bagong password ay dapat 6 characters pataas.');
+    if (!oldPassword || !newPassword) {
+      Alert.alert('Missing information', 'Enter your current password and a new password.');
+      return;
+    }
+    if (!newPasswordStrong) {
+      Alert.alert('Choose a stronger password', 'Use at least 10 characters, uppercase and lowercase letters, and a number.');
       return;
     }
 
@@ -115,14 +167,20 @@ export default function ProfileScreen() {
         body: JSON.stringify({ old_password: oldPassword, new_password: newPassword })
       });
       
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
-        Alert.alert('Success', 'Password changed successfully!');
+        Alert.alert(
+          'Success',
+          data.security_notification_queued
+            ? 'Password changed successfully. A security notice has been queued for your account email.'
+            : 'Password changed successfully.'
+        );
         setPasswordModalVisible(false);
         setOldPassword('');
         setNewPassword('');
+        setShowNewPassword(false);
       } else {
-        Alert.alert('Error', data.detail || 'Mali ang nilagay mong lumang password.');
+        Alert.alert('Could not change password', typeof data.detail === 'string' ? data.detail : 'Check your current password and try again.');
       }
     } catch (error) {
       Alert.alert('Connection Error', 'Check your backend server.');
@@ -133,7 +191,7 @@ export default function ProfileScreen() {
   const handleCloudBackupExport = async () => {
     const targetUserId = user?.id || (user as any)?._id;
     if (!targetUserId) {
-      Alert.alert("Error", "Kailangan mong mag-log in ulit.");
+      Alert.alert('Sign-in required', 'Please sign in again to continue.');
       return;
     }
 
@@ -143,7 +201,7 @@ export default function ProfileScreen() {
       });
 
       if (!response.ok) {
-        throw new Error("Hindi nakuha ang data mula sa server.");
+        throw new Error('Could not retrieve your backup from the server.');
       }
 
       const data = await response.json();
@@ -156,12 +214,12 @@ export default function ProfileScreen() {
       if (await isAvailableAsync()) {
         await shareAsync(backupFile.uri);
       } else {
-        Alert.alert("Success", `Na-save ang backup file.`);
+        Alert.alert("Success", "Your backup file has been saved.");
       }
 
     } catch (error) {
       console.error("Backup export error:", error);
-      Alert.alert("Error", "Nagkaroon ng problema sa pag-export ng iyong mga record.");
+      Alert.alert("Error", "There was a problem exporting your records.");
     }
   };
 
@@ -178,40 +236,93 @@ export default function ProfileScreen() {
       }
 
       const fileUri = result.assets[0].uri;
-      const fileContent = await readAsStringAsync(fileUri);
+      const fileContent = await new File(fileUri).text();
       const parsedData = JSON.parse(fileContent);
 
-      if (!parsedData || !parsedData.transactions) {
-        Alert.alert("Error", "Hindi wastong format ng backup file.");
+      const requiredCollections = ['transactions', 'accounts', 'budgets', 'goals'];
+      if (
+        !parsedData ||
+        typeof parsedData !== 'object' ||
+        Array.isArray(parsedData) ||
+        !requiredCollections.every((collection) => Array.isArray(parsedData[collection]))
+      ) {
+        Alert.alert('Invalid backup', 'This file is not a valid FinAI backup. Choose a backup exported from FinAI.');
         return;
       }
 
+      if (requiredCollections.some((collection) => parsedData[collection].length > 5000)) {
+        Alert.alert('Backup too large', 'This backup contains more records than FinAI can restore at once.');
+        return;
+      }
+
+      Alert.alert(
+        'Replace financial records?',
+        'Restoring this backup replaces your current transactions, accounts, budgets, and goals with the records in this file.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Restore backup',
+            style: 'destructive',
+            onPress: () => { void submitBackupRestore(parsedData); },
+          },
+        ]
+      );
+
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not read the selected backup file.';
+      Alert.alert('Could not open backup', message);
+    }
+  };
+
+  const submitBackupRestore = async (backup: Record<string, any>) => {
+    if (!user?.token) {
+      Alert.alert('Login required', 'Please log in again before restoring a backup.');
+      return;
+    }
+
+    try {
       const response = await fetch(`${API_URL}/api/export/restore`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${user?.token}`,
+          Authorization: `Bearer ${user.token}`,
         },
-        body: JSON.stringify(parsedData),
+        body: JSON.stringify(backup),
       });
+      const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error("Nabigo ang pag-restore ng data mula sa server.");
+        const detail = typeof responseData.detail === 'string' ? responseData.detail : null;
+        throw new Error(detail || 'The server could not restore this backup. Check that it was exported from your account.');
       }
 
-      Alert.alert("Success!", "Matagumpay na naibalik at nai-import ang iyong mga financial records sa app!");
-
+      await fetchTransactions(false);
+      Alert.alert('Restore complete', 'Your financial records were restored successfully.');
     } catch (error) {
-      console.error("Restore error:", error);
-      Alert.alert("Error", "Nagkaroon ng problema sa pag-import ng backup file.");
+      const message = error instanceof Error ? error.message : 'Check your connection and try again.';
+      Alert.alert('Restore failed', message);
     }
   };
 
   const handleLogout = () => {
-    Alert.alert("Mag-logout", "Sigurado ka ba paps?", [
+    Alert.alert('Sign out', 'Are you sure you want to sign out?', [
       { text: "Cancel", style: "cancel" },
-      { text: "Logout", style: "destructive", onPress: () => logoutUser() }
+      { text: "Logout", style: "destructive", onPress: () => { void performLogout(); } }
     ]);
+  };
+
+  const performLogout = async () => {
+    let storageClearFailed = false;
+    try {
+      await logoutUser();
+    } catch {
+      storageClearFailed = true;
+    }
+
+    router.replace('/login');
+    if (storageClearFailed) {
+      Alert.alert('Signed out', 'Your session was closed, but some saved session data could not be cleared.');
+    }
   };
 
   // Reusable Menu Button Component
@@ -248,9 +359,18 @@ export default function ProfileScreen() {
         <View style={styles.cardGroup}>
           <MenuOption 
             icon="wallet-outline" 
-            title="Update Monthly Money Baseline" 
-            subtitle="Optional context for the AI Budget Advisor"
-            onPress={() => setIncomeModalVisible(true)} 
+            title="Update Monthly Money Budget"
+            subtitle={baselineLoading
+              ? 'Loading your saved baseline…'
+              : baselineLoadFailed
+                ? 'Could not load your current baseline · Tap to update'
+                : typeof monthlyBaseline !== 'number'
+                  ? 'Not set · Optional context for the AI Budget Advisor'
+                  : `${formatBaseline(monthlyBaseline)} per month · Optional advisor context`}
+            onPress={() => {
+              setNewIncome(typeof monthlyBaseline === 'number' ? String(monthlyBaseline) : '');
+              setIncomeModalVisible(true);
+            }}
           />
           <View style={styles.divider} />
           <MenuOption 
@@ -281,10 +401,10 @@ export default function ProfileScreen() {
             onPress={() => setPasswordModalVisible(true)} 
           />
           <View style={styles.divider} />
-          {/* ARCHIVE CENTER SHORTCUT */}
+          {/* TRASH BIN SHORTCUT */}
           <MenuOption 
             icon="archive-outline" 
-            title="Archive Center & Trash Bin" 
+            title="Trash Bin"
             subtitle="Restore or manage archived records"
             color={TEAL}
             onPress={() => router.push('/archive' as any)} 
@@ -303,7 +423,7 @@ export default function ProfileScreen() {
           <MenuOption 
             icon="cloud-download-outline" 
             title="Restore / Import Backup" 
-            subtitle="Ibalik ang mga records mula sa JSON file"
+            subtitle="Restore records from a JSON file"
             color={TEAL}
             onPress={handleCloudRestoreImport} 
           />
@@ -321,7 +441,7 @@ export default function ProfileScreen() {
       <Modal visible={isIncomeModalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Update Monthly Money Baseline</Text>
+            <Text style={styles.modalTitle}>Update Monthly Budget</Text>
             <Text style={styles.modalDesc}>Use your typical monthly money available, including salary, allowance, or regular support. Enter 0 if you do not have a regular amount. This is optional context for the AI Budget Advisor.</Text>
             
             <View style={styles.inputWrapper}>
@@ -353,7 +473,7 @@ export default function ProfileScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Change App PIN</Text>
-            <Text style={styles.modalDesc}>Ilagay ang iyong kasalukuyang PIN bago mag-set ng bago.</Text>
+            <Text style={styles.modalDesc}>Enter your current PIN before setting a new one.</Text>
             
             <TextInput 
               style={[styles.textInputField, { marginBottom: 12 }]}
@@ -393,7 +513,7 @@ export default function ProfileScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Change Password</Text>
-            <Text style={styles.modalDesc}>Protektahan ang iyong FinAi account gamit ang matibay na password.</Text>
+            <Text style={styles.modalDesc}>Protect your FinAI account with a strong password.</Text>
             
             <TextInput 
               style={[styles.textInputField, { marginBottom: 12 }]}
@@ -403,14 +523,42 @@ export default function ProfileScreen() {
               value={oldPassword}
               onChangeText={setOldPassword}
             />
-            <TextInput 
-              style={[styles.textInputField, { marginBottom: 24 }]}
-              secureTextEntry
-              placeholder="New Password"
-              placeholderTextColor={SAGE}
-              value={newPassword}
-              onChangeText={setNewPassword}
-            />
+            <View style={styles.passwordInputContainer}>
+              <TextInput
+                style={styles.passwordInput}
+                secureTextEntry={!showNewPassword}
+                placeholder="New Password"
+                placeholderTextColor={SAGE}
+                value={newPassword}
+                onChangeText={setNewPassword}
+                autoCapitalize="none"
+                autoComplete="new-password"
+                textContentType="newPassword"
+              />
+              <TouchableOpacity
+                onPress={() => setShowNewPassword((visible) => !visible)}
+                accessibilityRole="button"
+                accessibilityLabel={showNewPassword ? 'Hide new password' : 'Show new password'}
+              >
+                <Ionicons name={showNewPassword ? 'eye-off' : 'eye'} size={20} color={SAGE} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.passwordGuidance}>
+              <Text style={[styles.passwordStrength, { color: !newPassword ? SAGE : newPasswordStrong ? TEAL : EXPENSE }]}>
+                {newPassword
+                  ? newPasswordStrong
+                    ? (newPasswordHasSymbol ? 'Strong password' : 'Good password · a symbol adds extra strength')
+                    : 'Weak password — meet the requirements below'
+                  : 'Use a strong password that is hard to guess'}
+              </Text>
+              {newPasswordChecks.map((check) => (
+                <View key={check.label} style={styles.passwordRule}>
+                  <Ionicons name={check.valid ? 'checkmark-circle' : 'ellipse-outline'} size={15} color={check.valid ? TEAL : SAGE} />
+                  <Text style={[styles.passwordRuleText, check.valid && styles.passwordRulePassed]}>{check.label}</Text>
+                </View>
+              ))}
+            </View>
 
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setPasswordModalVisible(false)}>
@@ -456,6 +604,13 @@ const styles = StyleSheet.create({
   currencyPrefix: { fontSize: 24, fontWeight: '700', color: DEEP_GREEN, marginRight: 10 },
   amountInputField: { flex: 1, height: 60, fontSize: 20, fontWeight: '700', color: DEEP_GREEN },
   textInputField: { width: '100%', height: 55, fontSize: 15, fontWeight: '600', color: DEEP_GREEN, backgroundColor: CREAM, borderRadius: 16, paddingHorizontal: 20 },
+  passwordInputContainer: { flexDirection: 'row', alignItems: 'center', width: '100%', backgroundColor: CREAM, borderRadius: 16, paddingHorizontal: 20, marginBottom: 8 },
+  passwordInput: { flex: 1, height: 55, fontSize: 15, fontWeight: '600', color: DEEP_GREEN },
+  passwordGuidance: { width: '100%', marginBottom: 16, paddingHorizontal: 4 },
+  passwordStrength: { fontSize: 12, fontWeight: '700', marginBottom: 4 },
+  passwordRule: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  passwordRuleText: { color: SAGE, fontSize: 11 },
+  passwordRulePassed: { color: TEAL },
   modalActions: { flexDirection: 'row', width: '100%', gap: 12 },
   cancelBtn: { flex: 1, paddingVertical: 16, borderRadius: 14, backgroundColor: CREAM, alignItems: 'center' },
   cancelBtnText: { color: SAGE, fontSize: 15, fontWeight: '700' },

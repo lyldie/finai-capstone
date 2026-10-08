@@ -2,14 +2,15 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
-import { useTransactions, TransactionType } from '../../context/TransactionContext'; 
-import DateTimePicker from '@react-native-community/datetimepicker'; 
-import ReceiptScannerModal from '../../components/ReceiptScannerModal'; 
+import { useTransactions, TransactionType, AppNotification } from '../../context/TransactionContext';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import ReceiptScannerModal from '../../components/ReceiptScannerModal';
+import QuickAddCategoryModal from '../../components/QuickAddCategoryModal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
-import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
@@ -20,6 +21,7 @@ const SAGE = '#7C9A95';
 const CREAM = '#FAF7F2';
 const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
+const TRANSFER = '#3B82F6';
 
 const formatLocalDate = (value: Date) => {
   const year = value.getFullYear();
@@ -56,7 +58,7 @@ const isValidIsoDate = (value: string) => {
 export default function TabTwoScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts } = useTransactions(); 
+  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts } = useTransactions();
 
   const [type, setType] = useState<TransactionType>('Expense');
   const [amount, setAmount] = useState('');
@@ -69,11 +71,12 @@ export default function TabTwoScreen() {
   const [isSaving, setIsSaving] = useState(false);
 
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
+  const [isQuickAddCategoryVisible, setIsQuickAddCategoryVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
-  const [isScannerVisible, setIsScannerVisible] = useState(false); 
+  const [isScannerVisible, setIsScannerVisible] = useState(false);
   const [selectingTarget, setSelectingTarget] = useState<'from' | 'to'>('from');
-  const [showDatePicker, setShowDatePicker] = useState(false); 
-  const [tempDate, setTempDate] = useState(new Date()); 
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [tempDate, setTempDate] = useState(new Date());
 
   const displayedCategories = categories.filter((c: any) => c.type === type.toLowerCase());
 
@@ -116,7 +119,7 @@ export default function TabTwoScreen() {
       if (params.category) setCategory(params.category as string);
       if (params.account) setAccount(params.account as string);
       if (params.to_account) setToAccount(params.to_account as string);
-      if (params.date) setDate(params.date as string); 
+      if (params.date) setDate(params.date as string);
     }
   }, [params.id, params.type, params.amount, params.note, params.category, params.account, params.to_account, params.date]);
 
@@ -131,53 +134,74 @@ export default function TabTwoScreen() {
   const getActiveColor = () => {
     if (type === 'Income') return INCOME;
     if (type === 'Expense') return EXPENSE;
-    return TEAL;
+    return TRANSFER;
   };
 
   const getActiveTint = () => {
     if (type === 'Income') return 'rgba(16, 185, 129, 0.12)';
     if (type === 'Expense') return 'rgba(255, 98, 89, 0.12)';
-    return 'rgba(61, 125, 108, 0.12)';
+    return 'rgba(59, 130, 246, 0.12)';
   };
+
+  const amountFontSize = amount.length > 11 ? 32 : amount.length > 9 ? 38 : amount.length > 7 ? 46 : 54;
 
   const handleAmountChange = (text: string) => {
     const cleaned = text.replace(/[^0-9.]/g, '');
     const parts = cleaned.split('.');
-    if (parts.length > 2) return; 
+    if (parts.length > 2) return;
     const [whole, decimal] = cleaned.split('.');
     setAmount(decimal === undefined ? whole : `${whole}.${decimal.slice(0, 2)}`);
   };
 
   const handleSave = async () => {
     if (isSaving) return;
-    if (!account) { Alert.alert('Account required', 'Mag-register o pumili muna ng payment account.'); return; }
-    if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Pumili ng destination payment account.'); return; }
+    if (!account) { Alert.alert('Account required', 'Add or select a payment account first.'); return; }
+    if (type === 'Transfer' && !toAccount) { Alert.alert('Destination required', 'Select a destination payment account.'); return; }
 
     const validAccountNames = accounts.map((a) => a.name);
-    if (!validAccountNames.includes(account)) { Alert.alert('Ops!', 'Hindi valid ang napiling account. Pumili ulit.'); return; }
-    if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Ops!', 'Hindi valid ang destination account. Pumili ulit.'); return; }
+    if (!validAccountNames.includes(account)) { Alert.alert('Invalid account', 'Select a valid account and try again.'); return; }
+    if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Invalid destination', 'Select a valid destination account and try again.'); return; }
 
-    if (!isValidIsoDate(date) || date > philippineTodayKey()) { Alert.alert('Invalid date', 'Pumili ng valid na transaction date.'); return; }
-    if (!isValidAmount(amount)) { Alert.alert("Teka lang paps!", "Kailangan may amount ang transaction mo. 😂"); return; }
-    if (type === 'Transfer' && account === toAccount) { Alert.alert("Teka lang paps!", "Hindi ka pwedeng mag-transfer sa parehong account. 😂"); return; }
+    if (!isValidIsoDate(date) || date > philippineTodayKey()) { Alert.alert('Invalid date', 'Select a valid transaction date.'); return; }
+    if (!isValidAmount(amount)) { Alert.alert('Amount required', 'Enter an amount for this transaction.'); return; }
+    if (type === 'Transfer' && account === toAccount) { Alert.alert('Choose another account', 'You cannot transfer money to the same account.'); return; }
 
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
-    if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert("Wait lang!", "Pili ka muna ng category paps."); return; }
+    if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert('Choose a category', 'Select a category before continuing.'); return; }
 
     const numericAmount = Number(amount).toFixed(2);
 
     setIsSaving(true);
     try {
+      let budgetNotifications: AppNotification[] = [];
       if (params && params.id) {
-        await updateTransaction(params.id as string, numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
-        Alert.alert("Success!", "Na-update na ang record!", [{ text: "OK", onPress: () => router.back() }]);
+        budgetNotifications = await updateTransaction(params.id as string, numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
       } else {
-        await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date); 
-        Alert.alert("Success!", `Na-record na ang iyong ${type}!`, [{ text: "OK", onPress: () => router.back() }]);
+        budgetNotifications = await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
+      }
+
+      const closeAndReturn = { text: "OK", onPress: () => router.back() };
+      if (budgetNotifications.length > 0) {
+        const messages = [...new Set(budgetNotifications.map((notification) => notification.message))];
+        const savedTitle = params?.id ? "Transaction updated" : `${type} saved`;
+        Alert.alert(savedTitle, `Budget alert:\n\n${messages.join("\n\n")}`, [closeAndReturn]);
+      } else {
+        const action = params?.id ? "Transaction updated successfully." : `${type} recorded successfully.`;
+        Alert.alert("Success!", action, [closeAndReturn]);
       }
     } catch (err) {
-      console.error("Save Error:", err);
-      Alert.alert("Ops!", "Hindi nagawa ang operation.");
+      const code = err instanceof Error ? err.message : "";
+      if (code === "INSUFFICIENT_BALANCE") {
+        const transactionLabel = type === "Transfer" ? "transfer" : "expense";
+        Alert.alert(
+          "Not enough account balance",
+          `This account does not have enough available balance for this ${transactionLabel}. Add funds, choose another account, or lower the amount.`
+        );
+      } else if (code === "TRANSACTION_TEMPORARY_FAILURE") {
+        Alert.alert("Couldn't save transaction", "Please check your connection and try again.");
+      } else {
+        Alert.alert("Couldn't save transaction", code || "Please review the details and try again.");
+      }
     } finally {
       setIsSaving(false);
     }
@@ -185,10 +209,10 @@ export default function TabTwoScreen() {
 
   // 👈 DYNAMIC EMOJI GETTERS PARA SA INPUT ROWS
   const selectedAcc = accounts.find(a => a.name === account);
-  const accEmoji = selectedAcc ? getDisplayEmoji(selectedAcc.icon, getAccountEmoji(selectedAcc.name)) : null;
+  const accEmoji = selectedAcc ? getAccountDisplayEmoji(selectedAcc.icon, selectedAcc.name) : null;
 
   const selectedToAcc = accounts.find(a => a.name === toAccount);
-  const toAccEmoji = selectedToAcc ? getDisplayEmoji(selectedToAcc.icon, getAccountEmoji(selectedToAcc.name)) : null;
+  const toAccEmoji = selectedToAcc ? getAccountDisplayEmoji(selectedToAcc.icon, selectedToAcc.name) : null;
 
   const selectedCat = categories.find((c: any) => c.name === category && c.type === type.toLowerCase());
   const catEmoji = selectedCat ? getDisplayEmoji(selectedCat.icon, getCategoryEmoji(selectedCat.name, type.toLowerCase())) : null;
@@ -220,6 +244,13 @@ export default function TabTwoScreen() {
     return accounts.filter((acc) => acc.name !== exclude);
   };
 
+  const handleCategoryCreated = (created: { name: string }) => {
+    setCategory(created.name);
+    setIsQuickAddCategoryVisible(false);
+    setIsCatModalVisible(false);
+    void fetchTransactions(false);
+  };
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
@@ -243,7 +274,7 @@ export default function TabTwoScreen() {
 
       <View style={styles.selectorContainer}>
         {(['Income', 'Expense', 'Transfer'] as TransactionType[]).map((t) => {
-          const tColor = t === 'Income' ? INCOME : t === 'Expense' ? EXPENSE : TEAL;
+          const tColor = t === 'Income' ? INCOME : t === 'Expense' ? EXPENSE : TRANSFER;
           return (
             <TouchableOpacity key={t} style={[styles.selectorItem, type === t && { backgroundColor: tColor }]} onPress={() => { setType(t); if (t === 'Transfer') setCategory('Transfer'); else setCategory('Select Category'); }}>
               <Text style={[styles.selectorText, type === t && { color: 'white' }]}>{t}</Text>
@@ -258,21 +289,21 @@ export default function TabTwoScreen() {
             <Text style={styles.currencyLabel}>PHP</Text>
             <View style={styles.amountInputRow}>
               <Text style={[styles.pesoSign, { color: getActiveColor() }]}>₱</Text>
-              <TextInput 
-                style={[styles.amountInput, { color: getActiveColor() }]} 
-                placeholder="0.00" 
-                placeholderTextColor="#A2B5B0" 
-                keyboardType="decimal-pad" 
-                autoFocus={!params?.id} 
-                value={amount} 
-                onChangeText={handleAmountChange} 
+              <TextInput
+                style={[styles.amountInput, { color: getActiveColor(), fontSize: amountFontSize }]}
+                placeholder="0.00"
+                placeholderTextColor="#A2B5B0"
+                keyboardType="decimal-pad"
+                autoFocus={!params?.id}
+                value={amount}
+                onChangeText={handleAmountChange}
               />
             </View>
           </View>
 
           <View style={styles.card}>
             <InputRow label="Date" value={date} iconName="calendar-outline" onPress={() => { setTempDate(dateFromIso(date)); setShowDatePicker(true); }} />
-            
+
             {showDatePicker && (Platform.OS === 'ios' ? (
               <Modal visible={showDatePicker} animationType="slide" transparent={true}>
                 <View style={styles.pickerModalOverlay}>
@@ -289,7 +320,7 @@ export default function TabTwoScreen() {
             ) : (
               <DateTimePicker value={dateFromIso(date)} mode="date" display="default" maximumDate={new Date()} onChange={(e, d) => { setShowDatePicker(false); if (d) setDate(formatLocalDate(d)); }} />
             ))}
-            
+
             {/* 👈 EMOJI PROPS PASSED TO INPUT ROWS */}
             <InputRow label={type === 'Transfer' ? "From" : "Account"} value={account} iconName="wallet-outline" emoji={accEmoji} onPress={() => { setSelectingTarget('from'); setIsAccModalVisible(true); }} />
             {type === 'Transfer' && <InputRow label="To" value={toAccount} iconName="swap-horizontal-outline" emoji={toAccEmoji} onPress={() => { setSelectingTarget('to'); setIsAccModalVisible(true); }} />}
@@ -312,11 +343,23 @@ export default function TabTwoScreen() {
       <Modal visible={isCatModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Category</Text>
+            <View style={styles.categoryModalHeader}>
+              <Text style={styles.modalTitle}>Select Category</Text>
+              <TouchableOpacity
+                style={styles.quickAddCategoryButton}
+                onPress={() => {
+                  setIsCatModalVisible(false);
+                  setIsQuickAddCategoryVisible(true);
+                }}
+              >
+                <Ionicons name="add" size={18} color="#FFFFFF" />
+                <Text style={styles.quickAddCategoryButtonText}>Add</Text>
+              </TouchableOpacity>
+            </View>
             {displayedCategories.length === 0 ? (
               <View style={styles.emptyModalState}>
                 <Ionicons name="folder-open-outline" size={30} color={SAGE} />
-                <Text style={styles.emptyModalText}>Wala pang {type.toLowerCase()} category.</Text>
+                <Text style={styles.emptyModalText}>No {type.toLowerCase()} categories available.</Text>
               </View>
             ) : (
               <FlatList data={displayedCategories} keyExtractor={(item: any) => item.id || item.name} numColumns={3} renderItem={({ item }: any) => (
@@ -338,6 +381,16 @@ export default function TabTwoScreen() {
         </View>
       </Modal>
 
+      <QuickAddCategoryModal
+        visible={isQuickAddCategoryVisible}
+        type={type.toLowerCase() as 'expense' | 'income'}
+        onClose={() => {
+          setIsQuickAddCategoryVisible(false);
+          setIsCatModalVisible(true);
+        }}
+        onCreated={handleCategoryCreated}
+      />
+
       {/* ACCOUNT MODAL WITH EMOJIS */}
       <Modal visible={isAccModalVisible} animationType="fade" transparent={true}>
         <View style={styles.modalOverlay}>
@@ -348,7 +401,7 @@ export default function TabTwoScreen() {
                 <View style={[styles.accIconChip, { backgroundColor: getActiveTint() }]}>
                   {/* 👈 EMOJI RENDERER */}
                   <Text style={{ fontSize: 18 }}>
-                    {getDisplayEmoji(acc.icon, getAccountEmoji(acc.name))}
+                    {getAccountDisplayEmoji(acc.icon, acc.name)}
                   </Text>
                 </View>
                 <Text style={styles.accOptionText}>{acc.name}</Text>
@@ -365,7 +418,7 @@ export default function TabTwoScreen() {
         </View>
       </Modal>
 
-      <ReceiptScannerModal 
+      <ReceiptScannerModal
         visible={isScannerVisible}
         onClose={() => setIsScannerVisible(false)}
         categories={categories}
@@ -375,7 +428,7 @@ export default function TabTwoScreen() {
           setCategory(categories.some((item: any) => item.name === data.category && item.type === 'expense') ? data.category : 'Select Category');
           setDate(/^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : formatLocalDate(new Date()));
           setNote(data.note);
-          setType('Expense'); 
+          setType('Expense');
         }}
       />
     </View>
@@ -389,18 +442,18 @@ const styles = StyleSheet.create({
   headerIconButton: { width: 38, height: 38, borderRadius: 19, backgroundColor: '#FFFFFF', justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 6, elevation: 1 },
   saveButtonCircle: { width: 42, height: 42, borderRadius: 21, justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
   headerTitle: { color: DEEP_GREEN, fontSize: 17, fontWeight: '800', letterSpacing: 0.3 },
-  
+
   selectorContainer: { flexDirection: 'row', backgroundColor: '#ECE7DD', borderRadius: 25, padding: 4, marginBottom: 30 },
   selectorItem: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 20 },
   selectorText: { color: SAGE, fontWeight: '800', fontSize: 13 },
-  
+
   form: { flex: 1 },
   amountSection: { alignItems: 'center', marginBottom: 40, marginTop: 10 },
   currencyLabel: { color: SAGE, fontSize: 14, fontWeight: '800', marginBottom: 5, letterSpacing: 1.5 },
-  amountInputRow: { flexDirection: 'row', alignItems: 'flex-start' },
+  amountInputRow: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
   pesoSign: { fontSize: 40, fontWeight: '300', marginTop: 8, marginRight: 4 },
-  amountInput: { fontSize: 54, fontWeight: '300' },
-  
+  amountInput: { flex: 1, minWidth: 0, maxWidth: '88%', fontWeight: '300', textAlign: 'center', paddingHorizontal: 0 },
+
   card: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 10, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
   inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 12, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },
   rowLabelContainer: { flexDirection: 'row', alignItems: 'center' },
@@ -409,23 +462,26 @@ const styles = StyleSheet.create({
   rowValueContainer: { flexDirection: 'row', alignItems: 'center' },
   rowValue: { color: DEEP_GREEN, fontSize: 15, marginRight: 6, fontWeight: '800' },
   noteInput: { color: DEEP_GREEN, fontSize: 15, flex: 1, marginLeft: 20, fontWeight: '600' },
-  
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.45)', justifyContent: 'center', padding: 20 },
   modalContent: { backgroundColor: '#FFFFFF', padding: 25, borderRadius: 28, elevation: 5, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.15, shadowRadius: 16 },
+  categoryModalHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   modalTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '900', marginBottom: 20, textAlign: 'center', letterSpacing: 0.3 },
+  quickAddCategoryButton: { flexDirection: 'row', alignItems: 'center', backgroundColor: DEEP_GREEN, borderRadius: 18, paddingHorizontal: 12, paddingVertical: 7, marginBottom: 18 },
+  quickAddCategoryButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
   categoryGridItem: { flex: 1/3, alignItems: 'center', marginBottom: 22 },
   iconCircle: { width: 56, height: 56, borderRadius: 20, justifyContent: 'center', alignItems: 'center', marginBottom: 8 },
   categoryText: { color: DEEP_GREEN, fontSize: 12, textAlign: 'center', fontWeight: '700' },
   emptyModalState: { alignItems: 'center', paddingVertical: 30, gap: 8 },
   emptyModalText: { color: SAGE, fontSize: 13, fontWeight: '500' },
   closeModalButton: { marginTop: 10, alignItems: 'center', paddingVertical: 12, backgroundColor: '#FAFAFA', borderRadius: 16 },
-  
+
   accOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },
   accIconChip: { width: 38, height: 38, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
   accOptionText: { color: DEEP_GREEN, fontSize: 15, fontWeight: '800' },
   manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(237, 178, 50, 0.16)' },
   manageAccountsText: { color: DEEP_GREEN, fontWeight: '800' },
-  
+
   pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.35)', justifyContent: 'flex-end' },
   pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },
   pickerHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 18, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD', width: '100%' },

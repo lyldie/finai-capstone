@@ -97,7 +97,7 @@ export default function CategoriesScreen() {
   const permanentDeleteCategory = async (id: string) => {
     Alert.alert(
       "Permanent Delete",
-      "Sigurado ka bang gusto mong burahin nang tuluyan ang kategoryang ito? Hindi na ito mababawi.",
+      'Are you sure you want to permanently delete this category? This action cannot be undone.',
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -117,7 +117,7 @@ export default function CategoriesScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert("Hindi Mabura", data.detail || "May mga active transactions pang gumagamit sa kategoryang ito.");
+                  Alert.alert('Could not delete category', data.detail || 'Active transactions still use this category.');
                 }
               }
             } catch (error) {
@@ -161,7 +161,7 @@ export default function CategoriesScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert("Error", "Hindi ma-update.");
+        Alert.alert('Could not update category', 'Please try again.');
       }
     } catch (error) {
       Alert.alert("Error", "Check connection.");
@@ -277,7 +277,7 @@ export default function CategoriesScreen() {
             <Text style={styles.modalTitle}>Edit Category</Text>
 
             <View style={styles.previewRow}>
-              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getCategoryEmoji(newName, newType)} tint={newType === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getCategoryEmoji(newName, newType)} context={newType === 'income' ? 'income' : 'expense'} tint={newType === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.previewHint}>Choose an icon for this category</Text>
                 {emojiTouched && (

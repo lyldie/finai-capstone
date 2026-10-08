@@ -71,7 +71,7 @@ export default function PinLoginScreen() {
           }
           return;
         } else {
-          Alert.alert("Mali paps!", data.detail || "Hindi match ang PIN mo.");
+          Alert.alert('Incorrect PIN', data.detail || 'The PIN does not match.');
           setPin('');
           setLoading(false);
           return;
@@ -87,7 +87,7 @@ export default function PinLoginScreen() {
           router.replace('/(tabs)');
         }
       } else {
-        Alert.alert("Mali paps!", "Hindi match ang PIN mo o kailangang mag-login ulit.");
+        Alert.alert('PIN verification failed', 'The PIN does not match, or you need to sign in again.');
         setPin('');
       }
 
@@ -102,7 +102,7 @@ export default function PinLoginScreen() {
           router.replace('/(tabs)');
         }
       } else {
-        Alert.alert("Error", "Hindi maka-connect sa server at hindi match ang local PIN.");
+        Alert.alert('Connection error', 'Could not reach the server to verify your PIN.');
         setPin('');
       }
     } finally {
@@ -111,7 +111,7 @@ export default function PinLoginScreen() {
   };
 
   const handleSwitchAccount = async () => {
-    Alert.alert("Switch Account", "Sigurado ka bang gusto mong mag-log out at gumamit ng ibang account?", [
+    Alert.alert('Switch account', 'Sign out and use a different account?', [
       { text: "Cancel", style: "cancel" },
       { 
         text: "Yes, Log out", 

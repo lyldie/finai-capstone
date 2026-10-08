@@ -29,12 +29,12 @@ export default function OtpVerifyScreen() {
     Keyboard.dismiss();
 
     if (otp.length !== 6) {
-      Alert.alert("Teka lang!", "6 digits dapat yung code paps.");
+      Alert.alert('Invalid code', 'Enter the 6-digit verification code.');
       return;
     }
 
     if (!targetEmail) {
-      Alert.alert("Error", "Missing email address. Balik ka muna sa Signup paps.");
+      Alert.alert('Missing email', 'Return to registration and enter your email address.');
       router.replace('/signup');
       return;
     }
@@ -66,14 +66,14 @@ export default function OtpVerifyScreen() {
            await AsyncStorage.setItem('user_email', cleanEmail);
         }
 
-        Alert.alert("Success! ✅", "Verified na ang account mo.", [
+        Alert.alert("Success! ✅", "Your account has been verified.", [
           { text: "G", onPress: () => router.replace('/setup-pin') }
         ]);
       } else {
-        Alert.alert("Mali paps!", data.detail || "Check mo ulit yung code sa email.");
+        Alert.alert('Verification failed', data.detail || 'Check the code in your email and try again.');
       }
     } catch (e) {
-      Alert.alert("Connection Error", "Hindi maka-connect sa server. Check your connection!");
+      Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -86,7 +86,7 @@ export default function OtpVerifyScreen() {
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.content}>
         <Text style={styles.title}>OTP Verification</Text>
-        <Text style={styles.subtitle}>Pakisulat yung 6-digit code na sinend namin sa:{"\n"}
+        <Text style={styles.subtitle}>Enter the 6-digit code we sent to:{"\n"}
           <Text style={{fontWeight: 'bold', color: GOLD}}>{targetEmail}</Text>
         </Text>
 

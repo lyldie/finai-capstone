@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/notifications", tags=["Notifications"])
 @router.get("/{user_id}", response_model=list[NotificationResponse])
 async def list_notifications(user_id: str, unread_only: bool = False, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
-    query = {"user_id": user_id}
+    query = {"user_id": user_id, "suppressed": {"$ne": True}}
     if unread_only:
         query["is_read"] = False
     records = await db.notifications.find(query).sort("created_at", -1).to_list(length=100)

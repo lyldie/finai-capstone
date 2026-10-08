@@ -7,7 +7,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
-import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 
@@ -45,9 +45,9 @@ export default function HomeDashboard() {
 
   const greetingMessage = useMemo(() => {
     const hour = new Date().getHours();
-    if (hour < 12) return "Magandang Umaga";
-    if (hour < 18) return "Magandang Hapon";
-    return "Magandang Gabi";
+    if (hour < 12) return 'Good morning';
+    if (hour < 18) return 'Good afternoon';
+    return 'Good evening';
   }, []);
 
   const localDateKey = (value: Date) => {
@@ -113,8 +113,8 @@ export default function HomeDashboard() {
       {/* Header */}
       <View style={styles.header}>
         <View>
-          <Text style={styles.greetingText}>{greetingMessage}</Text>
-          <Text style={styles.userName}>{user?.name || 'User'}!</Text>
+          <Text style={styles.greetingText}>{greetingMessage},</Text>
+          <Text style={styles.userName}>{user?.name?.trim().split(/\s+/)[0] || 'User'}!</Text>
         </View>
         <View style={styles.headerRightActions}>
           <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/chat' as never)} activeOpacity={0.8}>
@@ -138,7 +138,7 @@ export default function HomeDashboard() {
           </View>
           <Text style={styles.aiTipText}>{dynamicAiTip}</Text>
           <TouchableOpacity onPress={() => router.push('/chat' as never)} style={styles.aiTipAction}>
-            <Text style={styles.aiTipActionText}>Magtanong kay FinAi</Text>
+            <Text style={styles.aiTipActionText}>Ask FinAI</Text>
             <Ionicons name="arrow-forward" size={14} color={TEAL} />
           </TouchableOpacity>
         </View>
@@ -209,7 +209,7 @@ export default function HomeDashboard() {
             {accounts.map((acc, idx) => {
               const liveBalance = getAccountBalance(acc.name);
               // LILINISIN NATIN YUNG "walle" ISSUE DITO
-              const displayIcon = getDisplayEmoji(acc.icon, getAccountEmoji(acc.name));
+              const displayIcon = getAccountDisplayEmoji(acc.icon, acc.name);
 
               return (
                 <View key={acc.id || idx} style={styles.accountCard}>
@@ -232,7 +232,7 @@ export default function HomeDashboard() {
         ) : (
           <View style={styles.emptyAccountsCard}>
             <Ionicons name="card-outline" size={32} color={SAGE} />
-            <Text style={styles.emptyAccountsText}>Wala pang naka-setup na accounts.</Text>
+            <Text style={styles.emptyAccountsText}>You have not added any accounts yet.</Text>
           </View>
         )}
 
@@ -289,7 +289,7 @@ export default function HomeDashboard() {
             <View style={styles.emptyIconCircle}>
               <Ionicons name="receipt-outline" size={28} color={GOLD} />
             </View>
-            <Text style={styles.emptyRecentText}>Wala pang recent transactions.</Text>
+            <Text style={styles.emptyRecentText}>No recent transactions.</Text>
           </View>
         )}
 
@@ -318,12 +318,12 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingTop: 55,
-    paddingBottom: 10,
+    paddingTop: 42,
+    paddingBottom: 6,
     backgroundColor: CREAM,
   },
-  greetingText: { fontSize: 13, color: SAGE, fontWeight: '600', letterSpacing: 0.3 },
-  userName: { fontSize: 22, color: DEEP_GREEN, fontWeight: '800', marginTop: 2 },
+  greetingText: { fontSize: 18, lineHeight: 24, color: DEEP_GREEN, fontWeight: '800', letterSpacing: 0.1 },
+  userName: { fontSize: 25, lineHeight: 30, color: DEEP_GREEN, fontWeight: '800', marginTop: -1 },
   headerRightActions: { flexDirection: 'row', alignItems: 'center', gap: 12 },
   peanutButton: {
     width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',

@@ -1,22 +1,19 @@
-// utils/accountEmoji.ts
-
-// Smart helper to auto-assign a relevant emoji based on the account name.
-// Falls back to a generic card emoji if no keywords match.
+// Suggest an icon that identifies a payment account at a glance.
 export const getAccountEmoji = (name: string): string => {
-  const n = name.toLowerCase().trim();
+  const value = name.toLowerCase().trim();
 
-  // E-wallets
-  if (n.includes('gcash') || n.includes('maya') || n.includes('pay') || n.includes('wallet')) return '📱';
-  
-  // Physical Cash
-  if (n.includes('cash') && !n.includes('gcash')) return '💵';
-  
-  // Traditional Banks
-  if (n.includes('bank') || n.includes('bpi') || n.includes('bdo') || n.includes('union') || n.includes('metro') || n.includes('sec')) return '🏦';
-  
-  // Savings / Stash
-  if (n.includes('save') || n.includes('savings') || n.includes('ipon') || n.includes('alkansya')) return '🐷';
+  if (value.includes('gcash') || value.includes('maya') || value.includes('pay') || value.includes('wallet')) return '📱';
+  if (value.includes('cash')) return '💵';
+  if (value.includes('bank') || value.includes('bpi') || value.includes('bdo') || value.includes('union') || value.includes('metro') || value.includes('sec')) return '🏦';
+  if (value.includes('save') || value.includes('ipon') || value.includes('alkansya')) return '🏦';
 
-  // Default fallback for debit/credit cards or unknown accounts
   return '💳';
+};
+
+// Replace the old automatic piggy-bank suggestion on existing account records.
+// Other user-selected emoji remain unchanged.
+export const getAccountDisplayEmoji = (icon: string | null | undefined, name: string): string => {
+  const candidate = (icon || '').trim();
+  if (candidate === '🐷') return getAccountEmoji(name);
+  return candidate && /[^a-zA-Z0-9_\-]/u.test(candidate) ? candidate : getAccountEmoji(name);
 };

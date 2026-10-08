@@ -41,18 +41,18 @@ export default function DepositModal({
 
   const handleConfirm = async () => {
     if (!selectedGoal || !selectedGoal.id) {
-      Alert.alert("Error", "Walang napiling goal paps.");
+      Alert.alert('Choose a goal', 'Select a goal to continue.');
       return;
     }
 
     const amount = parseFloat(depositAmount);
     if (!amount || amount <= 0) {
-      Alert.alert("Teka paps! ✋", "Maglagay ka ng tamang halaga.");
+      Alert.alert('Invalid amount', 'Enter a valid amount.');
       return;
     }
 
     if (!selectedAccount) {
-      Alert.alert("Teka paps! ✋", "Pumili ka muna ng account na pagkukunan.");
+      Alert.alert('Choose an account', 'Select the account to withdraw from.');
       return;
     }
     
@@ -61,7 +61,7 @@ export default function DepositModal({
     setIsSubmitting(false);
 
     if (success) {
-      Alert.alert("Solid paps! 🎉", `Naitabi na ang ₱${amount.toLocaleString()}`);
+      Alert.alert('Contribution added', `₱${amount.toLocaleString()} was added to your goal.`);
       onClose();
     }
   };
@@ -84,7 +84,7 @@ export default function DepositModal({
               onSubmitEditing={Keyboard.dismiss}
             />
 
-            <Text style={styles.label}>Piliin ang Account:</Text>
+            <Text style={styles.label}>Select an account:</Text>
             
             {/* DROPDOWN TRIGGER */}
             <TouchableOpacity 
@@ -108,7 +108,7 @@ export default function DepositModal({
             {selectedAccount && selectedAccountBalance !== null && (
               <Text style={[styles.balancePreview, exceedsBalance && styles.balancePreviewWarning]}>
                 Available: ₱{selectedAccountBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
-                {exceedsBalance ? ' — hindi sapat ang balance' : ''}
+                {exceedsBalance ? ' - insufficient balance' : ''}
               </Text>
             )}
 
@@ -139,7 +139,7 @@ export default function DepositModal({
                     ))}
                   </ScrollView>
                 ) : (
-                  <Text style={styles.noAccountText}>Walang active account paps...</Text>
+                  <Text style={styles.noAccountText}>No active accounts available.</Text>
                 )}
               </View>
             )}

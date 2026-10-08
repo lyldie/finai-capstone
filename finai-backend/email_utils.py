@@ -28,18 +28,36 @@ def _send(msg: EmailMessage) -> bool:
         return False
 
 
-def send_otp_email(target_email: str) -> str | None:
-    """Send a generated verification code and return it only after successful delivery."""
-    otp_code = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+def send_otp_email(target_email: str, otp_code: str | None = None) -> str | None:
+    """Send an email verification code and return it only after successful delivery."""
+    otp_code = otp_code or "".join(random.choices(string.digits, k=6))
     msg = EmailMessage()
-    msg["Subject"] = "FinAI - Verify Your Account"
+    msg["Subject"] = "Verify your FinAI email"
     msg["From"] = EMAIL_SENDER
     msg["To"] = target_email
     msg.set_content(
-        "Thanks for registering with FinAI. Use this code to verify your email: "
-        f"{otp_code}\n\nThe code expires in 10 minutes."
+        "Hello,\n\n"
+        f"Your FinAI email verification code is {otp_code}.\n\n"
+        "This code expires in 10 minutes. If you did not request this code, you can ignore this email.\n\n"
+        "FinAI Support"
     )
     return otp_code if _send(msg) else None
+
+
+def send_password_change_notice(target_email: str) -> bool:
+    """Notify an account owner after their password has been changed."""
+    msg = EmailMessage()
+    msg["Subject"] = "Your FinAI password was changed"
+    msg["From"] = EMAIL_SENDER
+    msg["To"] = target_email
+    msg.set_content(
+        "Hello,\n\n"
+        "The password for your FinAI account was changed successfully.\n\n"
+        "If you made this change, no further action is needed. If you did not, "
+        "secure your email account and contact the FinAI support team.\n\n"
+        "FinAI Support"
+    )
+    return _send(msg)
 
 
 def send_threshold_alert(

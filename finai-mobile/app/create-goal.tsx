@@ -106,18 +106,18 @@ export default function CreateGoal() {
 
   const handleSave = async () => {
     if (!selectedType) {
-      Alert.alert("Oops!", "Pumili ka muna ng Goal Type preset, paps.");
+      Alert.alert('Choose a goal type', 'Select a goal type preset to continue.');
       return;
     }
 
     if (!name.trim() || !amount.trim()) {
-      Alert.alert("Oops!", "Kumpletuhin mo muna ang details, paps.");
+      Alert.alert('Missing details', 'Complete the goal details to continue.');
       return;
     }
 
     const parsedAmount = parseFloat(amount);
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
-      Alert.alert("Invalid Amount", "Maglagay ng tamang target amount.");
+      Alert.alert('Invalid amount', 'Enter a valid target amount.');
       return;
     }
 
@@ -133,10 +133,10 @@ export default function CreateGoal() {
           selectedType.id,
           currentSavings
         );
-        Alert.alert("Success 🎉", "Na-update na ang goal mo!");
+        Alert.alert("Success 🎉", "Your goal has been updated.");
       } else {
         await addGoal(name, parsedAmount, formattedDate, selectedType.id);
-        Alert.alert("Success 🎉", "Na-save na ang bagong goal!");
+        Alert.alert("Success 🎉", "Your new goal has been saved.");
       }
       router.back();
     } catch (error) {
@@ -314,7 +314,7 @@ export default function CreateGoal() {
                 </TouchableOpacity>
               )}
               ListEmptyComponent={
-                <Text style={styles.emptyText}>Walang nakitang Admin Presets. Magdagdag muna sa Admin panel.</Text>
+                <Text style={styles.emptyText}>No goal presets are available. Ask an administrator to add one.</Text>
               }
             />
           </View>

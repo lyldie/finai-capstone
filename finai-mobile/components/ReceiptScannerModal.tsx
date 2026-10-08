@@ -1,12 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView, Animated, Easing } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 
-LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Hindi valid na resibo']);
+LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Invalid receipt']);
 
 interface ReceiptScannerModalProps {
   visible: boolean;
@@ -18,7 +18,7 @@ interface ReceiptScannerModalProps {
 
 const MAX_MULTI_PHOTOS = 4;
 
-type ReviewField = { value: string; confidence: number; status: string; engines: string[] };
+type ReviewField = { value: string; status: string; engines: string[] };
 type ReviewData = {
   values: { amount: string; merchant: string; date: string; category: string };
   fields: Record<string, ReviewField>;
@@ -38,9 +38,36 @@ export default function ReceiptScannerModal({
   const [isMultiMode, setIsMultiMode] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState('Preparing receipt images...');
+  const [progressTrackWidth, setProgressTrackWidth] = useState(0);
   const [isFlashing, setIsFlashing] = useState(false);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
   const cameraRef = useRef<any>(null);
+  const progressTranslateX = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (!isProcessing || progressTrackWidth <= 0) return;
+
+    const segmentWidth = progressTrackWidth * 0.38;
+    progressTranslateX.setValue(-segmentWidth);
+    const animation = Animated.loop(
+      Animated.sequence([
+        Animated.timing(progressTranslateX, {
+          toValue: progressTrackWidth,
+          duration: 1100,
+          easing: Easing.linear,
+          useNativeDriver: true,
+        }),
+        Animated.timing(progressTranslateX, {
+          toValue: -segmentWidth,
+          duration: 0,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+    animation.start();
+    return () => animation.stop();
+  }, [isProcessing, progressTrackWidth, progressTranslateX]);
 
   useEffect(() => {
     if (visible && (!permission || !permission.granted)) {
@@ -55,6 +82,7 @@ export default function ReceiptScannerModal({
     setCapturedPhotos([]);
     setIsPreviewing(false);
     setIsProcessing(false);
+    setProcessingMessage('Preparing receipt images...');
     setReviewData(null);
   };
 
@@ -93,12 +121,13 @@ export default function ReceiptScannerModal({
 
   const submitPhotosToBackend = async (photos: string[]) => {
     if (!photos || photos.length === 0) {
-      Alert.alert("FinAi Scanner", "Walang larawan ang natanggap. Kunan ulit ang resibo.");
+      Alert.alert("FinAI Scanner", "No image was received. Please capture the receipt again.");
       return;
     }
 
     try {
       setIsProcessing(true);
+      setProcessingMessage('Preparing receipt images...');
       const formData = new FormData();
 
       // FIXED: Converted to async loop to fetch and append Blob instead of old URI object layout
@@ -107,18 +136,29 @@ export default function ReceiptScannerModal({
         const responseFile = await fetch(uri);
         const blob = await responseFile.blob();
         formData.append('files', blob, `receipt_frame_${index + 1}.jpg`);
+        setProcessingMessage(`Preparing image ${index + 1} of ${photos.length}...`);
       }
 
       if (userId) {
         formData.append('user_id', userId);
       }
       const token = await AsyncStorage.getItem('user_token');
+      setProcessingMessage('Sending receipt for analysis...');
 
-      const response = await fetch(`${API_URL}/ocr-scan`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token || ''}` },
-        body: formData,
-      });
+      const controller = new AbortController();
+      const requestTimeout = setTimeout(() => controller.abort(), 20000);
+      let response: Response;
+      try {
+        setProcessingMessage('Gemini is analyzing your receipt...');
+        response = await fetch(`${API_URL}/ocr-scan`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${token || ''}` },
+          body: formData,
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(requestTimeout);
+      }
 
       let result: any = {};
       try {
@@ -128,7 +168,7 @@ export default function ReceiptScannerModal({
       }
 
       if (!response.ok) {
-        throw new Error(result?.detail || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
+        throw new Error(result?.detail || 'The receipt could not be read clearly. Try again.');
       }
 
       const payload = result?.data || {};
@@ -157,7 +197,14 @@ export default function ReceiptScannerModal({
       });
     } catch (error: any) {
       console.log("OCR Handled Error:", error?.message || error);
-      Alert.alert("FinAi Scanner", error?.message || "Hindi nabasa nang maayos ang resibo. Subukan ulit paps.");
+      const isTimeout = error?.name === 'AbortError';
+      const message = isTimeout
+        ? 'The scan timed out. Check your connection, then retry or enter the receipt details manually.'
+        : (error?.message || 'Receipt scanning is temporarily unavailable. Retry or enter the details manually.');
+      Alert.alert('Gemini receipt scan unavailable', message, [
+        { text: 'Enter manually', style: 'cancel', onPress: onClose },
+        { text: 'Retry', onPress: () => { void submitPhotosToBackend(photos); } },
+      ]);
     } finally {
       setIsProcessing(false);
     }
@@ -183,7 +230,7 @@ export default function ReceiptScannerModal({
 
     } catch (error: any) {
       console.log("Capture Error:", error);
-      Alert.alert("Error", "Bumagsak ang kuha ng camera. Subukan ulit.");
+      Alert.alert('Camera error', 'The photo could not be captured. Try again.');
     }
   };
 
@@ -196,7 +243,7 @@ export default function ReceiptScannerModal({
       <Modal visible={visible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
           <View style={styles.permissionBox}>
-            <Text style={styles.permissionText}>Kailangan natin ng camera permission para ma-scan ang resibo mo, paps!</Text>
+            <Text style={styles.permissionText}>Camera access is needed to scan a receipt.</Text>
             <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
               <Text style={styles.permissionButtonText}>Grant Permission</Text>
             </TouchableOpacity>
@@ -259,7 +306,7 @@ export default function ReceiptScannerModal({
             <View style={{ width: 42 }} />
           </View>
           <Text style={styles.reviewSubtitle}>
-            Check the highlighted fields before saving. You can edit every field.
+            Gemini extracted these details. Check the highlighted fields before saving; you can edit every field.
           </Text>
           <ScrollView contentContainerStyle={styles.reviewForm} keyboardShouldPersistTaps="handled">
             {reviewFields.map(({ key, label, placeholder, keyboardType }) => {
@@ -296,9 +343,6 @@ export default function ReceiptScannerModal({
                         );
                       })}
                     </View>
-                  )}
-                  {metadata?.confidence !== undefined && (
-                    <Text style={styles.reviewConfidence}>Scanner confidence: {Math.round(metadata.confidence * 100)}%</Text>
                   )}
                 </View>
               );
@@ -374,15 +418,15 @@ export default function ReceiptScannerModal({
                 <Text style={styles.frameInstruction}>
                   {isMultiMode 
                     ? (capturedPhotos.length === 0 
-                        ? "📸 Section 1: Kunan ang Store Header" 
-                        : `📸 Section ${capturedPhotos.length + 1}: Kunan ang susunod na parte`)
-                    : "📸 I-tapat ang buong resibo sa frame"}
+                        ? '📸 Section 1: Capture the store header'
+                        : `📸 Section ${capturedPhotos.length + 1}: Capture the next part`)
+                    : '📸 Fit the entire receipt in the frame'}
                 </Text>
               </>
             ) : (
               <View style={styles.freezeBadge}>
                 <Ionicons name="checkmark-circle" size={20} color="#10B981" style={{ marginRight: 6 }} />
-                <Text style={styles.freezeBadgeText}>Photo Captured! Pakisuri kung malinaw.</Text>
+                <Text style={styles.freezeBadgeText}>Photo captured. Check that it is clear.</Text>
               </View>
             )}
           </View>
@@ -394,8 +438,25 @@ export default function ReceiptScannerModal({
               <View style={styles.previewActionsContainer}>
                 {isProcessing ? (
                   <View style={styles.processingContainer}>
-                    <ActivityIndicator size="large" color="#10B981" />
-                    <Text style={styles.processingText}>FinAi Engine analyzing receipt...</Text>
+                    <View style={styles.processingStatusRow}>
+                      <ActivityIndicator size="small" color="#10B981" />
+                      <Text style={styles.processingText}>{processingMessage}</Text>
+                    </View>
+                    <View
+                      style={styles.processingTrack}
+                      onLayout={(event) => setProgressTrackWidth(event.nativeEvent.layout.width)}
+                    >
+                      <Animated.View
+                        style={[
+                          styles.processingBarSegment,
+                          {
+                            width: '38%',
+                            transform: [{ translateX: progressTranslateX }],
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={styles.processingHint}>This may take several seconds. Keep this screen open.</Text>
                   </View>
                 ) : (
                   <>
@@ -430,7 +491,7 @@ export default function ReceiptScannerModal({
                 {isMultiMode && capturedPhotos.length >= 1 && (
                   <View style={styles.stepIndicator}>
                     <Text style={styles.stepIndicatorText}>
-                      {capturedPhotos.length} section{capturedPhotos.length > 1 ? "s" : ""} captured na. Kunan pa o Analyze na sa preview.
+                      {capturedPhotos.length} section{capturedPhotos.length > 1 ? 's' : ''} captured. Add another or analyze the preview.
                     </Text>
                   </View>
                 )}
@@ -464,7 +525,6 @@ const styles = StyleSheet.create({
   reviewStatusWarning: { color: '#B45309' },
   reviewStatusConfirmed: { color: '#059669' },
   reviewInput: { color: '#142D2A', fontSize: 16, borderBottomWidth: 1, borderBottomColor: '#D7E1DF', paddingVertical: 7 },
-  reviewConfidence: { color: '#7C9A95', fontSize: 11, marginTop: 8 },
   confirmButton: { backgroundColor: '#10B981', borderRadius: 15, minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
   confirmButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 15 },
   container: { flex: 1, backgroundColor: '#000000', width: '100%', height: '100%' },
@@ -610,7 +670,11 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     width: '100%'
   },
-  processingText: { color: '#FFFFFF', marginTop: 8, fontSize: 14, fontWeight: '600' },
+  processingStatusRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10 },
+  processingText: { color: '#FFFFFF', fontSize: 14, fontWeight: '600', flexShrink: 1, textAlign: 'center' },
+  processingTrack: { height: 6, width: '100%', borderRadius: 3, backgroundColor: 'rgba(255,255,255,0.2)', overflow: 'hidden', marginTop: 16 },
+  processingBarSegment: { height: '100%', borderRadius: 3, backgroundColor: '#10B981' },
+  processingHint: { color: '#C8D8D4', marginTop: 10, fontSize: 11, textAlign: 'center' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.5)', justifyContent: 'center', alignItems: 'center', padding: 20 },
   permissionBox: { backgroundColor: '#FFFFFF', padding: 30, borderRadius: 20, alignItems: 'center', width: '80%' },
   permissionText: { textAlign: 'center', marginBottom: 20, fontSize: 15, color: '#142D2A' },

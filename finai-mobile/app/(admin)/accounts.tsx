@@ -8,8 +8,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
-import { getAccountEmoji } from '../../utils/accountEmoji';
-import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
+import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
+import EmojiPicker from '../../components/EmojiPicker';
 
 const { width } = Dimensions.get('window');
 const DEEP_GREEN = '#1c3c36';
@@ -94,7 +94,7 @@ export default function AccountsScreen() {
   const permanentDeleteAccount = async (id: string) => {
     Alert.alert(
       "Permanent Delete",
-      "Sigurado ka bang gusto mong burahin nang tuluyan ang account na ito? Hindi na ito mababawi.",
+      'Are you sure you want to permanently delete this account? This action cannot be undone.',
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -114,11 +114,11 @@ export default function AccountsScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert("Hindi Mabura", data.detail || "May mga active transactions pang gumagamit sa account na ito.");
+                  Alert.alert('Could not delete account', data.detail || 'Active transactions still use this account.');
                 }
               }
             } catch (error) {
-              Alert.alert("Error", "Check connection.");
+              Alert.alert("Connection Error", "Check your internet connection and try again.");
             }
           }
         }
@@ -129,7 +129,7 @@ export default function AccountsScreen() {
   const openEditModal = (item: Account) => {
     setEditingAccount(item);
     setNewName(item.name);
-    setEditEmoji(getDisplayEmoji(item.icon, getAccountEmoji(item.name)));
+    setEditEmoji(getAccountDisplayEmoji(item.icon, item.name));
     setEmojiTouched(false);
     setModalVisible(true);
   };
@@ -155,10 +155,10 @@ export default function AccountsScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert("Error", "Hindi ma-update ang account.");
+        Alert.alert('Could not update account', 'Please try again.');
       }
     } catch (error) {
-      Alert.alert("Error", "Check connection.");
+      Alert.alert("Connection Error", "Check your internet connection and try again.");
     }
   };
 
@@ -166,7 +166,7 @@ export default function AccountsScreen() {
     <View style={[styles.card, item.is_archived && styles.cardArchived]}>
       <View style={styles.cardInfo}>
         <View style={[styles.iconBox, item.is_archived && styles.iconBoxArchived]}>
-          <Text style={styles.emoji}>{getDisplayEmoji(item.icon, getAccountEmoji(item.name))}</Text>
+          <Text style={styles.emoji}>{getAccountDisplayEmoji(item.icon, item.name)}</Text>
         </View>
         <View>
           <Text style={[styles.cardText, item.is_archived && styles.cardTextArchived]}>{item.name}</Text>
@@ -257,7 +257,7 @@ export default function AccountsScreen() {
             <Text style={styles.modalTitle}>Edit Account</Text>
 
             <View style={styles.previewRow}>
-              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getAccountEmoji(newName)} tint="#FFF9E6" accessibilityLabel="Choose account emoji" />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getAccountEmoji(newName)} context="account" tint="#FFF9E6" accessibilityLabel="Choose account emoji" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.previewHint}>Choose an icon for this account</Text>
                 {emojiTouched && (

@@ -69,19 +69,13 @@ async def lock_account_balance(session, lock_id: str) -> None:
 
 
 async def _check_duplicate_name(name: str, user_id: Optional[str], exclude_id: Optional[ObjectId] = None):
-    """CHANGED: now excludes archived items -- an archived preset's name is
-    free to reuse. Without this, archiving "Cash" would permanently block
-    ever creating another "Cash" preset, which defeats a big part of the
-    point of archiving over deleting."""
+    """Enforce names within an account owner and account role, not across presets."""
     scope_query = {
         "name": {"$regex": f"^{re.escape(name)}$", "$options": "i"},
         "is_archived": {"$ne": True},
     }
     if user_id:
-        scope_query["$or"] = [
-            {"user_id": user_id, "account_role": "user"},
-            {"account_role": "admin"},
-        ]
+        scope_query.update({"user_id": user_id, "account_role": "user"})
     else:
         scope_query["account_role"] = "admin"
     if exclude_id is not None:
@@ -151,7 +145,7 @@ async def get_user_accounts(user_id: str, archived: bool = False, current_user: 
 
 @router.post("/", response_model=AccountResponse)
 async def create_account(account: AccountCreate, current_user: dict = Depends(get_current_user)):
-    """(unchanged) User-only: requires user_id."""
+    """Create a personal account based on an optional active admin preset."""
     account_data = account.model_dump()
     account_data["name"] = account_data["name"].strip()
     if not account_data["name"]:
@@ -159,6 +153,18 @@ async def create_account(account: AccountCreate, current_user: dict = Depends(ge
     account_data["user_id"] = current_user["id"]
 
     account_data["account_role"] = "user"
+    template_id = account_data.get("parent_template_id")
+    if template_id:
+        try:
+            template_oid = ObjectId(template_id)
+        except Exception:
+            raise HTTPException(status_code=422, detail="Choose a valid account preset.")
+        template = await db.accounts.find_one({
+            "_id": template_oid, "account_role": "admin", "is_archived": {"$ne": True},
+        })
+        if not template:
+            raise HTTPException(status_code=422, detail="That account preset is no longer available. Refresh and choose another.")
+        account_data["parent_template_id"] = str(template_oid)
     await _check_duplicate_name(account_data["name"], account_data["user_id"])
 
     new_acc = await db.accounts.insert_one(account_data)
@@ -230,13 +236,59 @@ async def update_account(
 
     old_name = existing.get("name")
     new_name = account_data["name"]
+    user_account_update = existing.get("account_role") == "user"
+    if user_account_update:
+        lock_id = await ensure_account_balance_lock(current_user["id"], oid)
 
-    updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": account_data}, return_document=True)
+        async def commit_account_update(session):
+            await lock_account_balance(session, lock_id)
+            latest = await db.accounts.find_one(
+                {"_id": oid, "user_id": current_user["id"], "account_role": "user"}, session=session
+            )
+            if not latest:
+                raise HTTPException(status_code=404, detail="Account not found")
+            latest_initial = float(latest.get("initial_balance", 0.0) or 0.0)
+            current_balance = await calculate_account_balance(
+                latest.get("name", ""), current_user["id"], latest_initial, session=session, account_id=oid
+            )
+            proposed_balance = current_balance + float(account_data.get("initial_balance", 0.0) or 0.0) - latest_initial
+            if proposed_balance < -0.005:
+                raise HTTPException(
+                    status_code=409,
+                    detail="The opening balance change would make this account balance negative.",
+                )
+            result = await db.accounts.find_one_and_update(
+                {"_id": oid, "user_id": current_user["id"], "account_role": "user"},
+                {"$set": account_data}, return_document=True, session=session,
+            )
+            if result and new_name != latest.get("name"):
+                for label_field, id_field in (("account", "account_id"), ("to_account", "to_account_id")):
+                    await db.expenses.update_many(
+                        {
+                            "user_id": current_user["id"],
+                            "$or": [
+                                {id_field: str(oid)},
+                                {id_field: {"$in": [None, ""]}, label_field: latest.get("name")},
+                            ],
+                        },
+                        {"$set": {label_field: new_name, id_field: str(oid)}}, session=session,
+                    )
+            return result, latest.get("name", "")
+
+        try:
+            async with await db.client.start_session() as session:
+                updated, old_name = await session.with_transaction(commit_account_update)
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="We couldn't safely update this account. Please try again.") from exc
+    else:
+        updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": account_data}, return_document=True)
     if not updated:
         raise HTTPException(status_code=404, detail="Account not found")
 
     owner_user_id = updated.get("user_id")
-    if new_name != old_name:
+    if new_name != old_name and not user_account_update:
         owner_scope = {"user_id": owner_user_id} if owner_user_id else {}
         account_key = str(oid)
         for label_field, id_field in (("account", "account_id"), ("to_account", "to_account_id")):
@@ -291,7 +343,25 @@ async def archive_account(
             {"$set": {id_field: str(oid)}},
         )
 
-    updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
+    if account.get("account_role") == "user":
+        lock_id = await ensure_account_balance_lock(current_user["id"], oid)
+
+        async def commit_archive(session):
+            await lock_account_balance(session, lock_id)
+            return await db.accounts.find_one_and_update(
+                {"_id": oid, "user_id": current_user["id"], "account_role": "user"},
+                {"$set": {"is_archived": True}}, return_document=True, session=session,
+            )
+
+        try:
+            async with await db.client.start_session() as session:
+                updated = await session.with_transaction(commit_archive)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail="We couldn't safely archive this account. Please try again.") from exc
+    else:
+        updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Account not found")
     if account.get("account_role") == "admin":
         await log_action(admin["name"], f"Archived account '{account.get('name')}'")
 
@@ -378,7 +448,7 @@ async def permanent_delete_account(account_id: str, admin: dict = Depends(get_cu
     if linked_transaction:
         raise HTTPException(
             status_code=400, 
-            detail="Hindi ma-permanently delete. May mga active transactions pang gumagamit sa account na ito."
+            detail="This account cannot be permanently deleted because active transactions still use it."
         )
 
     result = await db.accounts.delete_one({"_id": oid})

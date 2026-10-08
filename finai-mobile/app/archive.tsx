@@ -5,7 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../config';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { getAccountEmoji } from '../utils/accountEmoji';
+import { getAccountDisplayEmoji } from '../utils/accountEmoji';
 import { getCategoryEmoji } from '../utils/categoryEmoji';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
@@ -97,21 +97,22 @@ export default function ArchiveScreen() {
 
       const method = activeTab === 'Accounts' || activeTab === 'Transactions' ? 'PATCH' : 'PUT';
       const res = await fetch(endpoint, { method, headers: { Authorization: `Bearer ${token || ''}` } });
+      const result = await res.json().catch(() => ({}));
       if (res.ok) {
-        Alert.alert('Success 🎉', 'Naibalik na ang item sa active list!');
+        Alert.alert('Restored', 'The item is back in the active list.');
         fetchArchivedData();
       } else {
-        Alert.alert('Error', 'Hindi naibalik ang item.');
+        Alert.alert('Cannot restore item', result.detail || 'Please check its linked account and try again.');
       }
     } catch (error) {
-      Alert.alert('Error', 'May nangyaring problema sa pag-restore.');
+      Alert.alert('Cannot restore item', 'Check your connection and try again.');
     }
   };
 
   const handlePermanentDelete = (id: string) => {
     Alert.alert(
       'Permanent Delete',
-      'Sigurado ka bang gusto mong burahin ito nang tuluyan? Hindi na ito mababawi.',
+      'Are you sure you want to permanently delete this item? This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         { 
@@ -126,13 +127,14 @@ export default function ArchiveScreen() {
               if (activeTab === 'Goals') endpoint = `${API_URL}/api/goals/${id}/permanent`;
 
               const res = await fetch(endpoint, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
+              const result = await res.json().catch(() => ({}));
               if (res.ok) {
                 fetchArchivedData();
               } else {
-                Alert.alert('Error', 'Hindi mabura ang item.');
+                Alert.alert('Cannot delete item', result.detail || 'Please try again.');
               }
             } catch (error) {
-              Alert.alert('Error', 'May nangyaring problema.');
+              Alert.alert('Cannot delete item', 'Check your connection and try again.');
             }
           }
         }
@@ -151,8 +153,8 @@ export default function ArchiveScreen() {
             <Ionicons name="arrow-back" size={20} color={DEEP_GREEN} />
           </TouchableOpacity>
           <View>
-            <Text style={styles.headerEyebrow}>Trash Bin & Hub</Text>
-            <Text style={styles.headerTitle}>Archive Center</Text>
+            <Text style={styles.headerEyebrow}>Trash Bin</Text>
+
           </View>
           <View style={{ width: 40 }} />
         </View>
@@ -181,8 +183,8 @@ export default function ArchiveScreen() {
               <View style={styles.emptyIconCircle}>
                 <Ionicons name="archive-outline" size={36} color={GOLD} />
               </View>
-              <Text style={styles.emptyTitle}>Walang laman na {activeTab.toLowerCase()}</Text>
-              <Text style={styles.comingSoonText}>Malinis ang archive bin mo para sa category na ito.</Text>
+              <Text style={styles.emptyTitle}>No archived {activeTab.toLowerCase()}.</Text>
+              <Text style={styles.comingSoonText}>Archived items will appear here.</Text>
             </View>
           }
           renderItem={({ item }) => {
@@ -190,7 +192,7 @@ export default function ArchiveScreen() {
             const isNeutral = item.type === 'Transfer' || item.type === 'Contribution';
             const color = isIncome ? INCOME : isNeutral ? TEAL : EXPENSE;
             const itemEmoji = activeTab === 'Accounts'
-              ? getDisplayEmoji(item.icon, getAccountEmoji(item.name || 'account'))
+              ? getAccountDisplayEmoji(item.icon, item.name || 'account')
               : activeTab === 'Goals'
                 ? getGoalEmoji(item.target_name || '')
                 : item.type === 'Contribution' || item.goal_id

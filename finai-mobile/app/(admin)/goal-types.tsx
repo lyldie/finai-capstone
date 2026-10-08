@@ -90,7 +90,7 @@ export default function GoalTypesScreen() {
   const permanentDeleteGoalType = async (id: string) => {
     Alert.alert(
       "Permanent Delete",
-      "Sigurado ka bang gusto mong burahin nang tuluyan ang goal type na ito? Hindi na ito mababawi.",
+      'Are you sure you want to permanently delete this goal type? This action cannot be undone.',
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -110,7 +110,7 @@ export default function GoalTypesScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert("Hindi Mabura", data.detail || "May mga active goals pang gumagamit sa goal type na ito.");
+                  Alert.alert('Could not delete goal type', data.detail || 'Active goals still use this goal type.');
                 }
               }
             } catch (error) {
@@ -147,7 +147,7 @@ export default function GoalTypesScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert("Error", "Hindi ma-update.");
+        Alert.alert('Could not update goal type', 'Please try again.');
       }
     } catch (error) {
       Alert.alert("Error", "Check connection.");
@@ -249,7 +249,7 @@ export default function GoalTypesScreen() {
             <Text style={styles.modalTitle}>Edit Goal Type</Text>
             
             <View style={styles.previewRow}>
-              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getGoalEmoji(newName)} tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
+              <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getGoalEmoji(newName)} context="goal" tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
               <View style={{ flex: 1 }}>
                 <Text style={styles.previewHint}>Choose an icon for this goal type</Text>
                 {emojiTouched && (

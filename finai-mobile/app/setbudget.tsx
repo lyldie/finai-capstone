@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTransactions } from '../context/TransactionContext'; 
 import { API_URL } from '../config';
+import QuickAddCategoryModal from '../components/QuickAddCategoryModal';
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
@@ -31,9 +32,16 @@ export default function SetBudgetScreen() {
   const [amount, setAmount] = useState(initialAmount as string || '');
   const [rolloverEnabled, setRolloverEnabled] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [isQuickAddCategoryVisible, setIsQuickAddCategoryVisible] = useState(false);
 
   // A category may have a separate weekly, monthly, and annual budget.
   const availableCategories = expenseCategories;
+
+  const handleCategoryCreated = (created: { id: string; name: string; type: 'expense'; icon?: string }) => {
+    setSelectedCategory(created);
+    setIsQuickAddCategoryVisible(false);
+    void fetchTransactions(false);
+  };
 
   useEffect(() => {
     if (category_id) {
@@ -51,12 +59,12 @@ export default function SetBudgetScreen() {
 
   const handleSaveBudget = async () => {
     if (!selectedCategory) {
-      Alert.alert("Teka muna paps!", "Pumili ka muna ng kategorya.");
+      Alert.alert('Choose a category', 'Select a category before continuing.');
       return;
     }
 
     if (!amount || isNaN(Number(amount)) || Number(amount) <= 0) {
-      Alert.alert("Teka muna paps!", "Maglagay ka naman ng tamang halaga.");
+      Alert.alert('Invalid amount', 'Enter a valid budget amount.');
       return;
     }
 
@@ -66,7 +74,7 @@ export default function SetBudgetScreen() {
       await updateBudget(id as string, parseFloat(amount), rolloverEnabled);
       setLoading(false);
       await fetchTransactions();
-      Alert.alert("Ayos paps!", "Na-update na ang budget.", [{ text: "Solid!", onPress: () => router.back() }]);
+      Alert.alert('Budget updated', 'Your budget was updated.', [{ text: 'Done', onPress: () => router.back() }]);
       return;
     }
 
@@ -86,9 +94,9 @@ export default function SetBudgetScreen() {
       });
       if (!response.ok) throw new Error('Failed to save budget');
       await fetchTransactions(); 
-      Alert.alert("Ayos paps! 🎉", "Ligtas at na-save na sa MongoDB.", [{ text: "Solid!", onPress: () => router.back() }]);
+      Alert.alert('Budget saved', 'Your budget was saved successfully.', [{ text: 'Done', onPress: () => router.back() }]);
     } catch (error) {
-      Alert.alert("Sablay paps 😭", "Hindi maipadala ang data.");
+      Alert.alert('Could not save budget', 'The request could not be completed. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -110,7 +118,15 @@ export default function SetBudgetScreen() {
         </View>
 
         <View style={styles.formCard}>
-          <Text style={styles.label}>Kategorya</Text>
+          <View style={styles.categoryHeaderRow}>
+            <Text style={[styles.label, { marginBottom: 0 }]}>Category</Text>
+            {!id && (
+              <TouchableOpacity style={styles.addCategoryButton} onPress={() => setIsQuickAddCategoryVisible(true)}>
+                <Ionicons name="add-circle-outline" size={18} color={FINAI_DEEP_GREEN} />
+                <Text style={styles.addCategoryText}>Add category</Text>
+              </TouchableOpacity>
+            )}
+          </View>
           {id ? (
             <View style={[styles.chip, { backgroundColor: '#EBF0EE', borderColor: '#D1D9D4' }]}>
               <Text style={{ color: FINAI_DEEP_GREEN, fontWeight: '700', fontSize: 13 }}>
@@ -174,10 +190,17 @@ export default function SetBudgetScreen() {
 
         <View style={styles.actionContainer}>
           <TouchableOpacity style={styles.saveButton} onPress={handleSaveBudget} disabled={loading}>
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{id ? "I-update Budget" : "I-save Budget Limit"}</Text>}
+            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{id ? "Update Budget" : "Save Budget Limit"}</Text>}
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <QuickAddCategoryModal
+        visible={isQuickAddCategoryVisible}
+        type="expense"
+        onClose={() => setIsQuickAddCategoryVisible(false)}
+        onCreated={handleCategoryCreated}
+      />
     </SafeAreaView>
   );
 }
@@ -192,6 +215,9 @@ const styles = StyleSheet.create({
   title: { fontSize: 24, fontWeight: '800', color: FINAI_DEEP_GREEN, marginBottom: 6 },
   formCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', marginBottom: 16, elevation: 2 },
   label: { fontSize: 13, fontWeight: '700', color: FINAI_DEEP_GREEN, marginBottom: 12, textTransform: 'uppercase' },
+  categoryHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
+  addCategoryButton: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 4, paddingLeft: 8 },
+  addCategoryText: { fontSize: 12, color: FINAI_DEEP_GREEN, fontWeight: '700' },
   pickerContainer: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { backgroundColor: '#F0F4F2', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, borderWidth: 1, borderColor: '#E6ECE9' },
   activeChip: { backgroundColor: FINAI_DEEP_GREEN, borderColor: FINAI_DEEP_GREEN },

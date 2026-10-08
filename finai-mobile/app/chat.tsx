@@ -119,7 +119,7 @@ export default function ChatScreen() {
     } catch (error) {
       const errorMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
-        text: "Pasensya na paps, may problema yata sa connection. Try mo ulit maya-maya.",
+        text: 'I could not connect just now. Please try again shortly.',
         sender: "ai",
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -131,7 +131,7 @@ export default function ChatScreen() {
   const clearChat = () => {
     Alert.alert(
       "Clear Chat",
-      "Gusto mo bang burahin ang usapan ninyo ni FinAi?",
+      'Are you sure you want to clear your conversation with FinAI?',
       [
         { text: "Cancel", style: "cancel" },
         {
@@ -190,12 +190,12 @@ export default function ChatScreen() {
         >
           <Text style={{ fontSize: 40 }}>🥜</Text>
         </LinearGradient>
-        <Text style={styles.heroTitle}>Hi, {user?.name || "Paps"}!</Text>
+        <Text style={styles.heroTitle}>Hi, {user?.name?.trim().split(/\s+/)[0] || 'there'}!</Text>
         <Text style={styles.heroSubtitle}>
-          Anong financial kalat natin today?
+          What would you like help with today?
         </Text>
         <Text style={styles.heroDesc}>
-          Mag-log ng pera, gumawa ng goal, o humingi ng painfully honest na
+          Record money, create a goal, or ask for straightforward
           advice.
         </Text>
 
@@ -260,7 +260,7 @@ export default function ChatScreen() {
               <Ionicons name="swap-horizontal-outline" size={20} color={TEAL} />
             </View>
             <Text style={styles.actionTitle}>Transfer</Text>
-            <Text style={styles.actionSubtitle}>Lipat pera sa account</Text>
+            <Text style={styles.actionSubtitle}>Transfer money between accounts</Text>
           </TouchableOpacity>
 
           <TouchableOpacity

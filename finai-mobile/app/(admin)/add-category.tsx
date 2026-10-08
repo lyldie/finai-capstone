@@ -44,7 +44,7 @@ export default function AddCategoryScreen() {
 
   const handleSave = async () => {
     if (!name.trim()) {
-      Alert.alert("Error", "Lagyan mo ng pangalan ang category, paps!");
+      Alert.alert('Name required', 'Enter a name for the category.');
       return;
     }
 
@@ -64,15 +64,15 @@ export default function AddCategoryScreen() {
       });
 
       if (response.ok) {
-        Alert.alert("Success", "Added na paps!");
+        Alert.alert('Category added', 'The category was added successfully.');
         router.back(); 
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert("Error", "Hindi ma-save, check backend logs.");
+        Alert.alert('Could not save category', 'Please try again.');
       }
     } catch (error) {
-      Alert.alert("Network Error", "Check mo server connection.");
+      Alert.alert("Network Error", "Check your server connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -101,7 +101,7 @@ export default function AddCategoryScreen() {
           
           {/* Emoji Picker Section */}
           <View style={styles.previewRow}>
-            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getCategoryEmoji(name || 'category', type)} tint={type === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
+            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getCategoryEmoji(name || 'category', type)} context={type === 'income' ? 'income' : 'expense'} tint={type === 'income' ? INCOME_TINT : EXPENSE_TINT} accessibilityLabel="Choose category emoji" />
             <View style={{ flex: 1 }}>
               <Text style={styles.previewHint}>Choose an icon for this category</Text>
               {emojiTouched && (

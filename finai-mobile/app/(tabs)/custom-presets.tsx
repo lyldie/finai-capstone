@@ -6,7 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
-import { getAccountEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 
 const GREEN = '#144A3D';
@@ -14,26 +14,6 @@ const API_BASE_URL = `${API_URL}/api`;
 const ACCOUNT_TINT = '#fff3da';
 
 // 🛠️ MGA SAFE AT LITERAL NA EMOJI HELPERS PARA SIGURADONG EMOJI ANG LALABAS
-const getSafeCategoryEmoji = (name: string, type: string) => {
-  const lower = name.toLowerCase();
-  if (lower.includes('food') || lower.includes('kain') || lower.includes('grocery') || lower.includes('pagka')) return '🍔';
-  if (lower.includes('transpo') || lower.includes('pamasahe') || lower.includes('gas') || lower.includes('kotse')) return '🚗';
-  if (lower.includes('bills') || lower.includes('kuryente') || lower.includes('tubig') || lower.includes('rent')) return '⚡';
-  if (lower.includes('salary') || lower.includes('sahod') || lower.includes('sweldo')) return '💰';
-  if (lower.includes('shopping') || lower.includes('damit') || lower.includes('bili')) return '🛍️';
-  if (lower.includes('health') || lower.includes('mediko') || lower.includes('ospital')) return '💊';
-  return type === 'income' ? '💵' : '🏷️';
-};
-
-const getSafeAccountEmoji = (name: string) => {
-  const lower = name.toLowerCase();
-  if (lower.includes('cash') || lower.includes('wallet') || lower.includes('bulsa')) return '💵';
-  if (lower.includes('bank') || lower.includes('bdo') || lower.includes('bpi') || lower.includes('unionbank')) return '🏦';
-  if (lower.includes('gcash') || lower.includes('maya') || lower.includes('digital')) return '📱';
-  if (lower.includes('savings') || lower.includes('ipon')) return '🐷';
-  return '💳';
-};
-
 export default function CustomPresetsScreen() {
   const router = useRouter();
   const { user } = useAuth();
@@ -52,6 +32,18 @@ export default function CustomPresetsScreen() {
   const [newEmoji, setNewEmoji] = useState('🍔');            
   const [emojiTouched, setEmojiTouched] = useState(false); 
 
+  const readListResponse = async (response: Response, resourceName: string): Promise<any[]> => {
+    const data = await response.json().catch(() => null);
+    if (!response.ok) {
+      const detail = typeof data?.detail === 'string' ? data.detail : `Request failed (${response.status}).`;
+      throw new Error(`${resourceName}: ${detail}`);
+    }
+    if (!Array.isArray(data)) {
+      throw new Error(`${resourceName}: the server returned an unexpected response.`);
+    }
+    return data;
+  };
+
   useEffect(() => {
     if (!emojiTouched) {
       if (activeTab === 'categories') {
@@ -63,29 +55,35 @@ export default function CustomPresetsScreen() {
   }, [newItemName, newCatType, emojiTouched, activeTab]);
 
   const fetchData = async (isSilent = false) => {
-    if (!user?.id) return;
+    if (!user?.id) {
+      setCategories([]);
+      setAccounts([]);
+      setIsLoading(false);
+      return;
+    }
     if (!isSilent) setIsLoading(true); 
     
     try {
       const token = await AsyncStorage.getItem('user_token');
       const headers = { Authorization: `Bearer ${token || ''}` };
-      const catRes = await fetch(`${API_BASE_URL}/categories?user_id=${user.id}`, { headers });
-      const catData = await catRes.json();
+      const catRes = await fetch(`${API_BASE_URL}/categories/?user_id=${encodeURIComponent(user.id)}`, { headers });
+      const catData = await readListResponse(catRes, 'Categories');
       const userCategories = catData.filter((item: any) => item.category_role === 'user' && item.user_id === user.id);
       setCategories(userCategories);
 
-      const accRes = await fetch(`${API_BASE_URL}/accounts?user_id=${user.id}`, { headers });
-      const accData = await accRes.json();
+      const accRes = await fetch(`${API_BASE_URL}/accounts/?user_id=${encodeURIComponent(user.id)}`, { headers });
+      const accData = await readListResponse(accRes, 'Accounts');
       const userAccounts = accData.filter((item: any) => item.account_role === 'user' && item.user_id === user.id);
       setAccounts(userAccounts);
     } catch (error) {
       console.error(error);
+      Alert.alert('Could not load custom presets', 'Please check your connection and try again.');
     } finally {
       if (!isSilent) setIsLoading(false); 
     }
   };
 
-  useEffect(() => { fetchData(); }, [user]);
+  useEffect(() => { fetchData(); }, [user?.id]);
 
   const openModal = (item: any = null) => {
     if (item) {
@@ -96,7 +94,7 @@ export default function CustomPresetsScreen() {
         setNewEmoji(getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type)));
       } else {
         setNewAccBalance(item.initial_balance.toString());
-        setNewEmoji(getDisplayEmoji(item.icon, getAccountEmoji(item.name)));
+        setNewEmoji(getAccountDisplayEmoji(item.icon, item.name));
       }
       setEmojiTouched(true); 
     } else {
@@ -112,7 +110,7 @@ export default function CustomPresetsScreen() {
 
   const handleSaveItem = async () => {
     if (!newItemName.trim()) {
-      Alert.alert('Oops!', 'Paki-lagyan ng pangalan paps.');
+      Alert.alert('Name required', 'Enter a name for this item.');
       return;
     }
 
@@ -142,12 +140,12 @@ export default function CustomPresetsScreen() {
         Alert.alert('Error', 'Failed to save data. Check backend endpoints.');
       }
     } catch (error) {
-      Alert.alert('Error', 'Hindi ma-save sa backend. Check connection.');
+      Alert.alert('Could not save item', 'Check your connection and try again.');
     }
   };
 
   const handleDelete = (id: string) => {
-    Alert.alert("Delete Item", "Sigurado ka ba paps? Hindi na ito maibabalik.", [
+    Alert.alert('Delete item', 'Are you sure? This action cannot be undone.', [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
           const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
@@ -158,7 +156,7 @@ export default function CustomPresetsScreen() {
               fetchData(true); 
             } else {
               const errorData = await res.json().catch(() => ({}));
-              Alert.alert('Hindi Mabura', errorData.detail || 'Failed to delete.');
+              Alert.alert('Could not delete item', errorData.detail || 'Please try again.');
             }
           } catch (error) {
             Alert.alert('Error', 'Network connection failed.');
@@ -171,7 +169,7 @@ export default function CustomPresetsScreen() {
   const renderItem = ({ item }: { item: any }) => {
     const displayEmoji = activeTab === 'categories'
       ? getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type))
-      : getDisplayEmoji(item.icon, getAccountEmoji(item.name));
+      : getAccountDisplayEmoji(item.icon, item.name);
 
     return (
       <View style={styles.listItem}>
@@ -226,7 +224,7 @@ export default function CustomPresetsScreen() {
           contentContainerStyle={styles.scrollContent}
           renderItem={renderItem}
           ListEmptyComponent={
-            <Text style={styles.sectionDesc}>Wala ka pang ginagawang custom {activeTab}. Pindutin ang '+' para magdagdag!</Text>
+            <Text style={styles.sectionDesc}>You have not created any custom {activeTab} yet. Select '+' to add one.</Text>
           }
         />
       )}
@@ -245,6 +243,7 @@ export default function CustomPresetsScreen() {
                 value={newEmoji}
                 onChange={(value) => { setEmojiTouched(true); setNewEmoji(value); }}
                 fallback={activeTab === 'categories' ? getCategoryEmoji(newItemName, newCatType) : getAccountEmoji(newItemName)}
+                context={activeTab === 'accounts' ? 'account' : newCatType === 'income' ? 'income' : 'expense'}
                 tint={activeTab === 'categories' ? (newCatType === 'income' ? '#e8f5e9' : '#ffebee') : ACCOUNT_TINT}
                 accessibilityLabel={activeTab === 'categories' ? 'Choose category emoji' : 'Choose account emoji'}
               />

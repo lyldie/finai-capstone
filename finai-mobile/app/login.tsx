@@ -30,7 +30,11 @@ export default function LoginScreen() {
     const cleanedEmail = email.trim().toLowerCase();
 
     if (!cleanedEmail || !password) {
-      Alert.alert("Error", "Input mo email at password paps!");
+      Alert.alert('Missing information', 'Enter your email and password.');
+      return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanedEmail)) {
+      Alert.alert('Invalid email', 'Enter a valid email address.');
       return;
     }
 
@@ -45,7 +49,7 @@ export default function LoginScreen() {
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
 
       if (response.ok) {
         // CHANGED: now also passes data.token through. It'll simply be undefined
@@ -72,15 +76,15 @@ export default function LoginScreen() {
         }
         
       } else {
-        const errorMessage = typeof data.detail === 'string' 
-          ? data.detail 
-          : JSON.stringify(data.detail || "Mali yata credentials mo paps.");
+        const errorMessage = typeof data.detail === 'string'
+          ? data.detail
+          : 'The email or password is incorrect.';
         
         Alert.alert("Login Failed", errorMessage);
       }
     } catch (e) {
       console.log("Network Error:", e);
-      Alert.alert("Network Error", "Check mo backend server o IP sa config.js paps!");
+      Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
@@ -107,7 +111,7 @@ export default function LoginScreen() {
               <View style={styles.inputWrapper}>
                 <Ionicons name="person" size={22} color={SAGE} style={styles.inputIcon} />
                 <TextInput 
-                  placeholder="Username or Email Address" 
+                  placeholder="Email Address"
                   placeholderTextColor={SAGE}
                   style={styles.input} 
                   value={email}

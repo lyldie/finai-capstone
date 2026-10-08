@@ -17,7 +17,8 @@ const GOLD = '#edb232';
 const SAGE = '#8BA19D';
 
 export default function SignupScreen() {
-  const [name, setName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [retypePassword, setRetypePassword] = useState('');
@@ -27,46 +28,59 @@ export default function SignupScreen() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
+  const passwordChecks = [
+    { label: 'At least 10 characters', valid: password.length >= 10 },
+    { label: 'An uppercase and a lowercase letter', valid: /[A-Z]/.test(password) && /[a-z]/.test(password) },
+    { label: 'At least one number', valid: /\d/.test(password) },
+  ];
+  const passwordStrong = passwordChecks.every((check) => check.valid);
+  const passwordHasSymbol = /[^A-Za-z0-9]/.test(password);
+
   const handleSignup = async () => {
     Keyboard.dismiss(); // 👈 [NEW] Itago ang keyboard kapag pinindot ang signup
-    const cleanName = name.trim();
+    const cleanFirstName = firstName.trim();
+    const cleanLastName = lastName.trim();
+    const cleanName = `${cleanFirstName} ${cleanLastName}`.trim();
     const cleanEmail = email.trim().toLowerCase();
 
     // 1. Basic Empty Validation
-    if (!cleanName || !cleanEmail || !password || !retypePassword) {
-      Alert.alert("Missing Info", "Fill up mo lahat paps para swabe!");
+    if (!cleanFirstName || !cleanLastName || !cleanEmail || !password || !retypePassword) {
+      Alert.alert('Missing information', 'Enter your first name, last name, email, and password.');
+      return;
+    }
+    if (cleanName.length > 100) {
+      Alert.alert('Name too long', 'Your first and last name must fit within 100 characters.');
       return;
     }
 
     // 👈 [NEW] 2. Name Validation (Letters at spaces lang para iwas invalid data sa database)
-    const nameRegex = /^[a-zA-ZñÑ\s\-]+$/;
+    const nameRegex = /^[\p{L}][\p{L}\p{M}' .-]*$/u;
     if (!nameRegex.test(cleanName)) {
-      Alert.alert("Invalid Name", "Letters, spaces, at hyphens lang sana sa pangalan paps.");
+      Alert.alert('Invalid name', 'Use letters, spaces, apostrophes, periods, or hyphens in your name.');
       return;
     }
 
     // 3. Email Format Validation
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(cleanEmail)) {
-      Alert.alert("Invalid Email", "Paki-check ang email format mo paps!");
+      Alert.alert('Invalid email', 'Enter a valid email address.');
       return;
     }
 
     // 4. Password Length Validation
-    if (password.length < 6) {
-      Alert.alert("Weak Password", "Dapat at least 6 characters ang password paps.");
+    if (!passwordStrong) {
+      Alert.alert('Choose a stronger password', 'Use at least 10 characters, uppercase and lowercase letters, and a number.');
       return;
     }
-
     // 5. Password Match Validation
     if (password !== retypePassword) {
-      Alert.alert("Wait lang!", "Hindi match yung password mo paps.");
+      Alert.alert('Passwords do not match', 'Enter the same password in both password fields.');
       return;
     }
 
     // 6. Terms Agreement Check
     if (!isAgree) {
-      Alert.alert("Privacy Policy", "Paki-check yung agreement paps.");
+      Alert.alert('Terms and privacy', 'Review and accept the Terms & Privacy statement to continue.');
       return;
     }
 
@@ -86,10 +100,10 @@ export default function SignupScreen() {
 
       if (response.ok) {
         Alert.alert(
-          "Verify Your Email 🐿️", 
-          "Nag-send kami ng code sa email mo paps. Pakicheck pati spam folder!",
+          'Verify your email',
+          'We sent a verification code to your email. Check your inbox and spam folder.',
           [{ 
-            text: "Input Code", 
+            text: 'Enter code',
             onPress: () => router.replace({
               pathname: '/otpverify',
               params: { email: cleanEmail }
@@ -97,17 +111,17 @@ export default function SignupScreen() {
           }]
         );
       } else {
-        Alert.alert("Registration Failed", data.detail || "May error paps.");
+        Alert.alert('Registration failed', data.detail || 'We could not create your account. Please try again.');
       }
     } catch (e) {
-      Alert.alert("Network Error", "Check mo server connection paps!");
+      Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
     }
   };
 
   const showPrivacyPolicy = () => {
-    Alert.alert("Data Privacy", "Account registration uses your name, email, and password. After email verification, you can set your app PIN. Your monthly money baseline and first savings goal are optional and can be skipped or added later.");
+    Alert.alert('Data privacy', 'Registration uses your name, email, and password. After email verification, you can set your app PIN. Your monthly money baseline and first savings goal are optional and can be skipped or added later.');
   };
 
   return (
@@ -117,7 +131,7 @@ export default function SignupScreen() {
       
       <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.header}>
         <View style={styles.headerTextContainer}>
-          <Text style={styles.headerTitle}>Register{"\n"}Ka Munaaa{"\n"}Sebby Ko, Okay?</Text>
+          <Text style={styles.headerTitle}>Create your{"\n"}FinAI account</Text>
         </View>
         <View style={styles.logoCircle}>
              <Image source={require('../assets/images/squirrel_logoo.png')} style={styles.logo} resizeMode="contain" />
@@ -134,13 +148,26 @@ export default function SignupScreen() {
         <View style={styles.inputWrapper}>
           <Ionicons name="person" size={20} color={SAGE} style={styles.icon} />
           <TextInput 
-            placeholder="Full Name" 
+            placeholder="First name"
             placeholderTextColor={SAGE} 
             style={styles.input} 
-            value={name} 
-            onChangeText={setName} 
+            value={firstName}
+            onChangeText={setFirstName}
             autoCapitalize="words" // 👈 [NEW] Auto-capitalize ng bawat salita sa pangalan
             editable={!loading} // 👈 [NEW] Naka-disable kapag nag-l-load
+          />
+        </View>
+
+        <View style={styles.inputWrapper}>
+          <Ionicons name="person-outline" size={20} color={SAGE} style={styles.icon} />
+          <TextInput
+            placeholder="Last name"
+            placeholderTextColor={SAGE}
+            style={styles.input}
+            value={lastName}
+            onChangeText={setLastName}
+            autoCapitalize="words"
+            editable={!loading}
           />
         </View>
 
@@ -169,12 +196,29 @@ export default function SignupScreen() {
             value={password} 
             onChangeText={setPassword} 
             secureTextEntry={!showPassword} 
+            autoCapitalize="none"
+            autoComplete="new-password"
+            textContentType="newPassword"
             editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowPassword(!showPassword)}>
             <Ionicons name={showPassword ? "eye-off" : "eye"} size={20} color={SAGE} />
           </TouchableOpacity>
         </View>
+
+        {!!password && (
+          <View style={styles.passwordGuidance}>
+            <Text style={[styles.passwordStrength, { color: passwordStrong ? TEAL : '#D14343' }]}>
+              {passwordStrong ? (passwordHasSymbol ? 'Strong password' : 'Good password · a symbol adds extra strength') : 'Password needs more strength'}
+            </Text>
+            {passwordChecks.map((check) => (
+              <View key={check.label} style={styles.passwordRule}>
+                <Ionicons name={check.valid ? 'checkmark-circle' : 'ellipse-outline'} size={15} color={check.valid ? TEAL : SAGE} />
+                <Text style={[styles.passwordRuleText, check.valid && styles.passwordRulePassed]}>{check.label}</Text>
+              </View>
+            ))}
+          </View>
+        )}
 
         {/* Retype Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
@@ -186,6 +230,9 @@ export default function SignupScreen() {
             value={retypePassword} 
             onChangeText={setRetypePassword} 
             secureTextEntry={!showRetypePassword} 
+            autoCapitalize="none"
+            autoComplete="new-password"
+            textContentType="newPassword"
             editable={!loading}
           />
           <TouchableOpacity onPress={() => setShowRetypePassword(!showRetypePassword)}>
@@ -229,6 +276,11 @@ const styles = StyleSheet.create({
   inputWrapper: { flexDirection: 'row', alignItems: 'center', borderRadius: 30, borderWidth: 1.5, borderColor: TEAL, marginBottom: 15, paddingHorizontal: 20, height: 55 },
   icon: { marginRight: 10 },
   input: { flex: 1, color: DEEP_GREEN, fontSize: 16 },
+  passwordGuidance: { marginTop: -8, marginBottom: 12, marginLeft: 8 },
+  passwordStrength: { fontSize: 12, fontWeight: '700', marginBottom: 5 },
+  passwordRule: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },
+  passwordRuleText: { color: SAGE, fontSize: 11 },
+  passwordRulePassed: { color: TEAL },
   checkboxContainer: { flexDirection: 'row', alignItems: 'center', marginVertical: 10 },
   checkboxLabel: { color: SAGE, fontSize: 13, marginLeft: 8 },
   boldText: { fontWeight: 'bold', color: GOLD }, 

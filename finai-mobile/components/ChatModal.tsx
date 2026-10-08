@@ -30,7 +30,7 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
-      text: 'Kamusta paps! Ako si FinAi Advisor. Handa akong tulungan ka sa budget, goals, at spending habits mo. Ano ang gusto mong malaman ngayon?',
+      text: 'Hello! I’m your FinAI advisor. I can help with your budget, goals, and spending habits. What would you like to know?',
       sender: 'ai',
     },
   ]);
@@ -60,7 +60,7 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
         throw new Error(data.detail || 'Error communicating with FinAi');
       }
     } catch (error) {
-      const errorMsg: ChatMessage = { id: (Date.now() + 1).toString(), text: "Pasensya na paps, may problema yata sa connection. Try mo ulit maya-maya.", sender: 'ai' };
+      const errorMsg: ChatMessage = { id: (Date.now() + 1).toString(), text: 'I could not connect just now. Please try again shortly.', sender: 'ai' };
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setIsChatLoading(false);

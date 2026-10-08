@@ -2,7 +2,7 @@
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_URL } from '../config'; 
+import { API_URL } from '../config';
 import { useAuth } from './AuthContext';
 
 export type TransactionType = 'Income' | 'Expense' | 'Transfer' | 'Contribution';
@@ -13,18 +13,26 @@ export type Account = { id: string; name: string; initial_balance: number; icon:
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
 export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
 
-export type Goal = {  
-  id: string; 
-  user_id: string; 
-  goal_type_id: string; 
-  target_name: string; 
-  target_amount: number; 
-  current_savings: number; 
-  target_date: string; 
+const transactionRequestError = async (response: Response, fallback: string) => {
+  const body = await response.json().catch(() => ({}));
+  const detail = typeof body.detail === 'string' ? body.detail : '';
+  if (response.status === 409 && /balance/i.test(detail)) return new Error('INSUFFICIENT_BALANCE');
+  if (response.status >= 500) return new Error('TRANSACTION_TEMPORARY_FAILURE');
+  return new Error(detail || fallback);
+};
+
+export type Goal = {
+  id: string;
+  user_id: string;
+  goal_type_id: string;
+  target_name: string;
+  target_amount: number;
+  current_savings: number;
+  target_date: string;
 };
 
 type TransactionContextType = {
-  transactions: Transaction[]; 
+  transactions: Transaction[];
   categories: Category[];
   accounts: Account[];
   budgets: Budget[];
@@ -32,10 +40,10 @@ type TransactionContextType = {
   goals: Goal[];
   goalTypes: GoalTypePreset[];
   isLoading: boolean;
-  addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<void>;
-  updateTransaction: (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<void>; 
-  deleteTransaction: (id: string) => Promise<void>;
-  updateBudget: (id: string, amount: number) => Promise<void>;
+  addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
+  updateTransaction: (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
+  archiveTransaction: (id: string) => Promise<void>;
+  updateBudget: (id: string, amount: number, rollover_enabled?: boolean) => Promise<void>;
   deleteBudget: (id: string) => Promise<void>;
   addGoal: (name: string, target_amount: number, target_date: string, goal_type_id: string) => Promise<void>;
   updateGoal: (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings?: number) => Promise<void>;
@@ -43,8 +51,8 @@ type TransactionContextType = {
   archiveGoal: (id: string) => Promise<void>;
   depositToGoal: (goalId: string, amount: number, account: string) => Promise<boolean>;
   getAccountBalance: (name: string) => number;
-  totalIncome: number; 
-  totalExpense: number; 
+  totalIncome: number;
+  totalExpense: number;
   balance: number;
   fetchTransactions: (showLoading?: boolean) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
@@ -94,7 +102,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setArchivedAccountBalance(0);
         setGoalTypes([]);
         if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
-        return; 
+        return;
       }
       if (activeUserId.current !== userId) {
         activeUserId.current = userId;
@@ -174,15 +182,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         const formattedTrans = transRes.data.map((i: any) => ({
-          id: i._id || i.id, 
-          amount: i.amount?.toString() || '0', 
+          id: i._id || i.id,
+          amount: i.amount?.toString() || '0',
           category: i.category || 'General',
           category_id: i.category_id ? String(i.category_id) : undefined,
-          note: i.title || i.note || i.item_name || i.category || '', 
+          note: i.title || i.note || i.item_name || i.category || '',
           type: i.type || 'Expense',
-          account: i.account || (formattedAccounts[0]?.name || 'Cash'), 
+          account: i.account || (formattedAccounts[0]?.name || 'Cash'),
           account_id: i.account_id ? String(i.account_id) : undefined,
-          to_account: i.to_account || '', 
+          to_account: i.to_account || '',
           to_account_id: i.to_account_id ? String(i.to_account_id) : undefined,
           goal_id: i.goal_id ? String(i.goal_id) : undefined,
           date: i.date ? i.date.split('T')[0] : getPhDateString() // Ginamit ang PH time helper
@@ -190,15 +198,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setTransactions(formattedTrans);
         await AsyncStorage.setItem(transactionCacheKey, JSON.stringify(formattedTrans)); // Cache
       }
-      
+
       const parsedBudgets = Array.isArray(budRes) ? budRes : (budRes.data || []);
       const formattedBudgets = parsedBudgets.map((b: any) => ({ ...b, id: b._id || b.id }));
       setBudgets(formattedBudgets);
       await AsyncStorage.setItem(budgetCacheKey, JSON.stringify(formattedBudgets)); // Cache
-      
+
       const parsedCategories = Array.isArray(catRes) ? catRes : (catRes.data || []);
       setCategories(parsedCategories.map((c: any) => ({ ...c, id: c._id || c.id })));
-      
+
       const parsedGoals = Array.isArray(goalsRes) ? goalsRes : (goalsRes.data || []);
       setGoals(parsedGoals.map((g: any) => ({ ...g, id: g._id || g.id })));
 
@@ -210,18 +218,18 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
       const parsedNotifications = Array.isArray(notificationRes) ? notificationRes : (notificationRes.data || []);
       setNotifications(parsedNotifications.map((n: any) => ({ ...n, id: n._id || n.id })));
-      
-    } catch (e) { 
+
+    } catch (e) {
       if (requestId !== fetchRequestId.current) return;
       // Kahit mag-error, may makikita pa ring data ang user dahil sa cache
-      console.log("Offline mode active or network error:", e); 
-    } finally { 
+      console.log("Offline mode active or network error:", e);
+    } finally {
       if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
     }
   }, [user?.id]);
 
-  useEffect(() => { 
-    fetchTransactions(true); 
+  useEffect(() => {
+    fetchTransactions(true);
   }, [fetchTransactions]);
 
   const getAccountBalance = useCallback((accountName: string) => {
@@ -244,7 +252,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const addTransaction = async (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
     const userId = await AsyncStorage.getItem('user_id');
-    if (!userId) return;
+    if (!userId) throw new Error('Your session has expired. Please log in again.');
 
     const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
 
@@ -257,21 +265,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const token = await AsyncStorage.getItem('user_token');
     const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
 
-    if (res.ok) {
-      const result = await res.json();
-      await fetchTransactions(false); // Silent refresh
-      if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
-      }
-    } else {
-      const error = await res.json().catch(() => ({}));
-      throw new Error(error.detail || 'Save failed.');
-    }
+    if (!res.ok) throw await transactionRequestError(res, 'Save failed. Please review the transaction and try again.');
+    const result = await res.json();
+    await fetchTransactions(false); // Silent refresh
+    return Array.isArray(result.notifications) ? result.notifications : [];
   };
 
   const updateTransaction = async (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
     const userId = await AsyncStorage.getItem('user_id');
-    if (!userId) return;
+    if (!userId) throw new Error('Your session has expired. Please log in again.');
 
     const payload = { user_id: userId, amount: parseFloat(amount) || 0, category, title: note, item_name: note, note, type, account, to_account: toAccount || null, date: date || getPhDateString() };
 
@@ -279,35 +281,20 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // swallowing it, so two.tsx's own error handling reflects what actually happened.
     const token = await AsyncStorage.getItem('user_token');
     const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
-    if (res.ok) {
-      const result = await res.json();
-      await fetchTransactions(false); // Silent refresh
-      if (Array.isArray(result.notifications) && result.notifications.length) {
-        Alert.alert('Budget Alert ⚠️', result.notifications.map((n: AppNotification) => n.message).join('\n\n'));
-      }
-    } else {
-      const error = await res.json().catch(() => ({}));
-      throw new Error(error.detail || 'Update failed.');
-    }
+    if (!res.ok) throw await transactionRequestError(res, 'Update failed. Please review the transaction and try again.');
+    const result = await res.json();
+    await fetchTransactions(false); // Silent refresh
+    return Array.isArray(result.notifications) ? result.notifications : [];
   };
 
-  const deleteTransaction = async (id: string) => {
-    try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      
-      // FIX: user_id is now passed in the URL to match backend requirements
-      const token = await AsyncStorage.getItem('user_token');
-      const res = await fetch(`${API_URL}/archive-expense/${id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
-      
-      if (res.ok) {
-        await fetchTransactions(false); // Silent refresh
-      } else {
-        Alert.alert("Error", "Hindi nabura ang record sa server.");
-      }
-    } catch (e) {
-      Alert.alert("Error", "Network connection failed.");
+  const archiveTransaction = async (id: string) => {
+    const token = await AsyncStorage.getItem('user_token');
+    const res = await fetch(`${API_URL}/archive-expense/${id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not archive this transaction. Please try again.');
     }
+    await fetchTransactions(false);
   };
 
   const markNotificationRead = async (id: string) => {
@@ -351,7 +338,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         body: JSON.stringify({ user_id: userId, goal_type_id, target_name: name, target_amount, current_savings: 0, target_date }),
       });
       if (!response.ok) throw new Error('Failed to add goal');
-      await fetchTransactions(false); 
+      await fetchTransactions(false);
     } catch (error) { console.error("addGoal Error:", error); Alert.alert("Error", "Bumagsak ang pag-save ng goal."); }
   };
 
@@ -360,25 +347,25 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const token = await AsyncStorage.getItem('user_token');
-      
+
       const response = await fetch(`${API_URL}/api/goals/${id}`, {
         method: 'PUT',
          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
-        body: JSON.stringify({ 
-          user_id: userId, 
-          goal_type_id, 
-          target_name: name, 
-          target_amount, 
-          current_savings, 
-          target_date 
+        body: JSON.stringify({
+          user_id: userId,
+          goal_type_id,
+          target_name: name,
+          target_amount,
+          current_savings,
+          target_date
         }),
       });
 
       if (!response.ok) throw new Error('Failed to update goal');
-      await fetchTransactions(false); 
-    } catch (error) { 
-      console.error("updateGoal Error:", error); 
-      Alert.alert("Error", "Bumagsak ang pag-update ng goal."); 
+      await fetchTransactions(false);
+    } catch (error) {
+      console.error("updateGoal Error:", error);
+      Alert.alert("Error", "Bumagsak ang pag-update ng goal.");
     }
   };
 
@@ -418,8 +405,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const currentBalance = getAccountBalance(account);
       if (amount > currentBalance) {
         Alert.alert(
-          "Kulang ang Balance! ⚠️",
-          `Mayroon ka lamang ₱${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })} sa ${account}. Hindi kasya ang ₱${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} na gustong ihulog.`
+          "Insufficient balance ⚠️",
+          `Your ${account} account has ₱${currentBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}, which is not enough for this ₱${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })} contribution.`
         );
         return false;
       }
@@ -446,22 +433,22 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || 'Failed to process deposit');
       }
-      
+
       await fetchTransactions(false); // Silent refresh ng dashboard
       return true;
     } catch (error: any) {
       console.error("depositToGoal Error:", error);
-      Alert.alert("Deposit Error", error.message || "Hindi maiproseso ang hulog mo ngayon.");
+      Alert.alert("Deposit Error", error.message || "Your contribution could not be processed. Please try again.");
       return false;
     }
   };
 
   const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
   const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense' && !t.goal_id).reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
-  
+
   const balance = useMemo(() => {
     const accountNames = [...new Set(accounts.map((account) => account.name))];
-    
+
     const totalFromAccounts = accountNames.length
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
       : totalIncome - totalExpense - transactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
@@ -472,7 +459,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [accounts, getAccountBalance, totalExpense, totalIncome, goals, archivedAccountBalance, archivedGoalSavings]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, goalTypes, isLoading, addTransaction, updateTransaction, deleteTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

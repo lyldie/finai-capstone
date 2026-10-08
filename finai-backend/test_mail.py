@@ -1,37 +1,37 @@
+"""Send a test message using credentials from finai-backend/.env."""
+
+import os
 import smtplib
 from email.message import EmailMessage
+from pathlib import Path
 
-# --- CONFIGURATION ---
-EMAIL_SENDER = "sobrangfinefinai@gmail.com"
-EMAIL_PASSWORD = "natvzmqhkmkquafu" 
-RECEIVER_EMAIL = "loyld30estardo@gmail.com" # <--- PALITAN MO NG EMAIL MO PAPS
+from dotenv import load_dotenv
 
-def send_test():
-    print("--- FinAi Email Stress Test ---")
-    print(f"Sinusubukang kumonekta sa Gmail para kay: {RECEIVER_EMAIL}...")
-    
-    msg = EmailMessage()
-    msg['Subject'] = "FinAi - Independent Test 🐿️"
-    msg['From'] = EMAIL_SENDER
-    msg['To'] = RECEIVER_EMAIL
-    msg.set_content("Mabuhay paps! Kung nababasa mo ito, 100% working ang SMTP mo.")
+load_dotenv(Path(__file__).with_name(".env"))
+EMAIL_SENDER = os.getenv("EMAIL_SENDER", "")
+EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "")
+RECEIVER_EMAIL = os.getenv("EMAIL_TEST_RECIPIENT", "")
+
+
+def send_test() -> None:
+    if not EMAIL_SENDER or not EMAIL_PASSWORD or not RECEIVER_EMAIL:
+        print("Set EMAIL_SENDER, EMAIL_PASSWORD, and EMAIL_TEST_RECIPIENT in .env first.")
+        return
+
+    message = EmailMessage()
+    message["Subject"] = "FinAI email delivery test"
+    message["From"] = EMAIL_SENDER
+    message["To"] = RECEIVER_EMAIL
+    message.set_content("This is a test message from FinAI.")
 
     try:
-        # Port 587 + STARTTLS (Pinaka-reliable)
-        with smtplib.SMTP('smtp.gmail.com', 587) as smtp:
-            smtp.starttls() # Eto yung kulang minsan sa SSL
-            print("Connecting...")
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as smtp:
             smtp.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            print("Login Successful! ✅")
-            smtp.send_message(msg)
-            print(f"Email Sent! Pakicheck ang inbox o spam folder ni {RECEIVER_EMAIL}.")
-    except Exception as e:
-        print(f"\n--- ERROR ENCOUNTERED ---")
-        print(f"Dahilan: {e}")
-        print("\nPossible issues:")
-        print("1. Mali ang App Password.")
-        print("2. Walang internet connection.")
-        print("3. Blocked ang connection ng antivirus/firewall mo.")
+            smtp.send_message(message)
+        print("Test email sent successfully.")
+    except Exception as exc:
+        print(f"Email test failed ({type(exc).__name__}). Check the mail settings and try again.")
+
 
 if __name__ == "__main__":
     send_test()

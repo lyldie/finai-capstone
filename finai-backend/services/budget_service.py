@@ -301,7 +301,7 @@ def _next_period_start(period_type: str, current_end: str) -> str:
 
 
 async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str, Any]]:
-    """Record and email each 70%, 90%, and 100% threshold once per budget period."""
+    """Notify only the highest newly relevant threshold for each budget period."""
     created = []
     today_key = ph_today().isoformat()
     for summary in await list_budget_usage(user_id):
@@ -309,12 +309,32 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
             continue
 
         crossed = [threshold for threshold in THRESHOLDS if summary["percentage_used"] >= threshold]
+        if not crossed:
+            continue
+        highest_crossed = max(crossed)
+
         for threshold in crossed:
+            stable_key = f"{user_id}:{summary['id']}:{summary['period_key']}:{threshold}:in_app"
+            notification_id = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()
             existing = await db.notifications.find_one({
                 "user_id": user_id, "budget_id": summary["id"], "period_key": summary["period_key"],
                 "threshold": threshold, "channel": "in_app",
             })
             if existing:
+                if existing.get("suppressed"):
+                    continue
+                if (
+                    threshold < highest_crossed
+                    and existing.get("email_status") == "failed"
+                    and int(existing.get("email_attempts", 0)) < 3
+                ):
+                    # A higher-severity alert is now the useful message. Avoid
+                    # retrying a stale lower-level email at the same time.
+                    await db.notifications.update_one(
+                        {"_id": existing["_id"], "email_status": "failed"},
+                        {"$set": {"email_status": "superseded"}},
+                    )
+                    continue
                 # Retry transient SMTP failures a bounded number of times. The
                 # conditional update claims the retry so concurrent requests do
                 # not send duplicate emails.
@@ -325,6 +345,33 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
                     )
                     if claim.matched_count:
                         await _send_threshold_email(existing["_id"], user_id, summary, threshold)
+                continue
+
+            if threshold < highest_crossed:
+                # Remember that this lower level was passed in the same jump.
+                # Otherwise a later decrease and re-crossing could send a stale
+                # warning after the user has already received the higher alert.
+                suppressed_notification = {
+                    "_id": notification_id,
+                    "user_id": user_id,
+                    "budget_id": summary["id"],
+                    "category_id": summary["category_id"],
+                    "period_key": summary["period_key"],
+                    "threshold": threshold,
+                    "channel": "in_app",
+                    "level": "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget",
+                    "message": "",
+                    "is_read": True,
+                    "created_at": datetime.now(PH_TZ),
+                    "email_status": "suppressed",
+                    "email_attempts": 0,
+                    "suppressed": True,
+                }
+                try:
+                    await db.notifications.insert_one(suppressed_notification)
+                except Exception as exc:
+                    if exc.__class__.__name__ not in {"DuplicateKeyError", "BulkWriteError"}:
+                        raise
                 continue
 
             level = "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget"
@@ -339,8 +386,6 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
             }
             # A deterministic id makes the check-and-insert safe when two requests
             # cross the same threshold at nearly the same time.
-            stable_key = f"{user_id}:{summary['id']}:{summary['period_key']}:{threshold}:in_app"
-            notification_id = hashlib.sha256(stable_key.encode("utf-8")).hexdigest()
             notification["_id"] = notification_id
             try:
                 await db.notifications.insert_one(notification)

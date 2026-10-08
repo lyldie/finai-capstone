@@ -47,6 +47,7 @@ load_dotenv(Path(__file__).with_name(".env"))
 SECRET_KEY = os.getenv("ADMIN_JWT_SECRET")
 if not SECRET_KEY:
     raise RuntimeError("ADMIN_JWT_SECRET must be set before starting the backend.")
+SUPER_ADMIN_EMAIL = os.getenv("SUPER_ADMIN_EMAIL", "").strip().lower()
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12  # 12 hours -- long enough for a work session, short enough to limit a leaked-token window
 
@@ -99,7 +100,7 @@ async def _validate_admin_token(credentials: Optional[HTTPAuthorizationCredentia
         raise HTTPException(status_code=401, detail="Invalid session. Please log in again.")
 
     admin_user = await db.users.find_one({"_id": oid})
-    if not admin_user or admin_user.get("role") != "admin":
+    if not admin_user or admin_user.get("role") != "admin" or admin_user.get("is_archived"):
         raise HTTPException(status_code=401, detail="Admin access revoked. Please log in again.")
 
     return {"id": user_id, "name": admin_user.get("name", "Admin"), "email": admin_user.get("email", "")}
@@ -109,6 +110,16 @@ async def get_current_admin(credentials: Optional[HTTPAuthorizationCredentials] 
     """FastAPI dependency for routes that are ALWAYS admin-only (goal_types,
     logs, users). Use this via Depends(get_current_admin) in a route signature."""
     return await _validate_admin_token(credentials)
+
+
+async def get_current_super_admin(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> dict:
+    """Allow only the configured, active super-admin account to manage admins."""
+    if not SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=503, detail="Super-admin access is not configured.")
+    admin = await _validate_admin_token(credentials)
+    if admin.get("email", "").strip().lower() != SUPER_ADMIN_EMAIL:
+        raise HTTPException(status_code=403, detail="Only the configured super admin can manage administrator accounts.")
+    return admin
 
 
 async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme)) -> dict:

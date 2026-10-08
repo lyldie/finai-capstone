@@ -31,7 +31,7 @@ export default function AddGoalTypeScreen() {
 
   const handleAdd = async () => {
     if (!name.trim()) {
-      Alert.alert("Error", "Lagyan mo ng pangalan ang goal type, paps!");
+      Alert.alert('Name required', 'Enter a name for the goal type.');
       return;
     }
 
@@ -50,10 +50,10 @@ export default function AddGoalTypeScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert("Error", "Hindi ma-save, paps.");
+        Alert.alert('Could not save goal type', 'Please try again.');
       }
     } catch (error) {
-      Alert.alert("Error", "Check mo yung connection mo.");
+      Alert.alert("Error", "Check your internet connection and try again.");
     }
   };
 
@@ -78,7 +78,7 @@ export default function AddGoalTypeScreen() {
       >
         <View style={styles.formCard}>
           <View style={styles.previewRow}>
-            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getGoalEmoji(name || 'goal')} tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
+            <EmojiPicker value={emoji} onChange={(value) => { setEmojiTouched(true); setEmoji(value); }} fallback={getGoalEmoji(name || 'goal')} context="goal" tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
             <View style={{ flex: 1 }}>
               <Text style={styles.previewHint}>Choose an icon for this goal type</Text>
               {emojiTouched && (
