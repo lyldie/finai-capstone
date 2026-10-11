@@ -8,7 +8,7 @@ from datetime import datetime
 from datetime import date
 from auth import get_current_user
 from .accounts import calculate_account_balance, ensure_account_balance_lock, lock_account_balance
-from services.budget_service import create_crossed_threshold_notifications
+from services.budget_service import ph_today
 
 router = APIRouter(prefix="/api/goals", tags=["Goals"])
 
@@ -283,6 +283,4 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Could not safely complete the contribution. Verify MongoDB transaction support and try again.") from exc
-    await create_crossed_threshold_notifications(current_user["id"])
-
     return {"status": "Success", "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}

@@ -12,6 +12,7 @@ export type GoalTypePreset = { id: string; name: string; icon?: string };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
 export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
+export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number };
 
 const transactionRequestError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => ({}));
@@ -37,6 +38,9 @@ type TransactionContextType = {
   accounts: Account[];
   budgets: Budget[];
   notifications: AppNotification[];
+  transactionToast: TransactionToastNotice | null;
+  showTransactionToast: (notice: Omit<TransactionToastNotice, 'id'>) => void;
+  clearTransactionToast: () => void;
   goals: Goal[];
   goalTypes: GoalTypePreset[];
   isLoading: boolean;
@@ -76,6 +80,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [budgets, setBudgets] = useState<Budget[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [transactionToast, setTransactionToast] = useState<TransactionToastNotice | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [archivedGoalSavings, setArchivedGoalSavings] = useState(0);
   const [archivedAccountBalance, setArchivedAccountBalance] = useState(0);
@@ -83,6 +88,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [isLoading, setIsLoading] = useState(true);
   const activeUserId = useRef<string | null>(null);
   const fetchRequestId = useRef(0);
+  const showTransactionToast = useCallback((notice: Omit<TransactionToastNotice, 'id'>) => {
+    setTransactionToast({ ...notice, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` });
+  }, []);
+  const clearTransactionToast = useCallback(() => setTransactionToast(null), []);
 
   // Option for silent refresh (showLoading = false) para iwas flicker sa UI
   const fetchTransactions = useCallback(async (showLoading = true) => {
@@ -92,6 +101,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const userId = user?.id;
       if (!userId) {
         activeUserId.current = null;
+        setTransactionToast(null);
         setTransactions([]);
         setCategories([]);
         setAccounts([]);
@@ -106,6 +116,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
       if (activeUserId.current !== userId) {
         activeUserId.current = userId;
+        setTransactionToast(null);
         setTransactions([]);
         setCategories([]);
         setAccounts([]);
@@ -267,7 +278,21 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     if (!res.ok) throw await transactionRequestError(res, 'Save failed. Please review the transaction and try again.');
     const result = await res.json();
-    await fetchTransactions(false); // Silent refresh
+    const savedTransaction: Transaction = {
+      id: String(result.id),
+      amount: String(Number(payload.amount)),
+      category,
+      category_id: categories.find((item) => item.name === category && item.type === type.toLowerCase())?.id,
+      note,
+      type,
+      account,
+      account_id: accounts.find((item) => item.name === account)?.id,
+      to_account: toAccount || '',
+      to_account_id: toAccount ? accounts.find((item) => item.name === toAccount)?.id : undefined,
+      date: payload.date,
+    };
+    setTransactions((current) => [...current, savedTransaction]);
+    void fetchTransactions(false); // Refresh shared screens without delaying transaction feedback.
     return Array.isArray(result.notifications) ? result.notifications : [];
   };
 
@@ -283,7 +308,21 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
     if (!res.ok) throw await transactionRequestError(res, 'Update failed. Please review the transaction and try again.');
     const result = await res.json();
-    await fetchTransactions(false); // Silent refresh
+    const updatedTransaction: Transaction = {
+      id,
+      amount: String(Number(payload.amount)),
+      category,
+      category_id: categories.find((item) => item.name === category && item.type === type.toLowerCase())?.id,
+      note,
+      type,
+      account,
+      account_id: accounts.find((item) => item.name === account)?.id,
+      to_account: toAccount || '',
+      to_account_id: toAccount ? accounts.find((item) => item.name === toAccount)?.id : undefined,
+      date: payload.date,
+    };
+    setTransactions((current) => current.map((transaction) => transaction.id === id ? updatedTransaction : transaction));
+    void fetchTransactions(false); // Refresh shared screens without delaying transaction feedback.
     return Array.isArray(result.notifications) ? result.notifications : [];
   };
 
@@ -294,7 +333,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const body = await res.json().catch(() => ({}));
       throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not archive this transaction. Please try again.');
     }
-    await fetchTransactions(false);
+    // Reflect the successful archive immediately so balances and totals update
+    // without waiting for the full multi-endpoint background refresh.
+    setTransactions((current) => current.filter((transaction) => transaction.id !== id));
+    void fetchTransactions(false);
   };
 
   const markNotificationRead = async (id: string) => {
@@ -308,13 +350,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const updateBudget = async (id: string, amount: number, rollover_enabled?: boolean) => {
-    try {
-      const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const token = await AsyncStorage.getItem('user_token');
-      const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, user_id: userId }) });
-      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to update budget.");
-    } catch (e) { console.error(e); }
+    const userId = await AsyncStorage.getItem('user_id');
+    if (!userId) throw new Error('Your session has expired. Please log in again.');
+    const token = await AsyncStorage.getItem('user_token');
+    const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, user_id: userId }) });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(typeof body.detail === 'string' ? body.detail : 'Failed to update budget. Please try again.');
+    }
+    void fetchTransactions(false);
   };
 
   const deleteBudget = async (id: string) => {
@@ -323,7 +367,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const token = await AsyncStorage.getItem('user_token');
       const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
-      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete budget.");
+      if (res.ok) {
+        setBudgets((current) => current.filter((budget) => budget.id !== id));
+        setNotifications((current) => current.filter((notification) => notification.budget_id !== id));
+        void fetchTransactions(false);
+      } else Alert.alert("Error", "Failed to delete budget.");
     } catch (e) { console.error(e); }
   };
 
@@ -338,7 +386,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         body: JSON.stringify({ user_id: userId, goal_type_id, target_name: name, target_amount, current_savings: 0, target_date }),
       });
       if (!response.ok) throw new Error('Failed to add goal');
-      await fetchTransactions(false);
+      void fetchTransactions(false);
     } catch (error) { console.error("addGoal Error:", error); Alert.alert("Error", "Bumagsak ang pag-save ng goal."); }
   };
 
@@ -362,7 +410,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       });
 
       if (!response.ok) throw new Error('Failed to update goal');
-      await fetchTransactions(false);
+      void fetchTransactions(false);
     } catch (error) {
       console.error("updateGoal Error:", error);
       Alert.alert("Error", "Bumagsak ang pag-update ng goal.");
@@ -377,7 +425,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (!userId) { Alert.alert("Error", "User session not found."); return; }
       const token = await AsyncStorage.getItem('user_token');
       const res = await fetch(`${API_URL}/api/goals/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
-      if (res.ok) await fetchTransactions(false); else Alert.alert("Error", "Failed to delete goal.");
+      if (res.ok) {
+        setGoals((current) => current.filter((goal) => goal.id !== id));
+        void fetchTransactions(false);
+      } else Alert.alert("Error", "Failed to delete goal.");
     } catch (e) {
       Alert.alert("Error", "Network connection failed.");
     }
@@ -390,7 +441,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token || ''}` },
       });
-      if (response.ok) await fetchTransactions(false);
+      if (response.ok) {
+        setGoals((current) => current.filter((goal) => goal.id !== id));
+        void fetchTransactions(false);
+      }
       else {
         const error = await response.json().catch(() => ({}));
         Alert.alert('Unable to archive goal', error.detail || 'Please try again.');
@@ -434,7 +488,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         throw new Error(errorData.detail || 'Failed to process deposit');
       }
 
-      await fetchTransactions(false); // Silent refresh ng dashboard
+      void fetchTransactions(false); // Refresh shared screens without delaying the confirmed deposit.
       return true;
     } catch (error: any) {
       console.error("depositToGoal Error:", error);
@@ -459,7 +513,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [accounts, getAccountBalance, totalExpense, totalIncome, goals, archivedAccountBalance, archivedGoalSavings]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, goals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, transactionToast, showTransactionToast, clearTransactionToast, goals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

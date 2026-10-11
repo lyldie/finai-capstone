@@ -65,7 +65,7 @@ async def set_category_budget(budget: BudgetCreate, current_user: dict = Depends
     # Recompute alerts immediately: a newly-set (or edited) limit can itself push a
     # budget past 70/90/100% without any new transaction, e.g. lowering a ₱1000 limit
     # to ₱500 while ₱480 is already spent. Previously only expense writes triggered this.
-    await create_crossed_threshold_notifications(user_id)
+    await create_crossed_threshold_notifications(user_id, budget.category_id)
 
     return {"status": "Success", "id": str(budget_id)}
 
@@ -157,7 +157,9 @@ async def update_budget(budget_id: str, budget_data: Dict[str, Any], current_use
     # Same reasoning as set_category_budget above: editing the limit can itself cross
     # (or un-cross) a threshold, so re-run the check right away instead of waiting for
     # the next unrelated transaction to happen to recompute it.
-    await create_crossed_threshold_notifications(str(requester_id))
+    await create_crossed_threshold_notifications(
+        str(requester_id), str(existing.get("category_id", ""))
+    )
 
     return {"status": "Success"}
 

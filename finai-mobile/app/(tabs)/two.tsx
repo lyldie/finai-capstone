@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, Keyboard, ActivityIndicator } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { useTransactions, TransactionType, AppNotification } from '../../context/TransactionContext';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -58,7 +59,7 @@ const isValidIsoDate = (value: string) => {
 export default function TabTwoScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts } = useTransactions();
+  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts, showTransactionToast } = useTransactions();
 
   const [type, setType] = useState<TransactionType>('Expense');
   const [amount, setAmount] = useState('');
@@ -180,15 +181,45 @@ export default function TabTwoScreen() {
         budgetNotifications = await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
       }
 
-      const closeAndReturn = { text: "OK", onPress: () => router.back() };
-      if (budgetNotifications.length > 0) {
-        const messages = [...new Set(budgetNotifications.map((notification) => notification.message))];
-        const savedTitle = params?.id ? "Transaction updated" : `${type} saved`;
-        Alert.alert(savedTitle, `Budget alert:\n\n${messages.join("\n\n")}`, [closeAndReturn]);
-      } else {
-        const action = params?.id ? "Transaction updated successfully." : `${type} recorded successfully.`;
-        Alert.alert("Success!", action, [closeAndReturn]);
+      const hasCriticalBudgetAlert = budgetNotifications.some(
+        (notification) => notification.threshold >= 90,
+      );
+      if (hasCriticalBudgetAlert && Platform.OS !== 'web') {
+        // These are newly created alerts returned by the save request, so a
+        // background refresh cannot repeatedly vibrate for an existing alert.
+        void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => undefined);
       }
+
+      const formattedAmount = `₱${Number(numericAmount).toLocaleString('en-PH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      })}`;
+      const transactionSummary = type === 'Transfer'
+        ? `${formattedAmount} moved from ${account} to ${toAccount}.`
+        : type === 'Income'
+          ? `${formattedAmount} added to ${account}.`
+          : `${formattedAmount} recorded for ${finalCategory} from ${account}.`;
+      const toastTitle = params?.id
+        ? 'Transaction updated'
+        : type === 'Transfer' ? 'Transfer complete' : `${type} recorded`;
+
+      if (budgetNotifications.length > 0) {
+        showTransactionToast({
+          kind: 'budget',
+          title: toastTitle,
+          threshold: Math.max(...budgetNotifications.map((notification) => notification.threshold)),
+          messages: [transactionSummary, ...new Set(budgetNotifications.map((notification) => notification.message))],
+        });
+      } else {
+        showTransactionToast({
+          kind: 'success',
+          title: toastTitle,
+          messages: [transactionSummary],
+        });
+      }
+      Keyboard.dismiss();
+      if (router.canGoBack()) router.back();
+      else router.replace('/(tabs)' as never);
     } catch (err) {
       const code = err instanceof Error ? err.message : "";
       if (code === "INSUFFICIENT_BALANCE") {
@@ -266,7 +297,7 @@ export default function TabTwoScreen() {
           )}
           <TouchableOpacity onPress={handleSave} disabled={isSaving} activeOpacity={0.85} style={{ opacity: isSaving ? 0.5 : 1 }}>
             <View style={[styles.saveButtonCircle, { backgroundColor: getActiveColor() }]}>
-              <Ionicons name="checkmark" size={22} color="#FFFFFF" />
+              {isSaving ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="checkmark" size={22} color="#FFFFFF" />}
             </View>
           </TouchableOpacity>
         </View>

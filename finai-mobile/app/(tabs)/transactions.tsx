@@ -111,14 +111,13 @@ export default function TransactionsScreen() {
           try {
             await archiveTransaction(id);
             swipeableInstance?.close();
-            fetchTransactions(false);
           } catch (error) {
             Alert.alert("Couldn't archive transaction", error instanceof Error ? error.message : "Please try again.");
           }
         } 
       }
     ]);
-  }, [archiveTransaction, fetchTransactions]);
+  }, [archiveTransaction]);
 
   const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
     if (item.goal_id) {

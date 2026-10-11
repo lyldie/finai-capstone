@@ -1,6 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends
 from pydantic import BaseModel, EmailStr, Field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bson import ObjectId
 from fastapi.middleware.cors import CORSMiddleware
@@ -408,15 +408,8 @@ def _extract_amount_candidates(text: str) -> List[float]:
     """Extract amount-like values, including split formats like '689 75' -> 689.75."""
     money_pattern = r"(?:PHP|P|â‚±)?\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})|\d+(?:\.\d{2})?)"
     values: List[float] = []
-
-    for n in re.findall(money_pattern, text):
-        try:
-            val = float(n.replace(",", ""))
-        except ValueError:
-            continue
-        if 1.0 <= val <= 500000.0:
-            values.append(val)
-
+    split_values: List[float] = []
+    split_spans = []
     for match in re.finditer(r"(?<!\d)(\d{1,3}(?:,\d{3})?|\d+)\s+(\d{1,2})(?!\d)", text):
         try:
             whole = float(match.group(1).replace(",", ""))
@@ -424,9 +417,20 @@ def _extract_amount_candidates(text: str) -> List[float]:
         except ValueError:
             continue
         if 1.0 <= whole <= 500000.0 and 0 <= cents <= 99:
-            values.append(whole + cents / 100.0)
+            split_values.append(whole + cents / 100.0)
+            split_spans.append(match.span())
 
-    return values
+    for match in re.finditer(money_pattern, text, re.I):
+        if any(match.start() < end and match.end() > start for start, end in split_spans):
+            continue
+        try:
+            val = float(match.group(1).replace(",", ""))
+        except ValueError:
+            continue
+        if 1.0 <= val <= 500000.0:
+            values.append(val)
+
+    return split_values + values
 
 
 def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
@@ -466,6 +470,18 @@ def extract_total_amount(all_extracted_texts: List[str]) -> Optional[float]:
             if any(noise in next_low for noise in ("cash", "change", "vat", "tax", "subtotal")):
                 continue
             next_values = _extract_amount_candidates(all_extracted_texts[index + 1])
+            if index + 2 < len(all_extracted_texts):
+                first_piece = all_extracted_texts[index + 1].strip()
+                second_piece = all_extracted_texts[index + 2].strip()
+                following_low = second_piece.lower()
+                split_cents_format = (
+                    re.fullmatch(r"\d{1,3}(?:,\d{3})*", first_piece) is not None
+                    and re.fullmatch(r"\d{1,2}", second_piece) is not None
+                )
+                if split_cents_format and not any(
+                    noise in following_low for noise in ("cash", "change", "vat", "tax", "subtotal")
+                ):
+                    next_values = _extract_amount_candidates(f"{first_piece} {second_piece}")
             if len(next_values) != 1:
                 continue
             position, value = 0, next_values[0]
@@ -1070,10 +1086,10 @@ async def validate_transaction_references(transaction: TransactionSchema, user_i
     transaction.category_id = str(category["_id"])
 
 
-async def safely_refresh_budget_notifications(user_id: str) -> list:
+async def safely_refresh_budget_notifications(user_id: str, category_id: Optional[str] = None) -> list:
     """Keep a committed money transaction successful if alert delivery has a temporary failure."""
     try:
-        return await create_crossed_threshold_notifications(user_id)
+        return await create_crossed_threshold_notifications(user_id, category_id)
     except Exception as exc:
         print(f"Could not refresh budget notifications for user {user_id}: {exc}")
         return []
@@ -1396,8 +1412,8 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
         raise HTTPException(status_code=422, detail="Use the savings goal contribution flow to link a transaction to a goal.")
     validate_transaction_for_storage(transaction)
     await validate_transaction_references(transaction, current_user["id"])
-    transaction_dict = transaction.dict()
-    transaction_dict["created_at"] = datetime.utcnow()
+    transaction_dict = transaction.model_dump()
+    transaction_dict["created_at"] = datetime.now(timezone.utc)
     if transaction.type.lower() in {"income", "expense", "transfer"}:
         source_account = await db.accounts.find_one({"_id": ObjectId(transaction.account_id), "is_archived": {"$ne": True}})
         if not source_account:
@@ -1446,7 +1462,9 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
     notifications_created = []
     if transaction.type.lower() == "expense":
         # 1. Che-check ng system kung may na-hit na budget limit
-        notifications_created = await safely_refresh_budget_notifications(transaction.user_id)
+        notifications_created = await safely_refresh_budget_notifications(
+            transaction.user_id, transaction.category_id
+        )
 
         # 2. ðŸš¨ EMAIL ALERT INTEGRATION ðŸš¨
     return {"status": "Success", "id": str(inserted_id), "notifications": notifications_created}
@@ -1503,7 +1521,7 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
 
     # 3. I-save yung bagong transaction data
     update_query = {"_id": expense_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}
-    update_data = {"$set": {**transaction.dict(), "updated_at": datetime.utcnow()}}
+    update_data = {"$set": {**transaction.model_dump(), "updated_at": datetime.now(timezone.utc)}}
     async def load_account(account_id: Optional[str], name: Optional[str]):
         if account_id and ObjectId.is_valid(account_id):
             account_doc = await db.accounts.find_one({"_id": ObjectId(account_id)})
@@ -1602,7 +1620,9 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
         raise HTTPException(status_code=503, detail="We couldn't update this transaction right now. Please try again.") from exc
 
     if result.matched_count == 1:
-        notifications_created = await safely_refresh_budget_notifications(transaction.user_id)
+        notifications_created = await safely_refresh_budget_notifications(
+            transaction.user_id, transaction.category_id
+        )
         return {"status": "Success", "notifications": notifications_created}
 
     raise HTTPException(status_code=404, detail="Failed to update transaction.")
@@ -1734,7 +1754,7 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
                 raise HTTPException(status_code=409, detail="The linked savings goal is unavailable.")
 
         if action == "archive":
-            values = {"is_archived": True, "archived_at": datetime.utcnow()}
+            values = {"is_archived": True, "archived_at": datetime.now(timezone.utc)}
             if goal_oid and not current.get("goal_contribution_reversed"):
                 goal_result = await db.goals.update_one(
                     {"_id": goal_oid, "user_id": user_id, "current_savings": {"$gte": amount}},

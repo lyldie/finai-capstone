@@ -23,7 +23,7 @@ export default function SetBudgetScreen() {
   const router = useRouter();
   const { id, amount: initialAmount, categoryName, category_id, period_type } = useLocalSearchParams();
   
-  const { categories, budgets, fetchTransactions, updateBudget } = useTransactions();
+  const { categories, budgets, fetchTransactions, updateBudget, showTransactionToast } = useTransactions();
   
   const expenseCategories = categories?.filter((c: any) => c.type === 'expense') || [];
 
@@ -37,7 +37,7 @@ export default function SetBudgetScreen() {
   // A category may have a separate weekly, monthly, and annual budget.
   const availableCategories = expenseCategories;
 
-  const handleCategoryCreated = (created: { id: string; name: string; type: 'expense'; icon?: string }) => {
+  const handleCategoryCreated = (created: { id: string; name: string; type: 'expense' | 'income'; icon?: string }) => {
     setSelectedCategory(created);
     setIsQuickAddCategoryVisible(false);
     void fetchTransactions(false);
@@ -69,34 +69,45 @@ export default function SetBudgetScreen() {
     }
 
     setLoading(true);
-    
-    if (id) {
-      await updateBudget(id as string, parseFloat(amount), rolloverEnabled);
-      setLoading(false);
-      await fetchTransactions();
-      Alert.alert('Budget updated', 'Your budget was updated.', [{ text: 'Done', onPress: () => router.back() }]);
-      return;
-    }
-
     try {
-      const userId = await AsyncStorage.getItem('user_id');
-      const token = await AsyncStorage.getItem('user_token');
-      const payload = {
-        user_id: userId,
-        category_id: selectedCategory?.id, 
-        amount: parseFloat(amount),
-        period_type: selectedPeriod,
-        rollover_enabled: rolloverEnabled,
-      };
+      const numericAmount = parseFloat(amount);
+      if (id) {
+        await updateBudget(id as string, numericAmount, rolloverEnabled);
+      } else {
+        const userId = await AsyncStorage.getItem('user_id');
+        const token = await AsyncStorage.getItem('user_token');
+        if (!userId || !token) throw new Error('Your session has expired. Please log in again.');
+        const payload = {
+          user_id: userId,
+          category_id: selectedCategory.id,
+          amount: numericAmount,
+          period_type: selectedPeriod,
+          rollover_enabled: rolloverEnabled,
+        };
 
-      const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload)
+        const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(payload),
+        });
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not save this budget. Please try again.');
+        }
+        void fetchTransactions(false);
+      }
+
+      const formattedAmount = `₱${numericAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const periodLabel = selectedPeriod;
+      showTransactionToast({
+        kind: 'success',
+        title: id ? 'Budget updated' : 'Budget saved',
+        messages: [`${selectedCategory.name} ${periodLabel} limit is ${formattedAmount}.`],
       });
-      if (!response.ok) throw new Error('Failed to save budget');
-      await fetchTransactions(); 
-      Alert.alert('Budget saved', 'Your budget was saved successfully.', [{ text: 'Done', onPress: () => router.back() }]);
+      if (router.canGoBack()) router.back();
+      else router.replace('/(tabs)/insights' as never);
     } catch (error) {
-      Alert.alert('Could not save budget', 'The request could not be completed. Please try again.');
+      Alert.alert('Could not save budget', error instanceof Error ? error.message : 'The request could not be completed. Please try again.');
     } finally {
       setLoading(false);
     }

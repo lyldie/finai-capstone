@@ -14,6 +14,7 @@ from email_utils import send_threshold_alert
 
 PERIOD_TYPES = {"weekly", "monthly", "annual"}
 THRESHOLDS = (70, 90, 100)
+_background_email_tasks: set[asyncio.Task] = set()
 
 # FIX: FinAI is a Philippines-only app, but datetime.utcnow() reflects whatever
 # timezone the SERVER's operating system happens to use -- almost always UTC on
@@ -150,11 +151,15 @@ async def budget_usage(budget: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-async def ensure_current_recurring_budgets(user_id: str) -> None:
+async def ensure_current_recurring_budgets(user_id: str, category_id: Optional[str] = None) -> None:
     """Materialize this cycle's budgets from recurring rules, without rolling over spend."""
     # Upgrade existing budgets into recurring rules once. Deleted budgets are not
     # present here, so a user-deleted budget will not be silently recreated.
-    existing = await db.budgets.find({"user_id": user_id}).to_list(length=500)
+    requested_category_id = str(category_id) if category_id else None
+    budget_filter: Dict[str, Any] = {"user_id": user_id}
+    if requested_category_id:
+        budget_filter["category_id"] = requested_category_id
+    existing = await db.budgets.find(budget_filter).to_list(length=500)
     latest_by_rule: Dict[Tuple[str, str], Tuple[str, Dict[str, Any]]] = {}
     for budget in existing:
         category_id = str(budget.get("category_id", ""))
@@ -181,7 +186,10 @@ async def ensure_current_recurring_budgets(user_id: str) -> None:
             upsert=True,
         )
 
-    rules = await db.budget_rules.find({"user_id": user_id, "is_active": True}).to_list(length=500)
+    rule_filter: Dict[str, Any] = {"user_id": user_id, "is_active": True}
+    if requested_category_id:
+        rule_filter["category_id"] = requested_category_id
+    rules = await db.budget_rules.find(rule_filter).to_list(length=500)
     today = ph_today()
     for rule in rules:
         category_id = str(rule.get("category_id", ""))
@@ -246,9 +254,12 @@ def _period_reference(period_type: str, period_key: str) -> date:
     return ph_today()
 
 
-async def list_budget_usage(user_id: str) -> List[Dict[str, Any]]:
-    await ensure_current_recurring_budgets(user_id)
-    budgets = await db.budgets.find({"user_id": user_id}).to_list(length=500)
+async def list_budget_usage(user_id: str, category_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    await ensure_current_recurring_budgets(user_id, category_id)
+    budget_filter: Dict[str, Any] = {"user_id": user_id}
+    if category_id:
+        budget_filter["category_id"] = str(category_id)
+    budgets = await db.budgets.find(budget_filter).to_list(length=500)
     usage_rows = [await budget_usage(budget) for budget in budgets]
     grouped: Dict[Tuple[str, str], List[Dict[str, Any]]] = {}
     for item in usage_rows:
@@ -300,11 +311,13 @@ def _next_period_start(period_type: str, current_end: str) -> str:
     return next_date.replace(day=1).isoformat()
 
 
-async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str, Any]]:
+async def create_crossed_threshold_notifications(
+    user_id: str, category_id: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """Notify only the highest newly relevant threshold for each budget period."""
     created = []
     today_key = ph_today().isoformat()
-    for summary in await list_budget_usage(user_id):
+    for summary in await list_budget_usage(user_id, category_id):
         if summary["end_date"] < today_key:
             continue
 
@@ -344,7 +357,7 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
                         {"$set": {"email_status": "sending"}, "$inc": {"email_attempts": 1}},
                     )
                     if claim.matched_count:
-                        await _send_threshold_email(existing["_id"], user_id, summary, threshold)
+                        _queue_threshold_email(existing["_id"], user_id, summary, threshold)
                 continue
 
             if threshold < highest_crossed:
@@ -397,8 +410,15 @@ async def create_crossed_threshold_notifications(user_id: str) -> List[Dict[str,
             notification.pop("_id", None)
             created.append(notification)
 
-            await _send_threshold_email(notification_id, user_id, summary, threshold)
+            _queue_threshold_email(notification_id, user_id, summary, threshold)
     return created
+
+
+def _queue_threshold_email(notification_id, user_id: str, summary: Dict[str, Any], threshold: int) -> None:
+    """Send email outside the API request so SMTP latency cannot hold up a save."""
+    task = asyncio.create_task(_send_threshold_email(notification_id, user_id, summary, threshold))
+    _background_email_tasks.add(task)
+    task.add_done_callback(_background_email_tasks.discard)
 
 
 async def _send_threshold_email(notification_id, user_id: str, summary: Dict[str, Any], threshold: int) -> None:
