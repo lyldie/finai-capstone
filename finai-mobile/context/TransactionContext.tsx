@@ -11,8 +11,8 @@ export type Category = { id: string; name: string; type: string; icon: string; }
 export type GoalTypePreset = { id: string; name: string; icon?: string };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
-export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; level: string; message: string; is_read: boolean; created_at: string; };
-export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number };
+export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; };
+export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string };
 
 const transactionRequestError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => ({}));
@@ -243,7 +243,18 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     fetchTransactions(true);
   }, [fetchTransactions]);
 
+  // Do not expose the previous account's in-memory data during the render before
+  // the user-change effect clears it and loads the new account's cache.
+  const hasCurrentUserData = Boolean(user?.id && activeUserId.current === user.id);
+  const visibleTransactions = hasCurrentUserData ? transactions : [];
+  const visibleCategories = hasCurrentUserData ? categories : [];
+  const visibleAccounts = hasCurrentUserData ? accounts : [];
+  const visibleBudgets = hasCurrentUserData ? budgets : [];
+  const visibleNotifications = hasCurrentUserData ? notifications : [];
+  const visibleGoals = hasCurrentUserData ? goals : [];
+
   const getAccountBalance = useCallback((accountName: string) => {
+    if (!hasCurrentUserData) return 0;
     const account = accounts.find((item) => item.name === accountName && item.account_role !== 'admin')
       || accounts.find((item) => item.name === accountName);
     const openingBalance = Number(account?.initial_balance) || 0;
@@ -259,7 +270,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
       return total;
     }, openingBalance);
-  }, [accounts, transactions]);
+  }, [accounts, hasCurrentUserData, transactions]);
 
   const addTransaction = async (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => {
     const userId = await AsyncStorage.getItem('user_id');
@@ -497,23 +508,24 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  const totalIncome = useMemo(() => transactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
-  const totalExpense = useMemo(() => transactions.filter(t => t.type === 'Expense' && !t.goal_id).reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [transactions]);
+  const totalIncome = useMemo(() => visibleTransactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [visibleTransactions]);
+  const totalExpense = useMemo(() => visibleTransactions.filter(t => t.type === 'Expense' && !t.goal_id).reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [visibleTransactions]);
 
   const balance = useMemo(() => {
-    const accountNames = [...new Set(accounts.map((account) => account.name))];
+    if (!hasCurrentUserData) return 0;
+    const accountNames = [...new Set(visibleAccounts.map((account) => account.name))];
 
     const totalFromAccounts = accountNames.length
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
-      : totalIncome - totalExpense - transactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+      : totalIncome - totalExpense - visibleTransactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
-    const totalGoalSavings = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
+    const totalGoalSavings = visibleGoals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
 
     return totalFromAccounts + archivedAccountBalance + totalGoalSavings + archivedGoalSavings;
-  }, [accounts, getAccountBalance, totalExpense, totalIncome, goals, archivedAccountBalance, archivedGoalSavings]);
+  }, [visibleAccounts, getAccountBalance, totalExpense, totalIncome, visibleTransactions, visibleGoals, hasCurrentUserData, archivedAccountBalance, archivedGoalSavings]);
 
   return (
-    <TransactionContext.Provider value={{ transactions, categories, accounts, budgets, notifications, transactionToast, showTransactionToast, clearTransactionToast, goals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
       {children}
     </TransactionContext.Provider>
   );

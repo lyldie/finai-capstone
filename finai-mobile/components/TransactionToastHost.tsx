@@ -14,8 +14,9 @@ export default function TransactionToastHost() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isBudgetAlert = transactionToast?.kind === 'budget';
   const threshold = transactionToast?.threshold || 0;
-  const overBudget = threshold >= 100;
-  const critical = threshold >= 90;
+  const overBudget = transactionToast?.level === 'over_budget' || threshold > 100;
+  const critical = !overBudget && (transactionToast?.level === 'critical' || threshold >= 90);
+  const displayPercentage = transactionToast?.percentage_used ?? threshold;
   const accent = !isBudgetAlert ? '#16845B' : overBudget ? '#B42318' : critical ? '#C2410C' : '#A16207';
   const tint = !isBudgetAlert ? '#ECFDF3' : overBudget ? '#FEF3F2' : critical ? '#FFF7ED' : '#FFFBEB';
   const severity = overBudget ? 'Over budget' : critical ? 'Budget nearly reached' : 'Budget warning';
@@ -63,7 +64,7 @@ export default function TransactionToastHost() {
               <Text style={styles.title}>{transactionToast.title}</Text>
               {isBudgetAlert && <Text style={[styles.severity, { color: accent }]}>{severity}</Text>}
             </View>
-            {isBudgetAlert && <Text style={[styles.percent, { color: accent }]}>{threshold}%</Text>}
+            {isBudgetAlert && <Text style={[styles.percent, { color: accent }]}>{displayPercentage.toFixed(0)}%</Text>}
           </View>
           <TouchableOpacity onPress={dismiss} hitSlop={10} accessibilityLabel="Dismiss message">
             <Ionicons name="close" size={18} color={SAGE} />

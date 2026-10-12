@@ -23,7 +23,7 @@ export default function NotificationsScreen() {
         <Ionicons name={item.level === 'warning' ? 'warning-outline' : 'alert-circle-outline'} size={21} color={item.level === 'warning' ? '#B45309' : '#B91C1C'} />
       </View>
       <View style={styles.content}>
-        <Text style={styles.title}>{item.level === 'over_budget' ? 'Budget limit exceeded' : item.level === 'critical' ? 'Critical budget alert' : 'Budget warning'} · {item.threshold}%</Text>
+        <Text style={styles.title}>{item.level === 'over_budget' ? 'Budget exceeded' : item.level === 'critical' ? 'Critical budget alert' : 'Budget warning'} · {Math.round(item.percentage_used ?? item.threshold)}%</Text>
         <Text style={styles.message}>{item.message}</Text>
         <Text style={styles.date}>{new Date(item.created_at).toLocaleString()}</Text>
       </View>
@@ -44,7 +44,7 @@ export default function NotificationsScreen() {
           keyExtractor={(item) => item.id}
           renderItem={renderItem}
           contentContainerStyle={notifications.length ? styles.list : styles.empty}
-          ListEmptyComponent={<View style={styles.emptyContent}><Ionicons name="notifications-off-outline" size={44} color="#8A9A86" /><Text style={styles.emptyTitle}>No budget alerts yet</Text><Text style={styles.emptyText}>We will notify you when a budget reaches 70%, 90%, or 100%.</Text></View>}
+          ListEmptyComponent={<View style={styles.emptyContent}><Ionicons name="notifications-off-outline" size={44} color="#8A9A86" /><Text style={styles.emptyTitle}>No budget alerts yet</Text><Text style={styles.emptyText}>We will notify you as spending approaches a budget and if it goes over 100%.</Text></View>}
         />
       )}
     </SafeAreaView>

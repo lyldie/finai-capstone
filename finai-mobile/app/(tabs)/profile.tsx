@@ -332,8 +332,8 @@ export default function ProfileScreen() {
         <Ionicons name={icon} size={22} color={color} />
       </View>
       <View style={styles.menuTextContainer}>
-        <Text style={styles.menuTitle}>{title}</Text>
-        {subtitle && <Text style={styles.menuSubtitle}>{subtitle}</Text>}
+        <Text style={styles.menuTitle} numberOfLines={2}>{title}</Text>
+        {subtitle && <Text style={styles.menuSubtitle} numberOfLines={2}>{subtitle}</Text>}
       </View>
       <Ionicons name="chevron-forward" size={20} color={SAGE} />
     </TouchableOpacity>
@@ -348,8 +348,8 @@ export default function ProfileScreen() {
         <View style={styles.profileAvatar}>
           <Text style={styles.avatarText}>{user?.name ? user.name.charAt(0).toUpperCase() : 'U'}</Text>
         </View>
-        <Text style={styles.userName}>{user?.name || 'User'}</Text>
-        <Text style={styles.userEmail}>{user?.email || 'user@email.com'}</Text>
+        <Text style={styles.userName} numberOfLines={2} adjustsFontSizeToFit minimumFontScale={0.82}>{user?.name || 'User'}</Text>
+        <Text style={styles.userEmail} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{user?.email || 'user@email.com'}</Text>
       </LinearGradient>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -578,20 +578,20 @@ export default function ProfileScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: CREAM },
-  header: { alignItems: 'center', paddingTop: 60, paddingBottom: 30, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
-  profileAvatar: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)' },
+  header: { alignItems: 'center', paddingHorizontal: 24, paddingTop: 54, paddingBottom: 26, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },
+  profileAvatar: { width: 78, height: 78, borderRadius: 39, backgroundColor: 'rgba(255,255,255,0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 12, borderWidth: 2, borderColor: 'rgba(255,255,255,0.3)' },
   avatarText: { fontSize: 32, fontWeight: 'bold', color: '#FFFFFF' },
-  userName: { fontSize: 22, fontWeight: '800', color: '#FFFFFF' },
-  userEmail: { fontSize: 14, color: 'rgba(255,255,255,0.7)', marginTop: 4 },
-  scrollContent: { padding: 20, paddingBottom: 100 },
+  userName: { maxWidth: '100%', fontSize: 22, fontWeight: '800', color: '#FFFFFF', textAlign: 'center', lineHeight: 27 },
+  userEmail: { maxWidth: '100%', fontSize: 13, color: 'rgba(255,255,255,0.78)', marginTop: 5, textAlign: 'center' },
+  scrollContent: { padding: 20, paddingBottom: 112 },
   sectionTitle: { fontSize: 13, fontWeight: '700', color: SAGE, textTransform: 'uppercase', marginBottom: 10, marginTop: 15, marginLeft: 5, letterSpacing: 0.4 },
-  cardGroup: { backgroundColor: '#FFFFFF', borderRadius: 20, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.05, shadowRadius: 8, elevation: 2 },
-  menuItem: { flexDirection: 'row', alignItems: 'center', padding: 16 },
+  cardGroup: { backgroundColor: '#FFFFFF', borderRadius: 18, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 2 }, shadowOpacity: 0.04, shadowRadius: 7, elevation: 1, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.035)' },
+  menuItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 15, paddingHorizontal: 15, minHeight: 72 },
   menuIconBox: { width: 40, height: 40, borderRadius: 12, justifyContent: 'center', alignItems: 'center', marginRight: 15 },
   menuTextContainer: { flex: 1 },
-  menuTitle: { fontSize: 15, fontWeight: '700', color: DEEP_GREEN, marginBottom: 2 },
-  menuSubtitle: { fontSize: 12, color: SAGE },
-  divider: { height: 1, backgroundColor: CREAM, marginLeft: 70 },
+  menuTitle: { fontSize: 15, lineHeight: 20, fontWeight: '700', color: DEEP_GREEN, marginBottom: 2 },
+  menuSubtitle: { fontSize: 12, lineHeight: 17, color: SAGE },
+  divider: { height: StyleSheet.hairlineWidth, backgroundColor: '#EEECE6', marginLeft: 70 },
   logoutButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(255, 98, 89, 0.08)', padding: 16, borderRadius: 16, marginTop: 30 },
   logoutText: { color: EXPENSE, fontSize: 16, fontWeight: '700' },
   

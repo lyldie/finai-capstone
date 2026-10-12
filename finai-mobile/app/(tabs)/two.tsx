@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from 'react';
-import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, Keyboard, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TextInput, TouchableOpacity, ScrollView, Alert, Modal, FlatList, KeyboardAvoidingView, Platform, Keyboard, ActivityIndicator, useWindowDimensions } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
@@ -46,8 +46,9 @@ const dateFromIso = (value: string) => {
 
 const isValidAmount = (value: string) => {
   if (!value) return false;
-  const num = Number(value);
-  return value !== '.' && !Number.isNaN(num) && num > 0;
+  const normalized = value.replace(/,/g, '');
+  const num = Number(normalized);
+  return normalized !== '.' && !Number.isNaN(num) && num > 0;
 };
 
 const isValidIsoDate = (value: string) => {
@@ -57,6 +58,7 @@ const isValidIsoDate = (value: string) => {
 };
 
 export default function TabTwoScreen() {
+  const { width: windowWidth } = useWindowDimensions();
   const router = useRouter();
   const params = useLocalSearchParams();
   const { addTransaction, updateTransaction, fetchTransactions, categories, accounts, showTransactionToast } = useTransactions();
@@ -144,7 +146,11 @@ export default function TabTwoScreen() {
     return 'rgba(59, 130, 246, 0.12)';
   };
 
-  const amountFontSize = amount.length > 11 ? 32 : amount.length > 9 ? 38 : amount.length > 7 ? 46 : 54;
+  const amountFontSize = amount.length > 10 ? 32 : amount.length > 8 ? 36 : amount.length > 6 ? 42 : 48;
+  const amountInputWidth = Math.min(
+    Math.max((amount || '0.00').length * amountFontSize * 0.55, 105),
+    windowWidth - 100,
+  );
 
   const handleAmountChange = (text: string) => {
     const cleaned = text.replace(/[^0-9.]/g, '');
@@ -152,6 +158,21 @@ export default function TabTwoScreen() {
     if (parts.length > 2) return;
     const [whole, decimal] = cleaned.split('.');
     setAmount(decimal === undefined ? whole : `${whole}.${decimal.slice(0, 2)}`);
+  };
+
+  const handleAmountBlur = () => {
+    if (!amount.trim() || !isValidAmount(amount)) return;
+    const numericAmount = Number(amount.replace(/,/g, ''));
+    if (Number.isFinite(numericAmount)) {
+      setAmount(numericAmount.toLocaleString('en-PH', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      }));
+    }
+  };
+
+  const handleAmountFocus = () => {
+    setAmount((current) => current.replace(/,/g, '').replace(/\.00$/, ''));
   };
 
   const handleSave = async () => {
@@ -170,7 +191,7 @@ export default function TabTwoScreen() {
     const finalCategory = type === 'Transfer' ? 'Transfer' : category;
     if (type !== 'Transfer' && finalCategory === 'Select Category') { Alert.alert('Choose a category', 'Select a category before continuing.'); return; }
 
-    const numericAmount = Number(amount).toFixed(2);
+    const numericAmount = Number(amount.replace(/,/g, '')).toFixed(2);
 
     setIsSaving(true);
     try {
@@ -208,6 +229,10 @@ export default function TabTwoScreen() {
           kind: 'budget',
           title: toastTitle,
           threshold: Math.max(...budgetNotifications.map((notification) => notification.threshold)),
+          percentage_used: Math.max(...budgetNotifications.map((notification) => notification.percentage_used ?? notification.threshold)),
+          level: budgetNotifications.some((notification) => notification.level === 'over_budget')
+            ? 'over_budget'
+            : budgetNotifications.some((notification) => notification.level === 'critical') ? 'critical' : 'warning',
           messages: [transactionSummary, ...new Set(budgetNotifications.map((notification) => notification.message))],
         });
       } else {
@@ -321,13 +346,15 @@ export default function TabTwoScreen() {
             <View style={styles.amountInputRow}>
               <Text style={[styles.pesoSign, { color: getActiveColor() }]}>₱</Text>
               <TextInput
-                style={[styles.amountInput, { color: getActiveColor(), fontSize: amountFontSize }]}
+                style={[styles.amountInput, { color: getActiveColor(), fontSize: amountFontSize, width: amountInputWidth }]}
                 placeholder="0.00"
                 placeholderTextColor="#A2B5B0"
                 keyboardType="decimal-pad"
                 autoFocus={!params?.id}
                 value={amount}
                 onChangeText={handleAmountChange}
+                onFocus={handleAmountFocus}
+                onBlur={handleAmountBlur}
               />
             </View>
           </View>
@@ -481,9 +508,9 @@ const styles = StyleSheet.create({
   form: { flex: 1 },
   amountSection: { alignItems: 'center', marginBottom: 40, marginTop: 10 },
   currencyLabel: { color: SAGE, fontSize: 14, fontWeight: '800', marginBottom: 5, letterSpacing: 1.5 },
-  amountInputRow: { width: '100%', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingHorizontal: 8 },
-  pesoSign: { fontSize: 40, fontWeight: '300', marginTop: 8, marginRight: 4 },
-  amountInput: { flex: 1, minWidth: 0, maxWidth: '88%', fontWeight: '300', textAlign: 'center', paddingHorizontal: 0 },
+  amountInputRow: { alignSelf: 'center', flexDirection: 'row', alignItems: 'center', justifyContent: 'center', maxWidth: '100%' },
+  pesoSign: { fontSize: 38, fontWeight: '300', marginTop: 8, marginRight: 8 },
+  amountInput: { flexGrow: 0, flexShrink: 1, fontWeight: '300', textAlign: 'left', paddingHorizontal: 0 },
 
   card: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 10, overflow: 'hidden', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 10, elevation: 2 },
   inputRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 14, paddingHorizontal: 12, borderBottomWidth: 0.5, borderBottomColor: '#ECE7DD' },

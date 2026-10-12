@@ -25,6 +25,7 @@ function AppShell() {
         <Stack.Screen name="verify-pin" />
         <Stack.Screen name="pin-login" />
         <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="plan-ahead" options={{ presentation: 'card' }} />
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
       </Stack>
       <TransactionToastHost />

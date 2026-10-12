@@ -128,25 +128,32 @@ export default function HomeDashboard() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
-        {/* AI Advisor tip */}
-        <View style={styles.aiTipCard}>
+        {/* Dashboard shortcut to the full planning analysis */}
+        <TouchableOpacity
+          style={styles.aiTipCard}
+          onPress={() => router.push('/plan-ahead' as never)}
+          activeOpacity={0.82}
+          accessibilityRole="button"
+          accessibilityLabel="Open Plan Ahead recommendations"
+        >
           <View style={styles.aiTipHeader}>
             <View style={styles.aiBadge}>
-              <Ionicons name="sparkles" size={11} color={DEEP_GREEN} />
+              <Ionicons name="sparkles" size={12} color={DEEP_GREEN} />
               <Text style={styles.aiBadgeText}>QUICK BUDGET TIP</Text>
             </View>
+            <Text style={styles.aiTipSource}>Budget snapshot</Text>
           </View>
           <Text style={styles.aiTipText}>{dynamicAiTip}</Text>
-          <TouchableOpacity onPress={() => router.push('/chat' as never)} style={styles.aiTipAction}>
-            <Text style={styles.aiTipActionText}>Ask FinAI</Text>
-            <Ionicons name="arrow-forward" size={14} color={TEAL} />
-          </TouchableOpacity>
-        </View>
+          <View style={styles.aiTipAction}>
+            <Text style={styles.aiTipActionText}>Open Plan Ahead</Text>
+            <Ionicons name="arrow-forward" size={15} color={TEAL} />
+          </View>
+        </TouchableOpacity>
 
         {/* Hero balance card */}
         <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.balanceCard}>
           <Text style={styles.balanceLabel}>Total Balance</Text>
-          <Text style={styles.balanceValue}>
+          <Text style={styles.balanceValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
             ₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </Text>
 
@@ -157,7 +164,7 @@ export default function HomeDashboard() {
               </View>
               <View>
                 <Text style={styles.statLabel}>Income</Text>
-                <Text style={[styles.statValue, { color: '#5FE3B3' }]}>
+                <Text style={[styles.statValue, { color: '#5FE3B3' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   +₱{(totalIncome || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
               </View>
@@ -171,7 +178,7 @@ export default function HomeDashboard() {
               </View>
               <View>
                 <Text style={styles.statLabel}>Expenses</Text>
-                <Text style={[styles.statValue, { color: '#FF9B93' }]}>
+                <Text style={[styles.statValue, { color: '#FF9B93' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   -₱{(totalExpense || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
               </View>
@@ -221,7 +228,7 @@ export default function HomeDashboard() {
                   </View>
                   <View style={styles.accountCardBody}>
                     <Text style={styles.accountName} numberOfLines={1}>{acc.name}</Text>
-                    <Text style={[styles.accountBalance, liveBalance < 0 && { color: EXPENSE }]}>
+                    <Text style={[styles.accountBalance, liveBalance < 0 && { color: EXPENSE }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                       ₱{liveBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </Text>
                   </View>
@@ -275,7 +282,7 @@ export default function HomeDashboard() {
                   </View>
 
                   <View style={styles.recentRight}>
-                    <Text style={[styles.recentAmount, { color: isTransfer ? DEEP_GREEN : color }]}>
+                    <Text style={[styles.recentAmount, { color: isTransfer ? DEEP_GREEN : color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
                       {prefix}₱{(parseFloat(item.amount) || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </Text>
                     <Text style={styles.recentDate}>{formatDate(item.date)}</Text>
@@ -341,7 +348,8 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 20,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
   },
-  aiTipHeader: { flexDirection: 'row', marginBottom: 10 },
+  aiTipHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
+  aiTipSource: { color: SAGE, fontSize: 10, fontWeight: '700' },
   aiBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(237, 178, 50, 0.16)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   aiBadgeText: { color: DEEP_GREEN, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   aiTipText: { color: DEEP_GREEN, fontSize: 14, fontStyle: 'italic', lineHeight: 20, marginBottom: 12 },
@@ -349,7 +357,7 @@ const styles = StyleSheet.create({
   aiTipActionText: { color: TEAL, fontSize: 13, fontWeight: '700' },
 
   balanceCard: {
-    borderRadius: 26, padding: 24, marginBottom: 26,
+    borderRadius: 24, padding: 22, marginBottom: 24,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 8
   },
   balanceLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: '600', letterSpacing: 0.4 },
@@ -375,7 +383,7 @@ const styles = StyleSheet.create({
 
   accountsScrollRow: { gap: 16, paddingBottom: 15, paddingTop: 5, paddingHorizontal: 2 },
   accountCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 22, padding: 18, width: 155, height: 130,
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, width: 160, height: 132,
     justifyContent: 'space-between',
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
   },
@@ -391,7 +399,7 @@ const styles = StyleSheet.create({
   recentListContainer: { paddingBottom: 10 },
   recentFloatingCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#FFFFFF', padding: 16, borderRadius: 20, marginBottom: 12,
+    backgroundColor: '#FFFFFF', padding: 15, borderRadius: 18, marginBottom: 10,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2
   },
   recentLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
