@@ -9,6 +9,7 @@ class NotificationResponse(BaseModel):
     category_id: str
     period_key: str
     threshold: int
+    percentage_used: float | None = None
     channel: str = "in_app"
     level: str
     message: str

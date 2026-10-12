@@ -2,6 +2,7 @@
 
 from datetime import date, timedelta
 import asyncio
+import json
 import os
 from typing import List, Optional
 
@@ -198,10 +199,11 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
         day = daily.setdefault(key, {"income": 0.0, "expense": 0.0, "categories": {}, "category_names": {}, "records": 0})
         amount = float(bucket.get("amount", 0) or 0)
         kind = bucket["_id"].get("type")
-        day["records"] += int(bucket.get("count", 0))
         if kind == "income":
+            day["records"] += int(bucket.get("count", 0))
             day["income"] += amount
         elif kind == "expense":
+            day["records"] += int(bucket.get("count", 0))
             day["expense"] += amount
             category = str(bucket["_id"].get("category") or "Uncategorized")
             category_key = str(bucket["_id"].get("category_key") or f"legacy:{category}")
@@ -419,3 +421,417 @@ Guidance rules:
     except Exception as exc:
         print(f"Gemini Chat Error: {exc}")
         raise HTTPException(status_code=502, detail="AI Advisor could not complete the response. Please try again.") from exc
+
+
+@router.get("/planning")
+async def get_automatic_planning(current_user: dict = Depends(get_current_user)):
+    """Return an automatically generated, user-scoped planning snapshot."""
+    user_id = current_user["id"]
+    today = ph_today()
+    today_key = today.isoformat()
+    # Keep enough history for twelve completed calendar months plus the current
+    # partial month. This supports scenarios while budget pace still uses 28 days.
+    history_start = today - timedelta(days=399)
+
+    # Aggregate only this authenticated user's active records. The mobile client
+    # does not provide a user_id for this route.
+    cursor = db.expenses.aggregate([
+        {"$match": {
+            "user_id": user_id,
+            "is_archived": {"$ne": True},
+            "goal_id": None,
+            "date": {"$gte": history_start.isoformat(), "$lte": today_key},
+        }},
+        {"$group": {
+            "_id": {
+                "date": "$date",
+                "type": {"$toLower": {"$ifNull": ["$type", ""]}},
+                "category_key": {"$cond": [
+                    {"$ifNull": ["$category_id", False]},
+                    {"$toString": "$category_id"},
+                    {"$concat": ["legacy:", {"$ifNull": ["$category", "Uncategorized"]}]},
+                ]},
+                "category": {"$ifNull": ["$category", "Uncategorized"]},
+            },
+            "amount": {"$sum": {"$convert": {
+                "input": "$amount", "to": "double", "onError": 0, "onNull": 0,
+            }}},
+            "count": {"$sum": 1},
+        }},
+        {"$sort": {"_id.date": -1}},
+        {"$limit": MAX_DAILY_CATEGORY_BUCKETS},
+    ])
+    buckets = await cursor.to_list(length=MAX_DAILY_CATEGORY_BUCKETS)
+    history_truncated = len(buckets) >= MAX_DAILY_CATEGORY_BUCKETS
+
+    daily = {}
+    for bucket in buckets:
+        day_key = str(bucket.get("_id", {}).get("date", ""))[:10]
+        try:
+            date.fromisoformat(day_key)
+        except ValueError:
+            continue
+        day = daily.setdefault(day_key, {"income": 0.0, "expense": 0.0, "categories": {}, "category_names": {}, "records": 0})
+        amount = float(bucket.get("amount", 0) or 0)
+        kind = bucket.get("_id", {}).get("type")
+        if kind == "income":
+            day["records"] += int(bucket.get("count", 0))
+            day["income"] += amount
+        elif kind == "expense":
+            day["records"] += int(bucket.get("count", 0))
+            day["expense"] += amount
+            category_name = str(bucket.get("_id", {}).get("category") or "Uncategorized")
+            category_key = str(bucket.get("_id", {}).get("category_key") or f"legacy:{category_name}")
+            day["categories"][category_key] = day["categories"].get(category_key, 0.0) + amount
+            day["category_names"][category_key] = category_name
+
+    period_totals = _period_analytics(daily, today)
+    completed_months = []
+    month_end = today.replace(day=1) - timedelta(days=1)
+    for _ in range(12):
+        month_start = month_end.replace(day=1)
+        month_data = _window_totals(daily, month_start, month_end)
+        active_days = sum(
+            1 for offset in range((month_end - month_start).days + 1)
+            if daily.get((month_start + timedelta(days=offset)).isoformat(), {}).get("records", 0) > 0
+        )
+        if active_days:
+            completed_months.append({**month_data, "active_days": active_days})
+        month_end = month_start - timedelta(days=1)
+    completed_months.reverse()
+    monthly_net_values = sorted(month["net"] for month in completed_months)
+
+    def observed_percentile(values: list[float], fraction: float) -> float:
+        if not values:
+            return 0.0
+        index = round((len(values) - 1) * fraction)
+        return float(values[index])
+
+    observed_month_count = len(completed_months)
+    avg_active_days = (
+        sum(month["active_days"] for month in completed_months) / observed_month_count
+        if observed_month_count else 0.0
+    )
+    if observed_month_count >= 9 and avg_active_days >= 10 and not history_truncated:
+        long_term_confidence = "medium"
+    elif observed_month_count >= 3 and avg_active_days >= 4 and not history_truncated:
+        long_term_confidence = "low"
+    else:
+        long_term_confidence = "insufficient"
+    long_term_outlook = {
+        "available": observed_month_count >= 3,
+        "horizon_months": 12,
+        "observed_completed_months": observed_month_count,
+        "months_with_recorded_activity": [month["start"][:7] for month in completed_months],
+        "average_monthly_recorded_income": round(
+            sum(month["income"] for month in completed_months) / observed_month_count, 2
+        ) if observed_month_count else 0.0,
+        "average_monthly_recorded_expenses": round(
+            sum(month["expense"] for month in completed_months) / observed_month_count, 2
+        ) if observed_month_count else 0.0,
+        "average_monthly_recorded_net_cash_flow": round(
+            sum(month["net"] for month in completed_months) / observed_month_count, 2
+        ) if observed_month_count else 0.0,
+        "scenarios": {
+            "cautious_12_month_net_change": round(observed_percentile(monthly_net_values, 0.25) * 12, 2),
+            "typical_12_month_net_change": round(observed_percentile(monthly_net_values, 0.50) * 12, 2),
+            "strong_12_month_net_change": round(observed_percentile(monthly_net_values, 0.75) * 12, 2),
+        } if observed_month_count >= 3 else None,
+        "confidence": long_term_confidence,
+        "method": "Observed monthly recorded net cash-flow percentiles multiplied by 12; this is a scenario range, not an account-balance forecast.",
+        "coverage_note": "Months without recorded activity are not treated as zero-income or zero-expense months. Missing records can bias these scenarios.",
+    }
+    profile = await db.users.find_one({"_id": ObjectId(user_id)}, {"monthly_income": 1})
+    monthly_baseline = float((profile or {}).get("monthly_income", 0) or 0)
+
+    active_budgets = [
+        item for item in await list_budget_usage(user_id)
+        if item.get("start_date") and item.get("end_date")
+        and item["start_date"] <= today_key <= item["end_date"]
+    ]
+    budget_forecasts = []
+    recommendations = []
+    for item in active_budgets:
+        start = date.fromisoformat(item["start_date"])
+        end = date.fromisoformat(item["end_date"])
+        elapsed_days = max((min(today, end) - start).days + 1, 1)
+        period_days = max((end - start).days + 1, 1)
+        remaining_days = max((end - today).days, 0)
+        spent = float(item.get("spent", 0) or 0)
+        current_daily_rate = spent / elapsed_days
+        effective_limit = float(item.get("available_limit", item.get("amount", 0)) or 0)
+        category_keys = [str(item.get("category_id", "")), f"legacy:{item.get('category_name', 'Uncategorized')}"]
+        historical_daily_rate, historical_active_days = _trailing_category_average(daily, category_keys, today, days=28)
+        history_weight = min(historical_active_days / 14.0, 0.6) * min(elapsed_days / 7.0, 1.0)
+        projected_spend = round(spent + (
+            current_daily_rate * (1.0 - history_weight) + historical_daily_rate * history_weight
+        ) * remaining_days, 2)
+        if history_truncated:
+            confidence = "low"
+        elif elapsed_days >= 14 and historical_active_days >= 8 and item.get("period_type") not in {"weekly", "annual"}:
+            confidence = "high"
+        elif elapsed_days >= 5 and historical_active_days >= 3:
+            confidence = "medium"
+        else:
+            confidence = "low"
+
+        forecast = {
+            "category": item.get("category_name", "Category"),
+            "period": item.get("period_type", "budget"),
+            "spent": round(spent, 2),
+            "limit": round(effective_limit, 2),
+            "projected_period_end_spend": projected_spend,
+            "forecast_over_limit": projected_spend > effective_limit,
+            "percentage_used": round(float(item.get("percentage_used", 0) or 0), 1),
+            "days_remaining": remaining_days,
+            "daily_remaining_allowance": round(max(effective_limit - spent, 0) / max(remaining_days, 1), 2),
+            "confidence": confidence,
+            "history_days": 28,
+            "historical_active_days": historical_active_days,
+        }
+        budget_forecasts.append(forecast)
+
+        if elapsed_days >= 3 and historical_active_days > 0 and forecast["forecast_over_limit"]:
+            recommendations.append({
+                "kind": "budget_risk",
+                "priority": "high",
+                "title": f"{forecast['category']} may exceed its limit",
+                "message": f"At the recent spending pace, this {forecast['period']} limit may be exceeded.",
+                "evidence": forecast,
+                "action": f"About PHP {forecast['daily_remaining_allowance']:.2f} remains per day for the rest of this period if you want to stay within the limit.",
+            })
+        elif forecast["percentage_used"] >= 70:
+            recommendations.append({
+                "kind": "budget_watch",
+                "priority": "medium",
+                "title": f"Keep an eye on {forecast['category']}",
+                "message": f"You have used {forecast['percentage_used']:.0f}% of this period's available limit.",
+                "evidence": forecast,
+                "action": f"About PHP {forecast['daily_remaining_allowance']:.2f} remains per day for the rest of this period.",
+            })
+
+    goals = await db.goals.find({"user_id": user_id, "is_archived": {"$ne": True}}).to_list(length=50)
+    goal_plans = [_goal_projection(goal, today, monthly_baseline) for goal in goals]
+    for goal in goal_plans:
+        if goal["remaining"] <= 0:
+            continue
+        if goal["target_date_passed"] or goal["target_due_today"]:
+            recommendations.append({
+                "kind": "goal_review",
+                "priority": "medium",
+                "title": f"Review the target date for {goal['target']}",
+                "message": f"{goal['remaining']:.2f} remains and the target date has arrived or passed.",
+                "evidence": goal,
+                "action": "Consider choosing a later target date or revising the target amount.",
+            })
+        elif goal["suggested_monthly_saving"] is not None:
+            needed = goal["suggested_monthly_saving"]
+            exceeds_baseline = monthly_baseline > 0 and needed > monthly_baseline
+            recommendations.append({
+                "kind": "goal_plan",
+                "priority": "medium" if exceeds_baseline else "goal",
+                "title": f"Plan savings for {goal['target']}",
+                "message": f"About PHP {needed:.2f} per month would be needed to reach the target date.",
+                "evidence": goal,
+                "action": (
+                    "That monthly pace is above your reported baseline. Consider a later date or lower target; actual affordability also depends on expenses not recorded here."
+                    if exceeds_baseline else "Compare this monthly amount with your budget before committing to it."
+                ),
+            })
+
+    current_month = period_totals["this_month"]
+    if current_month["income"] > 0 and current_month["net"] < 0:
+        recommendations.append({
+            "kind": "cash_flow",
+            "priority": "medium",
+            "title": "Recorded spending is above recorded income this month",
+            "message": "This comparison uses transactions recorded so far this month; unrecorded income or expenses can change it.",
+            "evidence": current_month,
+            "action": "Review upcoming expenses and whether your current savings targets still fit this month's cash flow.",
+        })
+
+    if long_term_outlook["available"] and long_term_outlook["average_monthly_recorded_net_cash_flow"] < 0:
+        recommendations.append({
+            "kind": "long_term_cash_flow",
+            "priority": "medium",
+            "title": "Review the longer-term cash-flow pattern",
+            "message": "Across months with recorded activity, expenses have averaged above recorded income. Missing records may affect this comparison.",
+            "evidence": long_term_outlook,
+            "action": "Review recurring and flexible expenses, then choose one category where a change would feel realistic.",
+        })
+
+    priority_order = {"high": 0, "medium": 1, "goal": 2}
+    recommendations.sort(key=lambda item: priority_order.get(item["priority"], 3))
+    recommendations = recommendations[:10]
+
+    metrics = {
+        "as_of_date": today_key,
+        "history_days": 400,
+        "history_truncated": history_truncated,
+        "days_with_records": len(daily),
+        "active_budget_count": len(active_budgets),
+        "active_goal_count": len(goal_plans),
+        "current_month": current_month,
+        "previous_month_to_same_day": period_totals["previous_month_to_same_day"],
+        "month_over_month_expense_change_percent": period_totals["month_over_month_expense_change_percent"],
+        "last_90_days": period_totals["last_90_days"],
+        "long_term_outlook": long_term_outlook,
+        "reported_monthly_baseline": round(monthly_baseline, 2),
+    }
+
+    has_planning_inputs = bool(daily or active_budgets or goal_plans)
+    fallback_summary = (
+        f"I found {len(recommendations)} planning point(s) from your active budgets and goals. "
+        "Forecasts are estimates based on recorded activity and may change as you log more transactions."
+        if recommendations else
+        "There is not enough recorded activity, an active budget, or a savings goal to build a useful plan yet. Add those details and check back."
+        if not has_planning_inputs else
+        "There are no immediate budget or goal flags in the available records. This is not a guarantee; unrecorded activity can change the outlook."
+    )
+    summary = fallback_summary
+    summary_source = "rule_based"
+    recommendation_source = "rule_based"
+    evidence_catalog = {}
+    for index, forecast in enumerate(budget_forecasts):
+        evidence_id = f"budget_{index}"
+        evidence_catalog[evidence_id] = {
+            "kind": "budget_risk" if forecast["forecast_over_limit"] else "budget_watch",
+            "evidence": forecast,
+        }
+    for index, goal in enumerate(goal_plans):
+        evidence_id = f"goal_{index}"
+        evidence_catalog[evidence_id] = {"kind": "goal_plan", "evidence": goal}
+    current_categories = period_totals["this_month"]["expense_by_category"]
+    previous_categories = period_totals["previous_month_to_same_day"]["expense_by_category"]
+    category_names = set(current_categories) | set(previous_categories)
+    for index, category_name in enumerate(sorted(category_names)):
+        current_amount = current_categories.get(category_name, 0.0)
+        previous_amount = previous_categories.get(category_name, 0.0)
+        if current_amount <= 0 and previous_amount <= 0:
+            continue
+        evidence_id = f"category_{index}"
+        evidence_catalog[evidence_id] = {
+            "kind": "spending_pattern",
+            "evidence": {
+                "category": category_name,
+                "current_period_spending": round(current_amount, 2),
+                "previous_period_to_same_day_spending": round(previous_amount, 2),
+                "change_percent": round((current_amount - previous_amount) / previous_amount * 100, 1)
+                if previous_amount else None,
+            },
+        }
+    if current_month["income"] > 0:
+        evidence_catalog["cash_flow"] = {"kind": "cash_flow", "evidence": current_month}
+    if long_term_outlook["available"]:
+        evidence_catalog["long_term_cash_flow"] = {
+            "kind": "long_term_cash_flow",
+            "evidence": long_term_outlook,
+        }
+
+    summary = fallback_summary
+    if ai_client:
+        prompt_data = {
+            "metrics": metrics,
+            "budget_forecasts": budget_forecasts,
+            "goal_plans": goal_plans,
+            "long_term_outlook": long_term_outlook,
+            "category_spending_comparison": [
+                {"category": value["evidence"]["category"], **value["evidence"]}
+                for value in evidence_catalog.values() if value["kind"] == "spending_pattern"
+            ],
+            "evidence_catalog": evidence_catalog,
+        }
+        try:
+            response = await asyncio.wait_for(asyncio.to_thread(
+                ai_client.models.generate_content,
+                model="gemini-3.6-flash",
+                contents=[types.Content(role="user", parts=[types.Part.from_text(text=(
+                    "You are the primary pattern analyst for FinAI, a personal budgeting and savings "
+                    "planning feature. Analyze the aggregated metrics, active budget forecasts, goal "
+                    "paces, same-period category comparisons, and (when available) 12-month cash-flow "
+                    "scenarios. Identify up to 5 useful personalized "
+                    "recommendations, prioritizing concrete opportunities or risks over generic praise. "
+                    "Each recommendation MUST cite exactly one evidence_id from evidence_catalog. "
+                    "Use only cited evidence; do not invent amounts, dates, bills, income, causes, or facts. "
+                    "Do not put numeric currency amounts or percentages in the generated text; the app "
+                    "will show verified figures separately. Give 1 or 2 specific, optional action ideas. "
+                    "Do not assume the user can cook, bring lunch, reduce a particular expense, or change "
+                    "their routine unless the data explicitly supports it. Offer such ideas conditionally "
+                    "(for example, 'if that fits your routine'), include a realistic alternative, or ask "
+                    "one brief question about what is feasible. Do not state an unobserved cause for a "
+                    "spending pattern. Keep advice practical, nonjudgmental, and "
+                    "appropriate to budgeting and savings goals. Do not recommend investments, loans, "
+                    "tax actions, or moving money. If the data is sparse or no useful action is supported, "
+                    "return an empty recommendations list and say so briefly in the overview. Mention "
+                    "that estimates use recorded data and can be incomplete. Avoid claiming certainty or "
+                    "licensed-adviser status. For long-term outlook, describe scenarios as recorded-net "
+                    "cash-flow scenarios, not projected account balances or guaranteed outcomes. Return "
+                    "JSON only with this shape: {overview: string, "
+                    "recommendations: [{evidence_id: string, priority: high|medium|goal, title: string, "
+                    "message: string, actions: string[1..2], context_question?: string|null}]}. JSON data: "
+                    + json.dumps(prompt_data, ensure_ascii=False)
+                ))])],
+                config=types.GenerateContentConfig(
+                    temperature=0.2,
+                    response_mime_type="application/json",
+                ),
+            ), timeout=12)
+            generated = (response.text or "").strip()
+            if generated:
+                result = json.loads(generated)
+                overview = result.get("overview")
+                proposed = result.get("recommendations")
+                if isinstance(overview, str) and isinstance(proposed, list):
+                    validated = []
+                    seen_ids = set()
+                    for item in proposed[:5]:
+                        if not isinstance(item, dict):
+                            continue
+                        evidence_id = item.get("evidence_id")
+                        source = evidence_catalog.get(evidence_id)
+                        if not source or evidence_id in seen_ids:
+                            continue
+                        fields = (item.get("title"), item.get("message"))
+                        if not all(isinstance(value, str) and value.strip() for value in fields):
+                            continue
+                        actions = item.get("actions")
+                        if not isinstance(actions, list) or not actions or not all(
+                            isinstance(action, str) and action.strip() for action in actions[:2]
+                        ):
+                            continue
+                        priority = item.get("priority")
+                        validated.append({
+                            "kind": source["kind"],
+                            "priority": priority if priority in {"high", "medium", "goal"} else "medium",
+                            "title": item["title"].strip()[:100],
+                            "message": item["message"].strip()[:280],
+                            "action": " ".join(action.strip()[:220] for action in actions[:2]),
+                            "actions": [action.strip()[:220] for action in actions[:2]],
+                            "context_question": item.get("context_question", "")[:220]
+                            if isinstance(item.get("context_question"), str) else "",
+                            "evidence": source["evidence"],
+                        })
+                        seen_ids.add(evidence_id)
+                    summary = overview.strip()[:700] or fallback_summary
+                    # Keep the deterministic plan if Gemini's output fails validation;
+                    # otherwise AI-authored content becomes the displayed advice.
+                    if validated or not recommendations:
+                        recommendations = validated
+                        recommendation_source = "ai"
+                        summary_source = "ai"
+        except Exception as exc:
+            print(f"Automatic planning analysis unavailable: {exc}")
+
+    return {
+        "status": "Success",
+        "summary": summary,
+        "summary_source": summary_source,
+        "recommendation_source": recommendation_source,
+        "metrics": metrics,
+        "long_term_outlook": long_term_outlook,
+        "budget_forecasts": budget_forecasts,
+        "goal_plans": goal_plans,
+        "recommendations": recommendations,
+        "forecast_method": "Short-term budget estimates blend current-period pace with the trailing 28-day category average. Long-term scenarios multiply observed completed-month net cash-flow percentiles by 12; they are not projected account balances.",
+        "data_note": "Analysis uses active recorded transactions, budgets, and goals for the authenticated account. An aggregated financial summary (without transaction notes or descriptions) is sent to Gemini to generate recommendations. Missing or unrecorded activity can make results incomplete.",
+    }

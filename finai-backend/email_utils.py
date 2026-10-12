@@ -67,22 +67,30 @@ def send_threshold_alert(
     spent: float,
     limit_amount: float,
     period_type: str,
+    percentage_used: float | None = None,
 ) -> bool:
     """Send one factual email for a newly crossed budget threshold."""
     msg = EmailMessage()
-    msg["Subject"] = f"FinAI budget alert: {threshold}% used"
+    display_percentage = percentage_used if percentage_used is not None else threshold
+    over_budget = threshold == 101
+    subject = "budget exceeded" if over_budget else "budget alert"
+    msg["Subject"] = f"FinAI {subject}: {display_percentage:.0f}% used"
     msg["From"] = EMAIL_SENDER
     msg["To"] = target_email
     msg.set_content(
-        f"Your {category} {period_type} budget is {threshold}% used "
-        f"(PHP {spent:.2f} of PHP {limit_amount:.2f}). Open FinAI to review your spending."
+        (f"Your {category} {period_type} budget has been exceeded: " if over_budget else
+         f"Your {category} {period_type} budget is at {display_percentage:.0f}%: ")
+        + f"PHP {spent:.2f} of PHP {limit_amount:.2f} ({display_percentage:.2f}% used). "
+        + ("You can continue recording expenses; this is an advisory alert. " if over_budget else "")
+        + "Open FinAI to review your spending."
     )
     safe_category = escape(category)
     msg.add_alternative(
         f"""<html><body style="font-family:Arial,sans-serif">
-        <h2>FinAI budget alert</h2>
-        <p>Your <strong>{safe_category}</strong> {period_type} budget is <strong>{threshold}%</strong> used.</p>
+        <h2>FinAI {'budget exceeded' if over_budget else 'budget alert'}</h2>
+        <p>Your <strong>{safe_category}</strong> {period_type} budget is <strong>{display_percentage:.2f}%</strong> used.</p>
         <p>PHP {spent:.2f} of PHP {limit_amount:.2f}</p>
+        {('<p>You can continue recording expenses; this is an advisory alert.</p>' if over_budget else '')}
         <p>Open FinAI to review your spending.</p>
         </body></html>""",
         subtype="html",

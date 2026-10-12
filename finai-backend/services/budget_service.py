@@ -322,6 +322,10 @@ async def create_crossed_threshold_notifications(
             continue
 
         crossed = [threshold for threshold in THRESHOLDS if summary["percentage_used"] >= threshold]
+        # 101 is an internal event key for the first amount above the budget.
+        # Keep the actual percentage separately so clients never display 101%.
+        if summary["percentage_used"] > 100:
+            crossed.append(101)
         if not crossed:
             continue
         highest_crossed = max(crossed)
@@ -372,7 +376,8 @@ async def create_crossed_threshold_notifications(
                     "period_key": summary["period_key"],
                     "threshold": threshold,
                     "channel": "in_app",
-                    "level": "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget",
+                    "level": _threshold_level(threshold),
+                    "percentage_used": round(summary["percentage_used"], 2),
                     "message": "",
                     "is_read": True,
                     "created_at": datetime.now(PH_TZ),
@@ -387,14 +392,21 @@ async def create_crossed_threshold_notifications(
                         raise
                 continue
 
-            level = "warning" if threshold == 70 else "critical" if threshold == 90 else "over_budget"
-            message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
-                       f"{summary['period_type']} available budget (PHP {summary['spent']:.2f} of "
-                       f"PHP {summary['available_limit']:.2f}).")
+            level = _threshold_level(threshold)
+            if level == "over_budget":
+                message = (f"{summary['category_name']} spending is above its {summary['period_type']} budget: "
+                           f"PHP {summary['spent']:.2f} spent of PHP {summary['available_limit']:.2f} "
+                           f"({summary['percentage_used']:.2f}% used). You can continue recording expenses; "
+                           "this is an advisory alert.")
+            else:
+                message = (f"{summary['category_name']} has used {summary['percentage_used']:.0f}% of its "
+                           f"{summary['period_type']} available budget (PHP {summary['spent']:.2f} of "
+                           f"PHP {summary['available_limit']:.2f}).")
             notification = {
                 "user_id": user_id, "budget_id": summary["id"], "category_id": summary["category_id"],
                 "period_key": summary["period_key"], "threshold": threshold, "channel": "in_app",
                 "level": level, "message": message, "is_read": False, "created_at": datetime.now(PH_TZ),
+                "percentage_used": round(summary["percentage_used"], 2),
                 "email_status": "sending", "email_attempts": 1,
             }
             # A deterministic id makes the check-and-insert safe when two requests
@@ -428,6 +440,7 @@ async def _send_threshold_email(notification_id, user_id: str, summary: Dict[str
             sent = await asyncio.to_thread(
                 send_threshold_alert, user["email"], summary["category_name"], threshold,
                 summary["spent"], summary["available_limit"], summary["period_type"],
+                summary["percentage_used"],
             )
             email_status = "sent" if sent else "failed"
         else:
@@ -440,3 +453,11 @@ async def _send_threshold_email(notification_id, user_id: str, summary: Dict[str
             {"_id": notification_id, "email_status": "sending"}, {"$set": {"email_status": "failed"}},
         )
         print(f"Could not send budget alert email: {exc}")
+
+
+def _threshold_level(threshold: int) -> str:
+    if threshold == 70:
+        return "warning"
+    if threshold == 101:
+        return "over_budget"
+    return "critical"
