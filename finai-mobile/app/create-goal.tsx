@@ -13,7 +13,7 @@ import {
   FlatList,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { useTransactions } from '../context/TransactionContext'; 
 import { router, useLocalSearchParams } from 'expo-router';
 import { API_URL } from '../config'; 
@@ -95,7 +95,7 @@ export default function CreateGoal() {
     }
   }, [params.id, params.target_name, params.target_amount, params.current_savings, params.target_date]);
 
-  const onDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+  const onDateChange = (_event: unknown, selectedDate?: Date) => {
     if (Platform.OS === 'android') {
       setShowPicker(false); 
     }
@@ -240,7 +240,8 @@ export default function CreateGoal() {
                   value={date}
                   mode="date"
                   display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                  onChange={onDateChange}
+                  onValueChange={onDateChange}
+                  onDismiss={() => setShowPicker(false)}
                   minimumDate={new Date()}
                 />
                 <TouchableOpacity

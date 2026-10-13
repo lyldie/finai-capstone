@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { Animated, PanResponder, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import { useTransactions } from '../context/TransactionContext';
 
 const DEEP_GREEN = '#1c3c36';
@@ -9,6 +10,7 @@ const SAGE = '#7C9A95';
 
 export default function TransactionToastHost() {
   const { transactionToast, clearTransactionToast } = useTransactions();
+  const router = useRouter();
   const insets = useSafeAreaInsets();
   const translateY = useRef(new Animated.Value(-220)).current;
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -76,6 +78,21 @@ export default function TransactionToastHost() {
         {transactionToast.messages.length > 2 && (
           <Text style={styles.more}>+{transactionToast.messages.length - 2} more alerts</Text>
         )}
+        {isBudgetAlert && transactionToast.advisorConversationId && (
+          <TouchableOpacity
+            style={styles.advisorLink}
+            onPress={() => {
+              const conversationId = transactionToast.advisorConversationId;
+              dismiss();
+              router.push({ pathname: '/chat', params: { conversation_id: conversationId } });
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="View Finn's budget insight"
+          >
+            <Text style={styles.advisorLinkText}>View Finn’s insight</Text>
+            <Ionicons name="arrow-forward" size={15} color={DEEP_GREEN} />
+          </TouchableOpacity>
+        )}
         <Text style={styles.hint}>Swipe up to dismiss</Text>
       </View>
     </Animated.View>
@@ -93,5 +110,7 @@ const styles = StyleSheet.create({
   percent: { fontSize: 17, fontWeight: '900', marginLeft: 8 },
   message: { color: DEEP_GREEN, fontSize: 12, lineHeight: 17, marginTop: 8 },
   more: { color: SAGE, fontSize: 11, fontWeight: '700', marginTop: 5 },
+  advisorLink: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10, paddingVertical: 5 },
+  advisorLinkText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '800' },
   hint: { color: SAGE, fontSize: 10, fontWeight: '600', textAlign: 'right', marginTop: 8 },
 });

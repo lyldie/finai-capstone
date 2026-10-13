@@ -1089,7 +1089,15 @@ async def validate_transaction_references(transaction: TransactionSchema, user_i
 async def safely_refresh_budget_notifications(user_id: str, category_id: Optional[str] = None) -> list:
     """Keep a committed money transaction successful if alert delivery has a temporary failure."""
     try:
-        return await create_crossed_threshold_notifications(user_id, category_id)
+        notifications = await create_crossed_threshold_notifications(user_id, category_id)
+        for notification in notifications:
+            try:
+                conversation_id = await advisor.queue_proactive_budget_message(user_id, notification)
+                if conversation_id:
+                    notification["advisor_conversation_id"] = conversation_id
+            except Exception as exc:
+                print(f"Could not save proactive budget guidance for user {user_id}: {exc}")
+        return notifications
     except Exception as exc:
         print(f"Could not refresh budget notifications for user {user_id}: {exc}")
         return []
@@ -1402,6 +1410,12 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Could not safely complete the contribution. Verify MongoDB transaction support and try again.") from exc
 
+    updated_goal = await db.goals.find_one({"_id": goal_oid, "user_id": current_user["id"]})
+    if updated_goal:
+        await advisor.queue_proactive_goal_milestone(
+            current_user["id"], goal, float(goal.get("current_savings", 0) or 0),
+            float(updated_goal.get("current_savings", 0) or 0),
+        )
     return {"status": "Success", "id": str(inserted_id), "message": "Naihulog na sa goal!"}
 
 
@@ -1467,6 +1481,13 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
         )
 
         # 2. ðŸš¨ EMAIL ALERT INTEGRATION ðŸš¨
+    try:
+        await advisor.evaluate_proactive_financial_signals(
+            transaction.user_id,
+            transaction.category_id if transaction.type.lower() == "expense" else None,
+        )
+    except Exception as exc:
+        print(f"Could not evaluate proactive financial signals for user {transaction.user_id}: {exc}")
     return {"status": "Success", "id": str(inserted_id), "notifications": notifications_created}
 
 
@@ -1623,6 +1644,13 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
         notifications_created = await safely_refresh_budget_notifications(
             transaction.user_id, transaction.category_id
         )
+        try:
+            await advisor.evaluate_proactive_financial_signals(
+                transaction.user_id,
+                transaction.category_id if transaction.type.lower() == "expense" else None,
+            )
+        except Exception as exc:
+            print(f"Could not evaluate proactive financial signals for user {transaction.user_id}: {exc}")
         return {"status": "Success", "notifications": notifications_created}
 
     raise HTTPException(status_code=404, detail="Failed to update transaction.")

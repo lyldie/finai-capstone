@@ -9,7 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
-import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
 
@@ -74,7 +74,7 @@ export default function SetupPinScreen() {
     return () => { active = false; };
   }, []);
 
-  const onGoalDateChange = (_event: DateTimePickerEvent, selectedDate?: Date) => {
+  const onGoalDateChange = (_event: unknown, selectedDate?: Date) => {
     if (Platform.OS === 'android') setShowGoalDatePicker(false);
     if (selectedDate) setGoalDate(selectedDate);
   };
@@ -312,7 +312,8 @@ export default function SetupPinScreen() {
                   mode="date"
                   display={Platform.OS === 'ios' ? 'spinner' : 'default'}
                   minimumDate={getTomorrowInPhilippines()}
-                  onChange={onGoalDateChange}
+                  onValueChange={onGoalDateChange}
+                  onDismiss={() => setShowGoalDatePicker(false)}
                 />
                 {Platform.OS === 'ios' && (
                   <TouchableOpacity style={styles.datePickerDone} onPress={() => setShowGoalDatePicker(false)}>

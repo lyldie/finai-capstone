@@ -1,6 +1,6 @@
 // app/getstarted.tsx
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Image, Dimensions, ActivityIndicator } from 'react-native';
+import { AccessibilityInfo, Animated, Easing, StyleSheet, Text, View, TouchableOpacity, StatusBar, Image, Dimensions, ActivityIndicator } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient'; 
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -10,6 +10,32 @@ const { width } = Dimensions.get('window');
 export default function GetStartedScreen() {
   const router = useRouter();
   const [isChecking, setIsChecking] = useState(true);
+  const mascotEntrance = React.useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (isChecking) return;
+
+    let active = true;
+    AccessibilityInfo.isReduceMotionEnabled()
+      .then((reduceMotionEnabled) => {
+        if (!active) return;
+        if (reduceMotionEnabled) {
+          mascotEntrance.setValue(1);
+          return;
+        }
+        Animated.timing(mascotEntrance, {
+          toValue: 1,
+          duration: 650,
+          easing: Easing.out(Easing.cubic),
+          useNativeDriver: true,
+        }).start();
+      })
+      .catch(() => {
+        if (active) mascotEntrance.setValue(1);
+      });
+
+    return () => { active = false; };
+  }, [isChecking, mascotEntrance]);
 
   // 👈 [NEW] Smart Routing: I-check agad kung luma o bagong user
   useEffect(() => {
@@ -66,13 +92,24 @@ export default function GetStartedScreen() {
       >
         <View style={styles.contentContainer}>
           
-          <View style={styles.logoCircle}>
+          <Animated.View
+            style={[
+              styles.logoCircle,
+              {
+                opacity: mascotEntrance,
+                transform: [
+                  { translateY: mascotEntrance.interpolate({ inputRange: [0, 1], outputRange: [14, 0] }) },
+                  { scale: mascotEntrance.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] }) },
+                ],
+              },
+            ]}
+          >
             <Image 
                 source={require('../assets/images/squirrel_logoo.png')} 
                 style={styles.squirrelImage}
                 resizeMode="contain" 
             />
-          </View>
+          </Animated.View>
 
           <Text style={styles.appName}>FINAI</Text>
           <Text style={styles.tagline}>NA SOBRANG FINE</Text>
@@ -120,8 +157,8 @@ const styles = StyleSheet.create({
     overflow: 'hidden', // 👈 [NEW] Para hindi lumagpas sa bilog yung image kung malaki man
   },
   squirrelImage: {
-    width: '80%', // 👈 [NEW] Mas safe ang percentage para laging fit sa loob ng circle
-    height: '80%', 
+    width: '120%', // 👈 [NEW] Mas safe ang percentage para laging fit sa loob ng circle
+    height: '120%', 
   },
   appName: {
     color: '#edb232', 

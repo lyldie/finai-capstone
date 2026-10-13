@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useTransactions } from '../../context/TransactionContext';
@@ -21,6 +21,7 @@ const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
 
 export default function HomeDashboard() {
+  const [aiTipCardHeight, setAiTipCardHeight] = useState(174);
   const { user } = useAuth();
   const {
     transactions,
@@ -117,7 +118,7 @@ export default function HomeDashboard() {
           <Text style={styles.userName}>{user?.name?.trim().split(/\s+/)[0] || 'User'}!</Text>
         </View>
         <View style={styles.headerRightActions}>
-          <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/chat' as never)} activeOpacity={0.8}>
+          <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/messages' as never)} activeOpacity={0.8}>
             <Text style={{ fontSize: 18 }}>🥜</Text>
           </TouchableOpacity>
           <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
@@ -128,9 +129,11 @@ export default function HomeDashboard() {
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
+        <View style={styles.heroCardsStack}>
         {/* Dashboard shortcut to the full planning analysis */}
         <TouchableOpacity
           style={styles.aiTipCard}
+          onLayout={({ nativeEvent }) => setAiTipCardHeight(nativeEvent.layout.height)}
           onPress={() => router.push('/plan-ahead' as never)}
           activeOpacity={0.82}
           accessibilityRole="button"
@@ -141,12 +144,15 @@ export default function HomeDashboard() {
               <Ionicons name="sparkles" size={12} color={DEEP_GREEN} />
               <Text style={styles.aiBadgeText}>QUICK BUDGET TIP</Text>
             </View>
-            <Text style={styles.aiTipSource}>Budget snapshot</Text>
           </View>
-          <Text style={styles.aiTipText}>{dynamicAiTip}</Text>
-          <View style={styles.aiTipAction}>
-            <Text style={styles.aiTipActionText}>Open Plan Ahead</Text>
-            <Ionicons name="arrow-forward" size={15} color={TEAL} />
+          <View style={styles.aiTipBody}>
+            <View style={styles.aiTipCopy}>
+              <Text style={styles.aiTipText}>{dynamicAiTip}</Text>
+              <View style={styles.aiTipAction}>
+                <Text style={styles.aiTipActionText}>Open Plan Ahead</Text>
+                <Ionicons name="arrow-forward" size={15} color={TEAL} />
+              </View>
+            </View>
           </View>
         </TouchableOpacity>
 
@@ -202,6 +208,19 @@ export default function HomeDashboard() {
             </View>
           </View>
         </LinearGradient>
+
+        <View
+          style={[styles.finnTipImage, { top: aiTipCardHeight - 127 }]}
+          pointerEvents="none"
+        >
+          <Image
+            source={require('../../assets/images/finn-wave.gif')}
+            style={styles.finnTipImageContent}
+            resizeMode="contain"
+            accessible={false}
+          />
+        </View>
+        </View>
 
         {/* Wallets */}
         <View style={styles.sectionHeaderRow}>
@@ -344,17 +363,21 @@ const styles = StyleSheet.create({
   },
   scrollContent: { padding: 20, paddingBottom: 110 },
 
+  heroCardsStack: { position: 'relative', overflow: 'visible' },
   aiTipCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 20,
+    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, minHeight: 174, marginTop: 18, marginBottom: 20,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
   },
-  aiTipHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  aiTipSource: { color: SAGE, fontSize: 10, fontWeight: '700' },
+  aiTipHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
   aiBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, backgroundColor: 'rgba(237, 178, 50, 0.16)', paddingHorizontal: 10, paddingVertical: 5, borderRadius: 8 },
   aiBadgeText: { color: DEEP_GREEN, fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
   aiTipText: { color: DEEP_GREEN, fontSize: 14, fontStyle: 'italic', lineHeight: 20, marginBottom: 12 },
   aiTipAction: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   aiTipActionText: { color: TEAL, fontSize: 13, fontWeight: '700' },
+  aiTipBody: { paddingRight: 98 },
+  aiTipCopy: { minWidth: 0 },
+  finnTipImage: { position: 'absolute', width: 178, height: 178, right: -17, zIndex: 3, elevation: 10 },
+  finnTipImageContent: { width: '100%', height: '100%' },
 
   balanceCard: {
     borderRadius: 24, padding: 22, marginBottom: 24,

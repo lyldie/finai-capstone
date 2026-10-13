@@ -15,9 +15,8 @@ import {
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "../context/AuthContext";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_URL } from "../config";
 
 // ---- FINAI BRAND TOKENS (shared with transactions.tsx / index.tsx / two.tsx / insights.tsx) ----
@@ -33,96 +32,135 @@ interface ChatMessage {
   id: string;
   text: string;
   sender: "user" | "ai";
+  source?: "gemini" | "rule_based" | "user";
+  message_type?: "planning_insight";
 }
-
-// How many prior turns to send as conversation history, matching the backend's
-// MAX_HISTORY_TURNS cap so we're not sending more than the server will actually use.
-const MAX_HISTORY_TURNS = 10;
 
 export default function ChatScreen() {
   const { user } = useAuth();
   const router = useRouter();
+  const params = useLocalSearchParams<{ conversation_id?: string }>();
+  const routeConversationId = typeof params.conversation_id === "string" ? params.conversation_id : undefined;
   const flatListRef = useRef<FlatList>(null);
 
   const [inputText, setInputText] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isReady, setIsReady] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(routeConversationId || null);
+  const [conversationTitle, setConversationTitle] = useState("FinAI Advisor");
 
-  // Load chat history from AsyncStorage
+  // Ensure a server-backed general thread exists when chat is opened directly.
   useEffect(() => {
-    const loadHistory = async () => {
+    let active = true;
+    const openConversation = async () => {
+      if (!user?.token) { setIsReady(true); return; }
+      if (routeConversationId) {
+        setConversationId(routeConversationId);
+        return;
+      }
+      setIsReady(false);
       try {
-        const savedChat = await AsyncStorage.getItem(`finai_chat_${user?.id}`);
-        if (savedChat) {
-          setMessages(JSON.parse(savedChat));
+        const response = await fetch(`${API_URL}/advisor/conversations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${user.token}` },
+          body: JSON.stringify({ topic: "general" }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Could not open your conversation.");
+        if (active) {
+          setConversationId(payload.id);
+          setConversationTitle(payload.title || "FinAI Advisor");
         }
       } catch (error) {
-        console.error("Failed to load chat history", error);
-      } finally {
-        setIsReady(true);
+        console.error("Failed to open advisor conversation", error);
+        if (active) Alert.alert("Couldn’t open messages", "Check your connection and try again.");
       }
     };
-    loadHistory();
-  }, [user?.id]);
+    void openConversation();
+    return () => { active = false; };
+  }, [user?.token, routeConversationId]);
 
-  // Save chat history automatically
   useEffect(() => {
-    if (isReady) {
-      AsyncStorage.setItem(`finai_chat_${user?.id}`, JSON.stringify(messages));
-    }
-  }, [messages, isReady, user?.id]);
+    if (!conversationId || !user?.token) return;
+    let active = true;
+    setIsReady(false);
+    fetch(`${API_URL}/advisor/conversations/${conversationId}/messages`, {
+      headers: { Authorization: `Bearer ${user.token}` },
+    })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.detail || "Could not load this conversation.");
+        if (active) {
+          setMessages(Array.isArray(payload.messages) ? payload.messages : []);
+          setConversationTitle(payload.conversation?.title || "FinAI Advisor");
+
+          // Ask the server for one relevant proactive check-in. It is saved in
+          // this thread and deduplicated there, while the composer stays usable.
+          void fetch(`${API_URL}/advisor/conversations/${conversationId}/check-in`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${user.token}` },
+          })
+            .then(async (checkInResponse) => {
+              if (!checkInResponse.ok) return;
+              const checkIn = await checkInResponse.json();
+              const insight = checkIn?.message as ChatMessage | undefined;
+              if (!active || !insight?.id) return;
+              setMessages((current) => current.some((message) => message.id === insight.id)
+                ? current
+                : [...current, insight]);
+            })
+            .catch((error) => console.warn("Planning check-in unavailable", error));
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load advisor messages", error);
+        if (active) Alert.alert("Couldn’t load messages", "Check your connection and reopen this conversation.");
+      })
+      .finally(() => { if (active) setIsReady(true); });
+    return () => { active = false; };
+  }, [conversationId, user?.token]);
 
   const sendChatMessage = async (question = inputText) => {
-    if (!question.trim()) return;
+    if (!question.trim() || !conversationId || !user?.token || isChatLoading) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
       text: question.trim(),
       sender: "user",
+      source: "user",
     };
-
-    // FIX: capture recent history BEFORE appending the new message, so what gets sent
-    // to the backend is the conversation as it stood up to this point -- the backend
-    // then appends the new message itself as the final turn.
-    const recentHistory = messages
-      .slice(-MAX_HISTORY_TURNS)
-      .map((m) => ({ sender: m.sender, text: m.text }));
 
     setMessages((prev) => [...prev, userMsg]);
     setInputText("");
     setIsChatLoading(true);
 
     try {
-      const response = await fetch(`${API_URL}/advisor/chat`, {
+      const response = await fetch(`${API_URL}/advisor/conversations/${conversationId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.token || ''}` },
-        body: JSON.stringify({
-          user_id: user?.id,
-          message: userMsg.text,
-          history: recentHistory,
-        }),
+        body: JSON.stringify({ text: userMsg.text }),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        const aiMsg: ChatMessage = {
-          id: (Date.now() + 1).toString(),
-          text: data.reply,
-          sender: "ai",
+        const savedUserMessage: ChatMessage = data.user_message || userMsg;
+        const savedAssistantMessage: ChatMessage = data.assistant_message || {
+          id: (Date.now() + 1).toString(), text: data.reply, sender: "ai", source: data.source,
         };
-        setMessages((prev) => [...prev, aiMsg]);
+        setMessages((prev) => [
+          ...prev.filter((message) => message.id !== userMsg.id),
+          savedUserMessage,
+          savedAssistantMessage,
+        ]);
       } else {
         throw new Error(data.detail || "Error communicating with FinAi");
       }
     } catch (error) {
-      const errorMsg: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        text: 'I could not connect just now. Please try again shortly.',
-        sender: "ai",
-      };
-      setMessages((prev) => [...prev, errorMsg]);
+      setMessages((prev) => prev.filter((message) => message.id !== userMsg.id));
+      setInputText(userMsg.text);
+      Alert.alert("Message not saved", "Check your connection and try again. Your text is still in the message box.");
     } finally {
       setIsChatLoading(false);
     }
@@ -130,14 +168,25 @@ export default function ChatScreen() {
 
   const clearChat = () => {
     Alert.alert(
-      "Clear Chat",
-      'Are you sure you want to clear your conversation with FinAI?',
+      "Delete conversation",
+      'This permanently deletes this conversation from your account.',
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => setMessages([]),
+          onPress: async () => {
+            try {
+              const response = await fetch(`${API_URL}/advisor/conversations/${conversationId}`, {
+                method: "DELETE",
+                headers: { Authorization: `Bearer ${user?.token || ''}` },
+              });
+              if (!response.ok) throw new Error("Could not delete this conversation.");
+              router.replace("/messages" as never);
+            } catch {
+              Alert.alert("Couldn’t delete conversation", "Please check your connection and try again.");
+            }
+          },
         },
       ],
     );
@@ -171,6 +220,13 @@ export default function ChatScreen() {
         ) : (
           <View style={[styles.messageBubble, styles.bubbleAI]}>
             <Text style={[styles.messageText, styles.textAI]}>{item.text}</Text>
+            {(item.message_type === "planning_insight" || item.source === "rule_based") && (
+              <Text style={styles.sourceLabel}>
+                {item.message_type === "planning_insight"
+                  ? item.source === "gemini" ? "PROACTIVE INSIGHT · GEMINI ANALYSIS" : "PROACTIVE INSIGHT · RECORDED DATA"
+                  : "BASED ON YOUR RECORDED DATA"}
+              </Text>
+            )}
           </View>
         )}
       </View>
@@ -300,10 +356,13 @@ export default function ChatScreen() {
             <View style={styles.aiAvatarHeader}>
               <Text style={{ fontSize: 12 }}>🥜</Text>
             </View>
-            <Text style={styles.headerTitle}>Chat with FinAi</Text>
+            <Text style={styles.headerTitle} numberOfLines={1}>{conversationTitle}</Text>
           </View>
         </View>
         <View style={styles.headerRight}>
+          <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/messages' as never)} accessibilityLabel="Open messages inbox">
+            <Ionicons name="mail-unread-outline" size={18} color={DEEP_GREEN} />
+          </TouchableOpacity>
           <TouchableOpacity style={styles.iconButton} onPress={clearChat}>
             <Ionicons name="trash-outline" size={18} color={EXPENSE} />
           </TouchableOpacity>
@@ -319,7 +378,7 @@ export default function ChatScreen() {
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
-          ListHeaderComponent={renderHeader}
+          ListHeaderComponent={isReady ? renderHeader : <ActivityIndicator style={{ marginTop: 32 }} size="large" color={TEAL} />}
           contentContainerStyle={styles.chatContentContainer}
           onContentSizeChange={() => {
             if (messages.length > 0)
@@ -341,7 +400,7 @@ export default function ChatScreen() {
                 key={label}
                 style={{ borderRadius: 16, borderWidth: 1, borderColor: '#D7E2DE', backgroundColor: '#F7F9F8', paddingHorizontal: 12, paddingVertical: 7 }}
                 onPress={() => sendChatMessage(prompt)}
-                disabled={isChatLoading}
+                disabled={isChatLoading || !isReady || !conversationId}
               >
                 <Text style={{ color: DEEP_GREEN, fontSize: 12, fontWeight: '700' }}>{label}</Text>
               </TouchableOpacity>
@@ -363,7 +422,7 @@ export default function ChatScreen() {
 
             <TouchableOpacity
               onPress={() => sendChatMessage()}
-              disabled={!inputText.trim() || isChatLoading}
+              disabled={!inputText.trim() || isChatLoading || !isReady || !conversationId}
               activeOpacity={0.85}
             >
               {!inputText.trim() || isChatLoading ? (
@@ -432,6 +491,7 @@ const styles = StyleSheet.create({
   },
   headerTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: "700" },
   headerRight: { flexDirection: "row", gap: 8 },
+  sourceLabel: { color: SAGE, fontSize: 9, fontWeight: "800", letterSpacing: 0.6, marginTop: 8 },
 
   // Hero Section (Zero State)
   heroSection: {

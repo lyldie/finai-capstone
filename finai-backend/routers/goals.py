@@ -283,4 +283,11 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail="Could not safely complete the contribution. Verify MongoDB transaction support and try again.") from exc
+    updated_goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"]})
+    if updated_goal:
+        from . import advisor
+        await advisor.queue_proactive_goal_milestone(
+            current_user["id"], goal, float(goal.get("current_savings", 0) or 0),
+            float(updated_goal.get("current_savings", 0) or 0),
+        )
     return {"status": "Success", "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}

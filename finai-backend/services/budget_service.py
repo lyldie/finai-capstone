@@ -420,6 +420,13 @@ async def create_crossed_threshold_notifications(
                 raise
             notification["id"] = notification_id
             notification.pop("_id", None)
+            # Return the verified figures for a matching proactive advisor message.
+            notification.update({
+                "category_name": summary["category_name"],
+                "period_type": summary["period_type"],
+                "spent": summary["spent"],
+                "available_limit": summary["available_limit"],
+            })
             created.append(notification)
 
             _queue_threshold_email(notification_id, user_id, summary, threshold)

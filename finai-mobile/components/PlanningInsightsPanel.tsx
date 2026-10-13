@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { ActivityIndicator, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -33,8 +33,12 @@ type PlanningData = {
     history_truncated: boolean;
     active_budget_count?: number;
     active_goal_count?: number;
+    period_analytics?: Record<string, { income: number; expense: number; net: number; start: string; end: string }>;
+    period_series?: Record<string, { label: string; income: number; expense: number }[]>;
   };
   recommendations: Recommendation[];
+  budget_forecasts?: { category: string; period: string; spent: number; limit: number; projected_period_end_spend: number; forecast_over_limit: boolean; percentage_used: number; days_remaining: number; daily_remaining_allowance: number; confidence: string }[];
+  goal_plans?: { target: string; saved: number; goal: number; remaining: number; days_to_target?: number | null; suggested_monthly_saving?: number | null }[];
   data_note: string;
   long_term_outlook?: {
     available: boolean;
@@ -58,6 +62,7 @@ type Props = {
   error: string | null;
   onRefresh: () => void;
   onAskFinAI: () => void;
+  onViewInsights: () => void;
 };
 
 const peso = (value: unknown) => `₱${(Number(value) || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })}`;
@@ -119,7 +124,16 @@ function iconFor(kind: string): keyof typeof Ionicons.glyphMap {
   return 'git-compare-outline';
 }
 
-export default function PlanningInsightsPanel({ data, loading, error, onRefresh, onAskFinAI }: Props) {
+export default function PlanningInsightsPanel({ data, loading, error, onRefresh, onAskFinAI, onViewInsights }: Props) {
+  const [selectedPeriod, setSelectedPeriod] = useState<'day' | 'week' | 'month' | 'year'>('month');
+  const periodLabels = { day: 'Day', week: 'Week', month: 'Month', year: 'Year' } as const;
+  const periodRangeLabels = { day: 'Today', week: 'This calendar week', month: 'This month', year: 'Year to date' } as const;
+  const selectedTotals = data?.metrics?.period_analytics?.[selectedPeriod];
+  const chartPoints = data?.metrics?.period_series?.[selectedPeriod] || [];
+  const chartMax = Math.max(1, ...chartPoints.flatMap((point) => [Number(point.income) || 0, Number(point.expense) || 0]));
+  const hasPeriodActivity = Number(selectedTotals?.income || 0) > 0 || Number(selectedTotals?.expense || 0) > 0;
+  const budgetPeriod = { day: 'daily', week: 'weekly', month: 'monthly', year: 'annual' }[selectedPeriod];
+  const periodBudgets = (data?.budget_forecasts || []).filter((item) => item.period === budgetPeriod);
   return (
     <View style={styles.container}>
       <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
@@ -161,7 +175,78 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             <Text style={styles.summaryText}>{data.summary}</Text>
           </View>
 
-          <View style={styles.longTermCard}>
+          <View style={styles.periodCard}>
+            <View style={styles.periodHeader}>
+              <View>
+                <Text style={styles.periodTitle}>Your numbers</Text>
+                <Text style={styles.periodCaption}>{periodRangeLabels[selectedPeriod]} · recorded activity</Text>
+              </View>
+              <Ionicons name="analytics-outline" size={20} color={TEAL} />
+            </View>
+            <View style={styles.periodSelector}>
+              {(Object.keys(periodLabels) as (keyof typeof periodLabels)[]).map((period) => (
+                <TouchableOpacity key={period} onPress={() => setSelectedPeriod(period)} style={[styles.periodOption, selectedPeriod === period && styles.periodOptionActive]} accessibilityRole="button" accessibilityState={{ selected: selectedPeriod === period }}>
+                  <Text style={[styles.periodOptionText, selectedPeriod === period && styles.periodOptionTextActive]}>{periodLabels[period]}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+            {selectedTotals ? <View style={styles.periodMetrics}>
+              {[
+                { label: 'Income', value: selectedTotals?.income, color: TEAL },
+                { label: 'Expenses', value: selectedTotals?.expense, color: RED },
+                { label: 'Net', value: selectedTotals?.net, color: Number(selectedTotals?.net || 0) < 0 ? RED : DEEP_GREEN },
+              ].map((metric) => (
+                <View key={metric.label} style={styles.periodMetric}>
+                  <Text style={styles.periodMetricLabel}>{metric.label}</Text>
+                  <Text style={[styles.periodMetricValue, { color: metric.color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{peso(metric.value)}</Text>
+                </View>
+              ))}
+            </View> : <Text style={styles.periodHint}>Period totals are unavailable. Refresh the planning analysis to load current figures.</Text>}
+            {selectedTotals && selectedPeriod !== 'day' && chartPoints.length > 0 && hasPeriodActivity ? (
+              <>
+                <View style={styles.chartArea}>
+                  {chartPoints.map((point, index) => (
+                    <View key={`${point.label}-${index}`} style={styles.chartColumn}>
+                      <View style={styles.chartBars}>
+                        <View style={[styles.chartBar, { height: `${point.income > 0 ? Math.max(3, (Number(point.income || 0) / chartMax) * 100) : 0}%`, backgroundColor: TEAL }]} />
+                        <View style={[styles.chartBar, { height: `${point.expense > 0 ? Math.max(3, (Number(point.expense || 0) / chartMax) * 100) : 0}%`, backgroundColor: RED }]} />
+                      </View>
+                      <Text style={styles.chartLabel} numberOfLines={1}>{point.label}</Text>
+                    </View>
+                  ))}
+                </View>
+                <View style={styles.chartLegend}>
+                  <Text style={styles.chartLegendItem}><Text style={{ color: TEAL }}>●</Text> Income</Text>
+                  <Text style={styles.chartLegendItem}><Text style={{ color: RED }}>●</Text> Expenses</Text>
+                </View>
+              </>
+            ) : (
+              <Text style={styles.periodHint}>{selectedPeriod === 'day' ? 'Today’s recorded totals are shown above.' : hasPeriodActivity ? 'There is no chart data for this period yet.' : `No income or expenses have been recorded for this ${periodLabels[selectedPeriod].toLowerCase()} yet.`}</Text>
+            )}
+            {periodBudgets.length > 0 && (
+              <View style={styles.periodBudgetBlock}>
+                <Text style={styles.periodBudgetHeading}>{periodLabels[selectedPeriod]} budget outlook</Text>
+                {periodBudgets.map((budget, index) => (
+                  <View key={`${budget.category}-${index}`} style={styles.periodBudgetRow}>
+                    <View style={styles.periodBudgetCopy}>
+                      <Text style={styles.periodBudgetName} numberOfLines={1}>{budget.category}</Text>
+                      <Text style={styles.periodBudgetMeta}>{peso(budget.spent)} of {peso(budget.limit)} · projected {peso(budget.projected_period_end_spend)}</Text>
+                    </View>
+                    <Ionicons name={budget.forecast_over_limit ? 'warning' : 'checkmark-circle'} size={19} color={budget.forecast_over_limit ? RED : TEAL} />
+                  </View>
+                ))}
+              </View>
+            )}
+            {data.metrics?.history_truncated && (
+              <Text style={styles.coverageNote}>Some older records may be omitted from these totals and comparisons.</Text>
+            )}
+            <TouchableOpacity style={styles.insightsLink} onPress={onViewInsights} accessibilityRole="button">
+              <Text style={styles.insightsLinkText}>Explore detailed Insights</Text>
+              <Ionicons name="arrow-forward" size={16} color={TEAL} />
+            </TouchableOpacity>
+          </View>
+
+          {data.long_term_outlook?.available && data.long_term_outlook.scenarios && <View style={styles.longTermCard}>
             <View style={styles.longTermHeader}>
               <View style={styles.longTermIcon}><Ionicons name="calendar-outline" size={19} color={TEAL} /></View>
               <View style={{ flex: 1 }}>
@@ -192,12 +277,12 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             ) : (
               <Text style={styles.longTermNote}>Record activity in at least 3 completed months to see scenarios. Missing months are not assumed to have zero income or expenses.</Text>
             )}
-          </View>
+          </View>}
 
           <View style={styles.sectionHeading}>
             <View>
               <Text style={styles.sectionTitle}>Recommendations</Text>
-              <Text style={styles.sectionSubtitle}>{data.recommendation_source === 'ai' ? 'Gemini recommendations grounded in your calculated figures' : 'Evidence first, then a practical next step'}</Text>
+              <Text style={styles.sectionSubtitle}>Overall guidance across budgets, spending, and goals</Text>
             </View>
             <View style={styles.countBadge}><Text style={styles.countText}>{data.recommendations?.length || 0}</Text></View>
           </View>
@@ -239,6 +324,7 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                     <Text style={[styles.priorityText, isHigh && styles.priorityTextHigh]}>{isHigh ? 'WATCH' : item.kind.startsWith('goal_') ? 'GOAL' : 'PLAN'}</Text>
                   </View>
                 </View>
+                <Text style={styles.recommendationScope}>{item.kind.startsWith('goal_') ? 'Goal planning' : item.evidence?.period ? `${item.evidence.period} budget` : item.kind === 'long_term_cash_flow' ? 'Long-term pattern' : 'Overall planning'}</Text>
 
                 {facts.length > 0 && (
                   <View style={styles.evidenceGrid}>
@@ -276,6 +362,34 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             );
           })}
 
+          {!!data.goal_plans?.length && (
+            <>
+              <View style={[styles.sectionHeading, { marginTop: 6 }]}>
+                <View>
+                  <Text style={styles.sectionTitle}>Goal progress</Text>
+                  <Text style={styles.sectionSubtitle}>Suggested pace is an estimate; check it against your budget.</Text>
+                </View>
+              </View>
+              {data.goal_plans.map((goal, index) => {
+                const progress = goal.goal > 0 ? Math.min(100, Math.max(0, (goal.saved / goal.goal) * 100)) : 0;
+                return (
+                  <View key={`${goal.target}-${index}`} style={styles.goalCard}>
+                    <View style={styles.goalTopRow}>
+                      <View style={styles.goalIcon}><Ionicons name="flag-outline" size={18} color={TEAL} /></View>
+                      <View style={styles.goalCopy}>
+                        <Text style={styles.goalTitle} numberOfLines={1}>{goal.target}</Text>
+                        <Text style={styles.goalAmount}>{peso(goal.saved)} saved of {peso(goal.goal)}</Text>
+                      </View>
+                      <Text style={styles.goalPercent}>{progress.toFixed(0)}%</Text>
+                    </View>
+                    <View style={styles.goalTrack}><View style={[styles.goalFill, { width: `${progress}%` }]} /></View>
+                    <Text style={styles.goalPace}>{goal.suggested_monthly_saving != null ? `Suggested pace: ${peso(goal.suggested_monthly_saving)} per month` : `${peso(goal.remaining)} remaining · review the target date`}</Text>
+                  </View>
+                );
+              })}
+            </>
+          )}
+
           <View style={styles.disclosureCard}>
             <Ionicons name="information-circle-outline" size={16} color={SAGE} />
             <Text style={styles.disclosureText}>Gemini uses a summary of your financial records. Forecasts are estimates and may miss unrecorded activity.</Text>
@@ -309,6 +423,36 @@ const styles = StyleSheet.create({
   sourceBadge: { backgroundColor: 'rgba(61,125,108,0.1)', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
   sourceBadgeText: { color: TEAL, fontSize: 9, fontWeight: '900', letterSpacing: 0.4 },
   summaryText: { color: DEEP_GREEN, fontSize: 14, lineHeight: 21, marginTop: 13 },
+  periodCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 18, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
+  periodHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  periodTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: '900' },
+  periodCaption: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 3 },
+  periodSelector: { flexDirection: 'row', backgroundColor: CREAM, padding: 4, borderRadius: 13, marginTop: 14 },
+  periodOption: { flex: 1, alignItems: 'center', paddingVertical: 9, borderRadius: 10 },
+  periodOptionActive: { backgroundColor: DEEP_GREEN },
+  periodOptionText: { color: SAGE, fontSize: 12, fontWeight: '800' },
+  periodOptionTextActive: { color: '#FFFFFF' },
+  periodMetrics: { flexDirection: 'row', gap: 8, marginTop: 13 },
+  periodMetric: { flex: 1, minWidth: 0, padding: 10, borderRadius: 12, backgroundColor: CREAM },
+  periodMetricLabel: { color: SAGE, fontSize: 10, fontWeight: '700' },
+  periodMetricValue: { fontSize: 14, fontWeight: '900', marginTop: 5 },
+  chartArea: { height: 115, flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-around', paddingTop: 12, marginTop: 12, borderBottomWidth: 1, borderBottomColor: TRACK },
+  chartColumn: { flex: 1, alignItems: 'center', height: '100%', minWidth: 0 },
+  chartBars: { flex: 1, flexDirection: 'row', alignItems: 'flex-end', gap: 3 },
+  chartBar: { width: 7, minHeight: 0, borderTopLeftRadius: 4, borderTopRightRadius: 4 },
+  chartLabel: { color: SAGE, fontSize: 9, marginTop: 5, marginBottom: 3 },
+  chartLegend: { flexDirection: 'row', justifyContent: 'center', gap: 18, marginTop: 9 },
+  chartLegendItem: { color: SAGE, fontSize: 10, fontWeight: '700' },
+  periodHint: { color: SAGE, fontSize: 11, lineHeight: 16, marginTop: 12 },
+  coverageNote: { color: AMBER, fontSize: 10, lineHeight: 15, fontWeight: '700', marginTop: 10 },
+  periodBudgetBlock: { borderTopWidth: 1, borderTopColor: TRACK, marginTop: 14, paddingTop: 12 },
+  periodBudgetHeading: { color: DEEP_GREEN, fontSize: 13, fontWeight: '900', marginBottom: 6 },
+  periodBudgetRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
+  periodBudgetCopy: { flex: 1, minWidth: 0 },
+  periodBudgetName: { color: DEEP_GREEN, fontSize: 12, fontWeight: '800' },
+  periodBudgetMeta: { color: SAGE, fontSize: 10, marginTop: 3 },
+  insightsLink: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, borderTopWidth: 1, borderTopColor: TRACK, paddingTop: 12, marginTop: 13 },
+  insightsLinkText: { color: TEAL, fontSize: 12, fontWeight: '800' },
   longTermCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 17, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
   longTermHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   longTermIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: 'rgba(61,125,108,0.1)', alignItems: 'center', justifyContent: 'center' },
@@ -331,6 +475,17 @@ const styles = StyleSheet.create({
   recommendationHeading: { flex: 1, minWidth: 0 },
   recommendationTitle: { color: DEEP_GREEN, fontSize: 15, lineHeight: 20, fontWeight: '900' },
   recommendationMessage: { color: SAGE, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  recommendationScope: { color: TEAL, fontSize: 10, fontWeight: '800', marginTop: 7 },
+  goalCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 15, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
+  goalTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  goalIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(61,125,108,0.1)' },
+  goalCopy: { flex: 1, minWidth: 0 },
+  goalTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900' },
+  goalAmount: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 3 },
+  goalPercent: { color: TEAL, fontSize: 14, fontWeight: '900' },
+  goalTrack: { height: 9, backgroundColor: TRACK, borderRadius: 5, overflow: 'hidden', marginTop: 12 },
+  goalFill: { height: '100%', backgroundColor: TEAL, borderRadius: 5 },
+  goalPace: { color: SAGE, fontSize: 11, fontWeight: '700', marginTop: 8 },
   priorityBadge: { backgroundColor: 'rgba(237,178,50,0.18)', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 9 },
   priorityBadgeHigh: { backgroundColor: 'rgba(255,98,89,0.13)' },
   priorityText: { color: AMBER, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },

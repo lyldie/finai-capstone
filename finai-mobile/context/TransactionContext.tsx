@@ -11,8 +11,8 @@ export type Category = { id: string; name: string; type: string; icon: string; }
 export type GoalTypePreset = { id: string; name: string; icon?: string };
 export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
-export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; };
-export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string };
+export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; advisor_conversation_id?: string };
+export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string; advisorConversationId?: string };
 
 const transactionRequestError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => ({}));

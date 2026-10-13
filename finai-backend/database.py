@@ -41,3 +41,29 @@ async def ensure_indexes():
     # Keeps date-range analytics (dashboard and advisor) scoped to one user's
     # non-archived transaction history instead of scanning the entire collection.
     await db.expenses.create_index([("user_id", 1), ("is_archived", 1), ("date", 1)])
+
+    # Advisor threads are one per user and topic; messages remain separately
+    # addressable so the inbox can load previews without reading full histories.
+    await db.advisor_conversations.create_index(
+        [("user_id", 1), ("topic", 1)], unique=True,
+    )
+    await db.advisor_messages.create_index(
+        [("user_id", 1), ("conversation_id", 1), ("created_at", 1)],
+    )
+    await db.advisor_messages.create_index(
+        [("user_id", 1), ("created_at", -1)],
+    )
+    # A sparse compound index still includes ordinary chat messages because
+    # user_id is always present. Restrict uniqueness to messages with a string
+    # event_key so many conversational messages can omit that field.
+    event_index_name = "user_id_1_event_key_1"
+    event_index_filter = {"event_key": {"$type": "string"}}
+    existing_event_index = (await db.advisor_messages.index_information()).get(event_index_name)
+    if existing_event_index and existing_event_index.get("partialFilterExpression") != event_index_filter:
+        await db.advisor_messages.drop_index(event_index_name)
+    await db.advisor_messages.create_index(
+        [("user_id", 1), ("event_key", 1)],
+        unique=True,
+        partialFilterExpression=event_index_filter,
+        name=event_index_name,
+    )

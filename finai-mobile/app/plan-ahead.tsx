@@ -76,6 +76,7 @@ export default function PlanAheadScreen() {
           error={error}
           onRefresh={() => setRefreshKey((value) => value + 1)}
           onAskFinAI={() => router.push('/chat' as never)}
+          onViewInsights={() => router.push('/(tabs)/insights' as never)}
         />
       </ScrollView>
     </SafeAreaView>
