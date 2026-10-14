@@ -32,6 +32,13 @@ from auth import create_access_token, get_current_user
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export
 from services.budget_service import create_crossed_threshold_notifications, ph_today
+from services.gemini_service import (
+    GEMINI_BACKUP_MODEL,
+    GEMINI_PRIMARY_MODEL,
+    InvalidModelOutputError,
+    generate_content_with_fallback,
+    validate_json_response,
+)
 
 app = FastAPI(title="FinAi Backend", version="1.0")
 
@@ -101,8 +108,8 @@ try:
 except (TypeError, ValueError):
     GEMINI_OCR_TIMEOUT_SECONDS = 10.0
 
-# A single SDK attempt plus a network timeout keeps quota retries from making
-# the receipt endpoint wait much longer than its configured deadline.
+# One SDK attempt per model lets the shared fallback decide whether to switch
+# models instead of spending the deadline on hidden SDK retries.
 ai_client = genai.Client(
     api_key=GEMINI_API_KEY,
     http_options=types.HttpOptions(
@@ -896,9 +903,16 @@ def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories:
     }
 
 
+def _validate_receipt_response(response) -> None:
+    receipt = validate_json_response(response)
+    expected_fields = {"amount", "merchant", "date", "category"}
+    if not expected_fields.issubset(receipt):
+        raise InvalidModelOutputError("Gemini receipt response omitted expected fields")
+
+
 def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
     """Vision extractor. Fields it cannot visibly read must remain null."""
-    print("[OCR] Running Gemini 3.6 Flash vision extraction.")
+    print(f"[OCR] Running Gemini primary model {GEMINI_PRIMARY_MODEL}; backup is {GEMINI_BACKUP_MODEL}.")
 
     if not ai_client:
         raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
@@ -924,11 +938,14 @@ def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories:
     for img_bytes in images_bytes_list:
         contents_payload.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
-    response = ai_client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=contents_payload,
-        config=types.GenerateContentConfig(response_mime_type="application/json")
+    response, model_used = generate_content_with_fallback(
+        ai_client,
+        contents_payload,
+        types.GenerateContentConfig(response_mime_type="application/json"),
+        validate=_validate_receipt_response,
+        operation="receipt_ocr",
     )
+    print(f"[OCR] Receipt fields generated with {model_used}.")
 
     raw_response = response.text.strip()
     raw_response = re.sub(r"```json\s*|\s*```", "", raw_response)
@@ -1307,10 +1324,10 @@ async def ocr_scan(
         try:
             gemini_result = await asyncio.wait_for(
                 asyncio.to_thread(gemini_extract_receipt, processed_images_bytes, user_categories),
-                timeout=GEMINI_OCR_TIMEOUT_SECONDS + 0.5,
+                timeout=(GEMINI_OCR_TIMEOUT_SECONDS * 2) + 0.5,
             )
         except asyncio.TimeoutError:
-            print(f"[OCR] Gemini request exceeded the {GEMINI_OCR_TIMEOUT_SECONDS:g}s deadline.")
+            print(f"[OCR] Primary and backup model attempts exceeded the {(GEMINI_OCR_TIMEOUT_SECONDS * 2) + 0.5:g}s deadline.")
             raise HTTPException(
                 status_code=504,
                 detail="Receipt scanning took too long. Please retry or enter the details manually.",

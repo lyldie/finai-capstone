@@ -5,6 +5,8 @@ import asyncio
 import json
 import os
 import re
+import time
+import uuid
 from typing import List, Literal, Optional
 
 from bson import ObjectId
@@ -16,6 +18,11 @@ from pydantic import BaseModel, Field
 from auth import get_current_user
 from database import db
 from services.budget_service import list_budget_usage, ph_today
+from services.gemini_service import (
+    InvalidModelOutputError,
+    generate_content_with_fallback,
+    validate_json_response,
+)
 
 
 class ChatHistoryItem(BaseModel):
@@ -40,7 +47,15 @@ class ConversationMessageCreate(BaseModel):
 
 router = APIRouter(prefix="/advisor", tags=["AI Advisor"])
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+GEMINI_ATTEMPT_TIMEOUT_MS = 10000
+GEMINI_TOTAL_TIMEOUT_SECONDS = 21
+ai_client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(
+        timeout=GEMINI_ATTEMPT_TIMEOUT_MS,
+        retry_options=types.HttpRetryOptions(attempts=1),
+    ),
+) if GEMINI_API_KEY else None
 MAX_HISTORY_TURNS = 10
 MAX_DAILY_CATEGORY_BUCKETS = 20000
 TOPIC_TITLES = {
@@ -60,6 +75,12 @@ _GREETING_PATTERN = re.compile(r"^(hi|hello|hey|good morning|good afternoon|good
 _CONTEXTUAL_FOLLOW_UP_PATTERN = re.compile(r"^(and\b|what about\b|how about\b|what if\b|then\b|it\b|that\b|this\b)", re.IGNORECASE)
 
 
+def _validate_planning_response(response) -> None:
+    result = validate_json_response(response)
+    if not isinstance(result.get("overview"), str) or not isinstance(result.get("recommendations"), list):
+        raise InvalidModelOutputError("Gemini planning response did not match the expected shape")
+
+
 def _is_in_advisor_scope(message: str, history: Optional[List[ChatHistoryItem]], topic: str = "general") -> bool:
     """Conservatively keep general-knowledge requests out of the finance advisor."""
     text = message.strip()
@@ -74,6 +95,68 @@ def _is_in_advisor_scope(message: str, history: Optional[List[ChatHistoryItem]],
     return False
 
 
+def _contextual_thread_title(topic: str, sender: str, text: str, event_key: Optional[str] = None) -> Optional[str]:
+    """Create a short first-message title without another model request."""
+    if sender == "ai" and event_key and event_key.startswith("checkin:"):
+        return None
+    if sender == "user":
+        candidate = re.sub(r"^Please explain this Plan Ahead finding:\s*", "", text.strip(), flags=re.IGNORECASE)
+        if _GREETING_PATTERN.fullmatch(candidate):
+            return None
+        candidate = re.split(r"[.!?\n]", candidate, maxsplit=1)[0]
+        words = candidate.split()
+        candidate = " ".join(words[:7]).strip(" ,:;-?")
+        if len(candidate) > 42:
+            candidate = candidate[:42].rsplit(" ", 1)[0]
+        return candidate[:1].upper() + candidate[1:] if candidate else None
+
+    candidate = re.split(r"[.!?\n]", text.strip(), maxsplit=1)[0]
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+    prefix = {"budget": "Budget", "goals": "Savings goals", "general": "FinAI"}.get(topic, "FinAI")
+    if candidate:
+        candidate = candidate[:32].rsplit(" ", 1)[0]
+        return f"{prefix}: {candidate}"[:48]
+    return None
+
+
+async def _set_contextual_title_if_needed(user_id: str, conversation: dict) -> None:
+    topic = conversation.get("topic", "general")
+    default_title = TOPIC_TITLES.get(topic, TOPIC_TITLES["general"])
+    if conversation.get("title", default_title) != default_title or conversation.get("title_contextual"):
+        return
+    first_meaningful = await db.advisor_messages.find_one(
+        {
+            "user_id": user_id,
+            "conversation_id": str(conversation["_id"]),
+            "$or": [
+                {"sender": "user"},
+                {"event_key": {"$exists": True, "$not": {"$regex": "^checkin:"}}},
+            ],
+        },
+        sort=[("created_at", 1), ("_id", 1)],
+    )
+    if not first_meaningful:
+        return
+    title = _contextual_thread_title(
+        topic,
+        first_meaningful.get("sender", "ai"),
+        str(first_meaningful.get("text", "")),
+        first_meaningful.get("event_key"),
+    )
+    if not title:
+        return
+    result = await db.advisor_conversations.update_one(
+        {
+            "_id": conversation["_id"], "user_id": user_id,
+            "title": default_title, "title_contextual": {"$ne": True},
+        },
+        {"$set": {"title": title, "title_contextual": True}},
+    )
+    if result.modified_count:
+        conversation["title"] = title
+        conversation["title_contextual"] = True
+
+
 async def _get_or_create_conversation(user_id: str, topic: str) -> dict:
     now = datetime.now(timezone.utc)
     await db.advisor_conversations.update_one(
@@ -82,6 +165,7 @@ async def _get_or_create_conversation(user_id: str, topic: str) -> dict:
             "user_id": user_id,
             "topic": topic,
             "title": TOPIC_TITLES[topic],
+            "title_contextual": False,
             "created_at": now,
             "updated_at": now,
             "last_message": "",
@@ -119,6 +203,7 @@ async def _save_thread_message(
         {"_id": conversation["_id"], "user_id": user_id},
         {"$set": {"last_message": text[:180], "last_message_at": now, "updated_at": now}},
     )
+    await _set_contextual_title_if_needed(user_id, conversation)
     message["id"] = str(result.inserted_id)
     message.pop("_id", None)
     return message
@@ -141,12 +226,13 @@ async def _enhance_proactive_message(
             "invent facts, or claim certainty. Keep it under 65 words.\n"
             + json.dumps(context, ensure_ascii=False)
         )
-        response = await asyncio.wait_for(asyncio.to_thread(
-            ai_client.models.generate_content,
-            model="gemini-3.6-flash",
-            contents=[types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
-            config=types.GenerateContentConfig(temperature=0.25),
-        ), timeout=8)
+        response, _model = await asyncio.wait_for(asyncio.to_thread(
+            generate_content_with_fallback,
+            ai_client,
+            [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])],
+            types.GenerateContentConfig(temperature=0.25),
+            operation="proactive_insight",
+        ), timeout=GEMINI_TOTAL_TIMEOUT_SECONDS)
         text = (response.text or "").strip()
         if text:
             now = datetime.now(timezone.utc)
@@ -185,22 +271,83 @@ async def _queue_proactive_message(user_id: str, topic: str, event_key: str, con
 
 async def queue_proactive_budget_message(user_id: str, notification: dict) -> Optional[str]:
     threshold = int(notification.get("threshold", 0) or 0)
-    if threshold < 90:
+    period_type = str(notification.get("period_type") or "").lower()
+    period_key = str(notification.get("period_key") or "")
+    if threshold < 70:
         return None
+
+    try:
+        if period_type == "weekly":
+            year, week = (int(part) for part in period_key.split("-W", 1))
+            period_start = date.fromisocalendar(year, week, 1)
+            period_end = period_start + timedelta(days=6)
+        elif period_type == "monthly":
+            period_start = date.fromisoformat(f"{period_key}-01")
+            next_month = (period_start.replace(day=28) + timedelta(days=4)).replace(day=1)
+            period_end = next_month - timedelta(days=1)
+        elif period_type == "annual":
+            year = int(period_key)
+            period_start = date(year, 1, 1)
+            period_end = date(year, 12, 31)
+        else:
+            return None
+        period_days = (period_end - period_start).days + 1
+        elapsed_days = min(period_days, max(1, (ph_today() - period_start).days + 1))
+        days_remaining = max(0, (period_end - ph_today()).days)
+    except (TypeError, ValueError):
+        return None
+
+    early_budget_pace = elapsed_days <= period_days / 2
+    # Threshold toasts/emails cover every milestone. Chat adds one timely
+    # near-limit note per budget period, plus one escalation only after breach.
+    if threshold == 70 and not early_budget_pace:
+        return None
+    if threshold not in {70, 90, 100, 101}:
+        return None
+
+    budget_id = notification.get("budget_id") or "unknown"
     event_key = (
-        f"budget:{notification.get('budget_id')}:{notification.get('period_key')}:{threshold}"
+        f"budget_over:{budget_id}:{period_key}"
+        if threshold == 101 else
+        f"budget_advice:{budget_id}:{period_key}"
     )
     fallback = str(notification.get("message") or "A budget is close to its limit. Review the current period's spending when convenient.")
     context = {
-        "type": "budget_threshold",
+        "type": "budget_over_limit" if threshold == 101 else "early_budget_pace" if early_budget_pace else "budget_near_limit",
         "category": notification.get("category_name") or notification.get("category") or "A budget category",
-        "period": notification.get("period_type"),
+        "period": period_type,
         "spent": notification.get("spent"),
         "available_limit": notification.get("available_limit"),
         "percentage_used": notification.get("percentage_used"),
         "threshold": threshold,
-        "period_key": notification.get("period_key"),
+        "days_elapsed": elapsed_days,
+        "days_remaining": days_remaining,
+        "period_key": period_key,
+        "caveat": "A high early percentage may reflect one larger purchase; do not infer its cause or tell the user to stop spending.",
     }
+    if threshold == 101:
+        overspent = max(
+            float(notification.get("spent", 0) or 0)
+            - float(notification.get("available_limit", 0) or 0), 0.0,
+        )
+        fallback = (
+            f"{context['category']} is over its {period_type} limit by PHP {overspent:,.2f} based on recorded spending. "
+            "The limit is a planning reference; review the transactions and any remaining expenses for this period."
+        )
+    elif early_budget_pace:
+        remaining = max(float(notification.get("available_limit", 0) or 0) - float(notification.get("spent", 0) or 0), 0.0)
+        fallback = (
+            f"{context['category']} has used {float(notification.get('percentage_used', threshold) or threshold):.0f}% of its "
+            f"{period_type} budget with {days_remaining} days remaining. About PHP {remaining:,.2f} remains. "
+            "This is an early heads-up, not a judgment about the purchase. If useful, review any expenses you still expect this period."
+        )
+    else:
+        remaining = max(float(notification.get("available_limit", 0) or 0) - float(notification.get("spent", 0) or 0), 0.0)
+        fallback = (
+            f"{context['category']} has used {float(notification.get('percentage_used', threshold) or threshold):.0f}% of its "
+            f"{period_type} limit. About PHP {remaining:,.2f} remains for {days_remaining} days. "
+            "If useful, check upcoming expenses and your recorded transactions."
+        )
     return await _queue_proactive_message(user_id, "budget", event_key, context, fallback)
 
 
@@ -234,7 +381,9 @@ async def evaluate_proactive_financial_signals(user_id: str, category_id: Option
     now = datetime.now(timezone.utc)
     recent_signal = await db.advisor_messages.find_one({
         "user_id": user_id,
-        "event_key": {"$regex": "^signal:"},
+        # A threshold/early-pace message already gives context about the active
+        # budget event; do not stack a second forecast or pattern message on it.
+        "event_key": {"$regex": "^(signal:|budget)"},
         "created_at": {"$gte": now - timedelta(days=7)},
     })
     if recent_signal:
@@ -344,10 +493,11 @@ async def evaluate_proactive_financial_signals(user_id: str, category_id: Option
                 category_name = str(group.get("category") or "Uncategorized")
                 category_key = str(group.get("category_id") or f"legacy:{category_name}")
                 current_categories[category_key] = (category_name, current_categories.get(category_key, (category_name, 0.0))[1] + amount)
-        elif previous_month_start <= record_date <= previous_comparable_end and kind == "expense":
-            category_name = str(group.get("category") or "Uncategorized")
-            category_key = str(group.get("category_id") or f"legacy:{category_name}")
-            previous_categories[category_key] = (category_name, previous_categories.get(category_key, (category_name, 0.0))[1] + amount)
+        elif previous_month_start <= record_date <= previous_comparable_end:
+            if kind == "expense":
+                category_name = str(group.get("category") or "Uncategorized")
+                category_key = str(group.get("category_id") or f"legacy:{category_name}")
+                previous_categories[category_key] = (category_name, previous_categories.get(category_key, (category_name, 0.0))[1] + amount)
 
     # A cash-flow warning needs recorded income, a negative month-to-date net,
     # and activity on multiple dates. The message explicitly says records may be
@@ -369,6 +519,34 @@ async def evaluate_proactive_financial_signals(user_id: str, category_id: Option
             f"PHP {month_income:,.2f} in recorded income. That puts recorded cash flow at "
             f"PHP {month_income - month_expense:,.2f}. The records may be incomplete, so this is a prompt "
             "to review upcoming expenses and savings plans—not a conclusion about your overall finances."
+        )
+        await _queue_proactive_message(user_id, "budget", event_key, context, fallback)
+        return
+
+    # If a deficit signal was already sent this month, acknowledge when the
+    # recorded month-to-date balance later moves back above zero. This is based
+    # on records only, and shares the same weekly message cooldown as other signals.
+    period_key = today.strftime("%Y-%m")
+    prior_deficit = await db.advisor_messages.find_one({
+        "user_id": user_id,
+        "event_key": f"signal:cashflow_deficit:{period_key}",
+    })
+    if prior_deficit and len(active_days) >= 3 and month_income > 0 and month_income > month_expense:
+        event_key = f"signal:cashflow_recovery:{period_key}"
+        current_net = month_income - month_expense
+        context = {
+            "type": "recorded_month_to_date_cash_flow_recovery",
+            "period": period_key,
+            "recorded_income": round(month_income, 2),
+            "recorded_expenses": round(month_expense, 2),
+            "recorded_net": round(current_net, 2),
+            "previous_deficit_message_id": str(prior_deficit.get("_id", "")),
+            "caveat": "This describes recorded activity only and may not include every income or expense.",
+        }
+        fallback = (
+            f"Your recorded income is now PHP {current_net:,.2f} above recorded expenses for this month. "
+            "That is an improvement in the recorded cash-flow picture since the earlier check. Records may be incomplete, "
+            "so review upcoming expenses before treating this as a full picture."
         )
         await _queue_proactive_message(user_id, "budget", event_key, context, fallback)
         return
@@ -410,6 +588,7 @@ async def list_advisor_conversations(current_user: dict = Depends(get_current_us
         {"user_id": current_user["id"]}
     ).sort([("updated_at", -1), ("_id", -1)]).to_list(length=50)
     for item in conversations:
+        await _set_contextual_title_if_needed(current_user["id"], item)
         item["id"] = str(item.pop("_id"))
     return conversations
 
@@ -440,6 +619,7 @@ async def list_advisor_messages(
     )
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found.")
+    await _set_contextual_title_if_needed(user_id, conversation)
     messages = await db.advisor_messages.find(
         {"user_id": user_id, "conversation_id": conversation_id}
     ).sort([("created_at", 1), ("_id", 1)]).to_list(length=limit)
@@ -464,15 +644,31 @@ async def create_advisor_check_in(
     if not conversation:
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
-    day_key = ph_today().isoformat()
-    event_key = f"checkin:{conversation_id}:{day_key}"
+    today = ph_today()
+    week_start = today - timedelta(days=today.weekday())
+    event_key = f"checkin:{week_start.isoformat()}"
     existing = await db.advisor_messages.find_one({"user_id": user_id, "event_key": event_key})
     if existing:
-        existing["id"] = str(existing.pop("_id"))
-        return {"created": False, "message": existing}
+        # A user's weekly check-in belongs to the thread that received it.
+        # Do not surface the same saved message in a different topic thread.
+        if existing.get("conversation_id") == conversation_id:
+            existing["id"] = str(existing.pop("_id"))
+            return {"created": False, "message": existing}
+        return {"created": False, "message": None}
 
-    # A recent conversation or another proactive alert already gives the user
-    # fresh context. Avoid interrupting an active chat with a second opener.
+    # Keep periodic guidance useful rather than repetitive: at most one
+    # planning check-in per user in a rolling week, and only when a thread is
+    # inactive enough to benefit from an opener.
+    recent_check_in = await db.advisor_messages.find_one({
+        "user_id": user_id,
+        "event_key": {"$regex": "^checkin:"},
+        "created_at": {"$gte": datetime.now(timezone.utc) - timedelta(days=7)},
+    })
+    if recent_check_in:
+        return {"created": False, "message": None}
+
+    # A recent conversation already gives the user fresh context. Avoid
+    # interrupting an active chat with another opener.
     recent = await db.advisor_messages.find_one(
         {
             "user_id": user_id,
@@ -523,9 +719,11 @@ async def create_advisor_check_in(
     except Exception as exc:
         if exc.__class__.__name__ in {"DuplicateKeyError", "BulkWriteError"}:
             existing = await db.advisor_messages.find_one({"user_id": user_id, "event_key": event_key})
-            if existing:
+            if existing and existing.get("conversation_id") == conversation_id:
                 existing["id"] = str(existing.pop("_id"))
                 return {"created": False, "message": existing}
+            if existing:
+                return {"created": False, "message": None}
         raise
     return {"created": True, "message": saved}
 
@@ -1106,12 +1304,13 @@ Guidance rules:
     try:
         if not ai_client:
             raise RuntimeError("Gemini is not configured")
-        response = await asyncio.wait_for(asyncio.to_thread(
-            ai_client.models.generate_content,
-            model="gemini-3.6-flash",
-            contents=contents,
-            config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.35),
-        ), timeout=12)
+        response, _model = await asyncio.wait_for(asyncio.to_thread(
+            generate_content_with_fallback,
+            ai_client,
+            contents,
+            types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.35),
+            operation="advisor_chat",
+        ), timeout=GEMINI_TOTAL_TIMEOUT_SECONDS)
         reply = (response.text or "").strip()
         if not reply:
             raise RuntimeError("The model returned an empty response")
@@ -1139,6 +1338,7 @@ Guidance rules:
 @router.get("/planning")
 async def get_automatic_planning(current_user: dict = Depends(get_current_user)):
     """Return an automatically generated, user-scoped planning snapshot."""
+    planning_build_started_at = time.perf_counter()
     user_id = current_user["id"]
     today = ph_today()
     today_key = today.isoformat()
@@ -1499,11 +1699,22 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             ],
             "evidence_catalog": evidence_catalog,
         }
+        prompt_json = json.dumps(prompt_data, ensure_ascii=False, separators=(",", ":"))
+        plan_call_id = uuid.uuid4().hex[:8]
+        print(
+            f"[Gemini][plan_ahead:{plan_call_id}] input metrics: "
+            f"json_bytes={len(prompt_json.encode('utf-8'))}, "
+            f"daily_days={len(daily)}, budgets={len(budget_forecasts)}, goals={len(goal_plans)}, "
+            f"category_comparisons={len(category_names)}, evidence_items={len(evidence_catalog)}, "
+            f"history_truncated={history_truncated}, "
+            f"aggregation_ms={round((time.perf_counter() - planning_build_started_at) * 1000)}."
+        )
+        planning_started_at = time.perf_counter()
         try:
-            response = await asyncio.wait_for(asyncio.to_thread(
-                ai_client.models.generate_content,
-                model="gemini-3.6-flash",
-                contents=[types.Content(role="user", parts=[types.Part.from_text(text=(
+            response, _model = await asyncio.wait_for(asyncio.to_thread(
+                generate_content_with_fallback,
+                ai_client,
+                [types.Content(role="user", parts=[types.Part.from_text(text=(
                     "You are the primary pattern analyst for FinAI, a personal budgeting and savings "
                     "planning feature. Analyze the aggregated metrics, active budget forecasts, goal "
                     "paces, same-period category comparisons, and (when available) 12-month cash-flow "
@@ -1527,13 +1738,19 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                     "JSON only with this shape: {overview: string, "
                     "recommendations: [{evidence_id: string, priority: high|medium|goal, title: string, "
                     "message: string, actions: string[1..2], context_question?: string|null}]}. JSON data: "
-                    + json.dumps(prompt_data, ensure_ascii=False)
+                    + prompt_json
                 ))])],
-                config=types.GenerateContentConfig(
+                types.GenerateContentConfig(
                     temperature=0.2,
                     response_mime_type="application/json",
                 ),
-            ), timeout=12)
+                validate=_validate_planning_response,
+                operation=f"plan_ahead:{plan_call_id}",
+            ), timeout=GEMINI_TOTAL_TIMEOUT_SECONDS)
+            print(
+                f"[Gemini][plan_ahead:{plan_call_id}] request completed in "
+                f"{round((time.perf_counter() - planning_started_at) * 1000)}ms."
+            )
             generated = (response.text or "").strip()
             if generated:
                 result = json.loads(generated)
@@ -1578,7 +1795,12 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                         recommendation_source = "ai"
                         summary_source = "ai"
         except Exception as exc:
-            print(f"Automatic planning analysis unavailable: {exc}")
+            print(
+                f"[Gemini][plan_ahead:{plan_call_id}] analysis unavailable after "
+                f"{round((time.perf_counter() - planning_started_at) * 1000)}ms "
+                f"(error={type(exc).__name__}, code="
+                f"{getattr(exc, 'code', None) or getattr(exc, 'status_code', None) or 'n/a'})."
+            )
 
     return {
         "status": "Success",
