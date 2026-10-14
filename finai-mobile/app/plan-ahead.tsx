@@ -1,5 +1,5 @@
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -18,6 +18,26 @@ export default function PlanAheadScreen() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [openingAdvisor, setOpeningAdvisor] = useState(false);
+
+  const openFinnChat = async (topic: 'general' | 'budget' | 'goals', prompt: string) => {
+    if (!user?.token || openingAdvisor) return;
+    setOpeningAdvisor(true);
+    try {
+      const response = await fetch(`${API_URL}/advisor/conversations`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user.token}` },
+        body: JSON.stringify({ topic }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.detail || 'Could not open Finn’s conversation.');
+      router.push({ pathname: '/chat', params: { conversation_id: payload.id, prefill: prompt } });
+    } catch (error) {
+      Alert.alert('Couldn’t open Finn', error instanceof Error ? error.message : 'Check your connection and try again.');
+    } finally {
+      setOpeningAdvisor(false);
+    }
+  };
 
   useFocusEffect(useCallback(() => {
     if (!user?.token) {
@@ -75,7 +95,7 @@ export default function PlanAheadScreen() {
           loading={loading}
           error={error}
           onRefresh={() => setRefreshKey((value) => value + 1)}
-          onAskFinAI={() => router.push('/chat' as never)}
+          onAskFinAI={openFinnChat}
           onViewInsights={() => router.push('/(tabs)/insights' as never)}
         />
       </ScrollView>

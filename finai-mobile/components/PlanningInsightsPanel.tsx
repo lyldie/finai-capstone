@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
+import { ActivityIndicator, Image, Modal, ScrollView, Text, TouchableOpacity, View, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 
@@ -61,7 +61,7 @@ type Props = {
   loading: boolean;
   error: string | null;
   onRefresh: () => void;
-  onAskFinAI: () => void;
+  onAskFinAI: (topic: 'general' | 'budget' | 'goals', prompt: string) => void;
   onViewInsights: () => void;
 };
 
@@ -126,6 +126,8 @@ function iconFor(kind: string): keyof typeof Ionicons.glyphMap {
 
 export default function PlanningInsightsPanel({ data, loading, error, onRefresh, onAskFinAI, onViewInsights }: Props) {
   const [selectedPeriod, setSelectedPeriod] = useState<'day' | 'week' | 'month' | 'year'>('month');
+  const [explaining, setExplaining] = useState<Recommendation | null>(null);
+  const [showPlanTopics, setShowPlanTopics] = useState(false);
   const periodLabels = { day: 'Day', week: 'Week', month: 'Month', year: 'Year' } as const;
   const periodRangeLabels = { day: 'Today', week: 'This calendar week', month: 'This month', year: 'Year to date' } as const;
   const selectedTotals = data?.metrics?.period_analytics?.[selectedPeriod];
@@ -134,6 +136,24 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
   const hasPeriodActivity = Number(selectedTotals?.income || 0) > 0 || Number(selectedTotals?.expense || 0) > 0;
   const budgetPeriod = { day: 'daily', week: 'weekly', month: 'monthly', year: 'annual' }[selectedPeriod];
   const periodBudgets = (data?.budget_forecasts || []).filter((item) => item.period === budgetPeriod);
+  const recommendationTopic = (item: Recommendation) => item.kind.startsWith('goal_') ? 'goals' as const : item.kind.startsWith('budget_') || item.kind === 'spending_pattern' ? 'budget' as const : 'general' as const;
+  const discussRecommendation = (item: Recommendation) => {
+    const facts = evidenceFor(item).map((fact) => `${fact.label}: ${fact.value}`).join('; ');
+    const prompt = `Please explain this Plan Ahead finding: ${item.title}. ${item.message}${facts ? ` Recorded figures: ${facts}.` : ''}${item.action ? ` Possible next step: ${item.action}.` : ''} Help me understand what it means and what I may want to consider.`.slice(0, 950);
+    setExplaining(null);
+    onAskFinAI(recommendationTopic(item), prompt);
+  };
+  const discussPlan = (topic: 'general' | 'budget' | 'goals') => {
+    const relevant = (data?.recommendations || []).filter((item) => topic === 'general' || recommendationTopic(item) === topic).slice(0, topic === 'general' ? 3 : 2);
+    const findings = relevant.map((item) => {
+      const facts = evidenceFor(item).map((fact) => `${fact.label}: ${fact.value}`).join(', ');
+      return `${item.title}: ${item.message}${facts ? ` (${facts})` : ''}`;
+    }).join(' | ');
+    const focus = topic === 'budget' ? 'budgets and spending' : topic === 'goals' ? 'savings goals' : 'my overall financial plan';
+    const prompt = `Help me understand ${focus} using my latest Plan Ahead results. Summary: ${data?.summary || 'No summary is available.'}${findings ? ` Findings: ${findings}.` : ''} Explain what the recorded data supports, note uncertainty, and suggest one practical option if appropriate.`.slice(0, 950);
+    setShowPlanTopics(false);
+    onAskFinAI(topic, prompt);
+  };
   return (
     <View style={styles.container}>
       <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
@@ -273,6 +293,19 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                   ))}
                 </View>
                 <Text style={styles.longTermNote}>Recorded net cash-flow scenarios over 12 months, based on observed monthly results. Months without records are excluded; these are not projected account balances or guarantees.</Text>
+                <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining({
+                  kind: 'long_term_cash_flow', priority: 'plan', title: '12-month cash-flow scenarios',
+                  message: 'These scenarios extend the average monthly net cash flow from completed months that contain records. They are illustrative changes in recorded net cash flow, not future account balances.',
+                  action: 'Compare the assumptions with your expected income and expenses before using the scenarios to plan.',
+                  evidence: {
+                    observed_completed_months: data.long_term_outlook?.observed_completed_months,
+                    average_monthly_recorded_income: data.long_term_outlook?.average_monthly_recorded_income,
+                    average_monthly_recorded_expenses: data.long_term_outlook?.average_monthly_recorded_expenses,
+                    average_monthly_recorded_net_cash_flow: data.long_term_outlook?.average_monthly_recorded_net_cash_flow,
+                  },
+                })} accessibilityRole="button">
+                  <Ionicons name="information-circle-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>Explain these scenarios</Text>
+                </TouchableOpacity>
               </>
             ) : (
               <Text style={styles.longTermNote}>Record activity in at least 3 completed months to see scenarios. Missing months are not assumed to have zero income or expenses.</Text>
@@ -358,6 +391,10 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                     <Text style={styles.questionText}>{item.context_question}</Text>
                   </View>
                 )}
+                <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining(item)} accessibilityRole="button" accessibilityLabel={`Explain ${item.title}`}>
+                  <Ionicons name="information-circle-outline" size={17} color={TEAL} />
+                  <Text style={styles.explainButtonText}>Explain this insight</Text>
+                </TouchableOpacity>
               </View>
             );
           })}
@@ -372,6 +409,12 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
               </View>
               {data.goal_plans.map((goal, index) => {
                 const progress = goal.goal > 0 ? Math.min(100, Math.max(0, (goal.saved / goal.goal) * 100)) : 0;
+                const goalRecommendation: Recommendation = {
+                  kind: 'goal_plan', priority: 'goal', title: goal.target,
+                  message: `${peso(goal.saved)} is recorded toward a ${peso(goal.goal)} savings target, with ${peso(goal.remaining)} remaining.`,
+                  action: goal.suggested_monthly_saving != null ? `A suggested pace is ${peso(goal.suggested_monthly_saving)} per month; check that it fits your budget.` : 'Review the target date and choose a contribution pace that fits your budget.',
+                  evidence: { saved: goal.saved, goal: goal.goal, remaining: goal.remaining, days_to_target: goal.days_to_target },
+                };
                 return (
                   <View key={`${goal.target}-${index}`} style={styles.goalCard}>
                     <View style={styles.goalTopRow}>
@@ -384,6 +427,9 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                     </View>
                     <View style={styles.goalTrack}><View style={[styles.goalFill, { width: `${progress}%` }]} /></View>
                     <Text style={styles.goalPace}>{goal.suggested_monthly_saving != null ? `Suggested pace: ${peso(goal.suggested_monthly_saving)} per month` : `${peso(goal.remaining)} remaining · review the target date`}</Text>
+                    <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining(goalRecommendation)} accessibilityRole="button">
+                      <Ionicons name="information-circle-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>Explain this goal</Text>
+                    </TouchableOpacity>
                   </View>
                 );
               })}
@@ -395,10 +441,62 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             <Text style={styles.disclosureText}>Gemini uses a summary of your financial records. Forecasts are estimates and may miss unrecorded activity.</Text>
           </View>
 
-          <TouchableOpacity style={styles.chatButton} onPress={onAskFinAI} activeOpacity={0.85}>
+          <TouchableOpacity style={styles.chatButton} onPress={() => setShowPlanTopics(true)} activeOpacity={0.85}>
             <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFFFFF" />
-            <Text style={styles.chatButtonText}>Ask FinAI about this plan</Text>
+            <Text style={styles.chatButtonText}>Discuss my plan with Finn</Text>
           </TouchableOpacity>
+
+          <Modal visible={!!explaining} transparent animationType="slide" onRequestClose={() => setExplaining(null)}>
+            <View style={styles.modalBackdrop}>
+              <View style={styles.explainSheet}>
+                <View style={styles.sheetHandle} />
+                <ScrollView showsVerticalScrollIndicator={false}>
+                  <View style={styles.finnNoteHeader}>
+                    <Image source={require('../assets/images/finn-advising.gif')} style={styles.finnNoteImage} resizeMode="contain" accessibilityLabel="Finn reviewing your financial figures" />
+                    <View style={styles.finnNoteCopy}>
+                      <Text style={styles.finnNoteEyebrow}>FINN EXPLAINS</Text>
+                      <Text style={styles.finnNoteTitle}>{explaining?.title}</Text>
+                    </View>
+                    <TouchableOpacity onPress={() => setExplaining(null)} style={styles.closeSheetButton} accessibilityLabel="Close explanation"><Ionicons name="close" size={20} color={DEEP_GREEN} /></TouchableOpacity>
+                  </View>
+                  <Text style={styles.sheetSectionTitle}>What the analysis says</Text>
+                  <Text style={styles.sheetBody}>{explaining?.message}</Text>
+                  {!!explaining && evidenceFor(explaining).length > 0 && <>
+                    <Text style={styles.sheetSectionTitle}>Figures behind it</Text>
+                    <View style={styles.sheetEvidence}>
+                      {evidenceFor(explaining).map((fact) => <View key={fact.label} style={styles.sheetFact}><Text style={styles.evidenceLabel}>{fact.label}</Text><Text style={styles.evidenceValue}>{fact.value}</Text></View>)}
+                    </View>
+                  </>}
+                  {!!explaining?.action && <>
+                    <Text style={styles.sheetSectionTitle}>One option to consider</Text>
+                    <Text style={styles.sheetBody}>{explaining.action}</Text>
+                  </>}
+                  <Text style={styles.sheetCaveat}>This explanation uses the figures shown here. Forecasts are estimates and may omit activity that has not been recorded.</Text>
+                  <TouchableOpacity style={styles.chatButton} onPress={() => explaining && discussRecommendation(explaining)} activeOpacity={0.85}>
+                    <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFFFFF" />
+                    <Text style={styles.chatButtonText}>Discuss this with Finn</Text>
+                  </TouchableOpacity>
+                </ScrollView>
+              </View>
+            </View>
+          </Modal>
+
+          <Modal visible={showPlanTopics} transparent animationType="fade" onRequestClose={() => setShowPlanTopics(false)}>
+            <View style={styles.modalBackdrop}>
+              <View style={styles.topicSheet}>
+                <Text style={styles.sheetSectionTitle}>What would you like to discuss?</Text>
+                <Text style={styles.sheetBody}>Finn will open the matching saved conversation and prepare a question you can edit before sending.</Text>
+                {([
+                  ['budget', 'Budgets and spending', 'pie-chart-outline'],
+                  ['goals', 'Savings goals', 'flag-outline'],
+                  ['general', 'Overall plan', 'analytics-outline'],
+                ] as const).map(([topic, label, icon]) => <TouchableOpacity key={topic} style={styles.topicOption} onPress={() => discussPlan(topic)}>
+                  <Ionicons name={icon} size={20} color={TEAL} /><Text style={styles.topicOptionText}>{label}</Text><Ionicons name="chevron-forward" size={17} color={SAGE} />
+                </TouchableOpacity>)}
+                <TouchableOpacity style={styles.cancelTopicButton} onPress={() => setShowPlanTopics(false)}><Text style={styles.explainButtonText}>Cancel</Text></TouchableOpacity>
+              </View>
+            </View>
+          </Modal>
         </>
       ) : null}
     </View>
@@ -506,6 +604,26 @@ const styles = StyleSheet.create({
   disclosureText: { flex: 1, color: SAGE, fontSize: 11, lineHeight: 16 },
   chatButton: { flexDirection: 'row', minHeight: 48, gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: DEEP_GREEN, borderRadius: 15, marginTop: 18, paddingHorizontal: 16 },
   chatButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
+  explainButton: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 13, paddingVertical: 4 },
+  explainButtonText: { color: TEAL, fontSize: 13, fontWeight: '800' },
+  modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(14,32,29,0.48)' },
+  explainSheet: { maxHeight: '84%', backgroundColor: CREAM, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 26 },
+  topicSheet: { backgroundColor: CREAM, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 30 },
+  sheetHandle: { width: 42, height: 5, borderRadius: 3, backgroundColor: '#D5DCD8', alignSelf: 'center', marginBottom: 14 },
+  finnNoteHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 15 },
+  finnNoteImage: { width: 86, height: 96 },
+  finnNoteCopy: { flex: 1, minWidth: 0 },
+  finnNoteEyebrow: { color: TEAL, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  finnNoteTitle: { color: DEEP_GREEN, fontSize: 17, lineHeight: 22, fontWeight: '900', marginTop: 4 },
+  closeSheetButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  sheetSectionTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900', marginTop: 12 },
+  sheetBody: { color: '#47645D', fontSize: 13, lineHeight: 19, marginTop: 6 },
+  sheetEvidence: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#FFFFFF', borderRadius: 14, padding: 9, marginTop: 8 },
+  sheetFact: { width: '50%', paddingHorizontal: 7, paddingVertical: 6 },
+  sheetCaveat: { color: SAGE, fontSize: 11, lineHeight: 16, marginTop: 15 },
+  topicOption: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 15, marginTop: 10 },
+  topicOptionText: { flex: 1, color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
+  cancelTopicButton: { alignSelf: 'center', padding: 12, marginTop: 4 },
   stateCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 26, alignItems: 'center', justifyContent: 'center', marginBottom: 14, minHeight: 180 },
   stateTitle: { color: DEEP_GREEN, fontSize: 16, lineHeight: 21, fontWeight: '900', textAlign: 'center', marginTop: 13 },
   stateCopy: { color: SAGE, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 6 },

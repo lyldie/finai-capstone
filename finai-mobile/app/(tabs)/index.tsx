@@ -76,8 +76,17 @@ export default function HomeDashboard() {
     const spent = Number(mostUsedBudget.spent) || 0;
     const limit = Number(mostUsedBudget.available_limit ?? mostUsedBudget.amount) || 0;
     const remaining = mostUsedBudget.remainingAmount;
+    const startDate = Date.parse(`${mostUsedBudget.start_date}T00:00:00Z`);
+    const endDate = Date.parse(`${mostUsedBudget.end_date}T00:00:00Z`);
+    const todayDate = Date.parse(`${todayKey}T00:00:00Z`);
+    const periodDays = Math.round((endDate - startDate) / 86400000) + 1;
+    const elapsedDays = Math.round((todayDate - startDate) / 86400000) + 1;
+    const daysRemaining = Math.max(periodDays - elapsedDays, 0);
     if (used >= 100) return `${category} is over its ${period} limit. You have spent ₱${spent.toLocaleString()} of ₱${limit.toLocaleString()}.`;
     if (used >= 90) return `${category} is close to its ${period} limit (${used.toFixed(0)}% used). ₱${remaining.toLocaleString()} remains.`;
+    if (used >= 70 && periodDays > 0 && elapsedDays > 0 && elapsedDays <= periodDays / 2) {
+      return `${category} has used ${used.toFixed(0)}% of its ${period} limit with ${daysRemaining} days remaining. About ₱${remaining.toLocaleString()} remains; review upcoming expenses if useful.`;
+    }
     if (used >= 70) return `${category} has used ${used.toFixed(0)}% of its ${period} limit. About ₱${remaining.toLocaleString()} remains.`;
     return `Your most-used budget is ${category} at ${used.toFixed(0)}%. About ₱${remaining.toLocaleString()} remains for this ${period} period.`;
   }, [mostUsedBudget]);

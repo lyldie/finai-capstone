@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   TextInput,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
@@ -39,9 +40,11 @@ interface ChatMessage {
 export default function ChatScreen() {
   const { user } = useAuth();
   const router = useRouter();
-  const params = useLocalSearchParams<{ conversation_id?: string }>();
+  const params = useLocalSearchParams<{ conversation_id?: string; prefill?: string }>();
   const routeConversationId = typeof params.conversation_id === "string" ? params.conversation_id : undefined;
+  const routePrefill = typeof params.prefill === "string" ? params.prefill : undefined;
   const flatListRef = useRef<FlatList>(null);
+  const prefillApplied = useRef(false);
 
   const [inputText, setInputText] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -50,35 +53,17 @@ export default function ChatScreen() {
   const [conversationId, setConversationId] = useState<string | null>(routeConversationId || null);
   const [conversationTitle, setConversationTitle] = useState("FinAI Advisor");
 
-  // Ensure a server-backed general thread exists when chat is opened directly.
+  // A direct Chat open is a draft. Persist it only after the user sends a message.
   useEffect(() => {
-    let active = true;
-    const openConversation = async () => {
-      if (!user?.token) { setIsReady(true); return; }
-      if (routeConversationId) {
-        setConversationId(routeConversationId);
-        return;
-      }
+    if (routeConversationId) {
       setIsReady(false);
-      try {
-        const response = await fetch(`${API_URL}/advisor/conversations`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${user.token}` },
-          body: JSON.stringify({ topic: "general" }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.detail || "Could not open your conversation.");
-        if (active) {
-          setConversationId(payload.id);
-          setConversationTitle(payload.title || "FinAI Advisor");
-        }
-      } catch (error) {
-        console.error("Failed to open advisor conversation", error);
-        if (active) Alert.alert("Couldn’t open messages", "Check your connection and try again.");
-      }
-    };
-    void openConversation();
-    return () => { active = false; };
+      setConversationId(routeConversationId);
+      return;
+    }
+    setConversationId(null);
+    setMessages([]);
+    setConversationTitle("New chat");
+    setIsReady(true);
   }, [user?.token, routeConversationId]);
 
   useEffect(() => {
@@ -95,22 +80,6 @@ export default function ChatScreen() {
           setMessages(Array.isArray(payload.messages) ? payload.messages : []);
           setConversationTitle(payload.conversation?.title || "FinAI Advisor");
 
-          // Ask the server for one relevant proactive check-in. It is saved in
-          // this thread and deduplicated there, while the composer stays usable.
-          void fetch(`${API_URL}/advisor/conversations/${conversationId}/check-in`, {
-            method: "POST",
-            headers: { Authorization: `Bearer ${user.token}` },
-          })
-            .then(async (checkInResponse) => {
-              if (!checkInResponse.ok) return;
-              const checkIn = await checkInResponse.json();
-              const insight = checkIn?.message as ChatMessage | undefined;
-              if (!active || !insight?.id) return;
-              setMessages((current) => current.some((message) => message.id === insight.id)
-                ? current
-                : [...current, insight]);
-            })
-            .catch((error) => console.warn("Planning check-in unavailable", error));
         }
       })
       .catch((error) => {
@@ -121,8 +90,14 @@ export default function ChatScreen() {
     return () => { active = false; };
   }, [conversationId, user?.token]);
 
+  useEffect(() => {
+    if (!isReady || !routePrefill || prefillApplied.current) return;
+    setInputText(routePrefill);
+    prefillApplied.current = true;
+  }, [isReady, routePrefill]);
+
   const sendChatMessage = async (question = inputText) => {
-    if (!question.trim() || !conversationId || !user?.token || isChatLoading) return;
+    if (!question.trim() || !user?.token || isChatLoading || !isReady) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -135,8 +110,22 @@ export default function ChatScreen() {
     setInputText("");
     setIsChatLoading(true);
 
+    let activeConversationId = conversationId;
+    let createdConversationId: string | null = null;
     try {
-      const response = await fetch(`${API_URL}/advisor/conversations/${conversationId}/messages`, {
+      if (!activeConversationId) {
+        const createResponse = await fetch(`${API_URL}/advisor/conversations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${user.token}` },
+          body: JSON.stringify({ topic: "general" }),
+        });
+        const created = await createResponse.json();
+        if (!createResponse.ok) throw new Error(created.detail || "Could not start your conversation.");
+        activeConversationId = created.id;
+        createdConversationId = created.id;
+      }
+
+      const response = await fetch(`${API_URL}/advisor/conversations/${activeConversationId}/messages`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${user?.token || ''}` },
         body: JSON.stringify({ text: userMsg.text }),
@@ -145,6 +134,10 @@ export default function ChatScreen() {
       const data = await response.json();
 
       if (response.ok) {
+        if (createdConversationId) {
+          setConversationId(createdConversationId);
+          setConversationTitle(data.conversation?.title || "FinAI Advisor");
+        }
         const savedUserMessage: ChatMessage = data.user_message || userMsg;
         const savedAssistantMessage: ChatMessage = data.assistant_message || {
           id: (Date.now() + 1).toString(), text: data.reply, sender: "ai", source: data.source,
@@ -158,6 +151,12 @@ export default function ChatScreen() {
         throw new Error(data.detail || "Error communicating with FinAi");
       }
     } catch (error) {
+      if (createdConversationId) {
+        void fetch(`${API_URL}/advisor/conversations/${createdConversationId}`, {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${user.token}` },
+        }).catch(() => undefined);
+      }
       setMessages((prev) => prev.filter((message) => message.id !== userMsg.id));
       setInputText(userMsg.text);
       Alert.alert("Message not saved", "Check your connection and try again. Your text is still in the message box.");
@@ -203,7 +202,7 @@ export default function ChatScreen() {
       >
         {!isUser && (
           <View style={styles.aiAvatarSmall}>
-            <Text style={{ fontSize: 14 }}>🥜</Text>
+            <Image source={require("../assets/images/finn-mascot.png")} style={styles.finnSmallImage} resizeMode="contain" />
           </View>
         )}
         {isUser ? (
@@ -238,17 +237,15 @@ export default function ChatScreen() {
 
     return (
       <View style={styles.heroSection}>
-        <LinearGradient
-          colors={[DEEP_GREEN, TEAL]}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
-          style={styles.bigAvatarContainer}
-        >
-          <Text style={{ fontSize: 40 }}>🥜</Text>
-        </LinearGradient>
+        <Image
+          source={require("../assets/images/finn-wave.gif")}
+          style={styles.finnWelcomeImage}
+          resizeMode="contain"
+          accessibilityLabel="Finn waving hello"
+        />
         <Text style={styles.heroTitle}>Hi, {user?.name?.trim().split(/\s+/)[0] || 'there'}!</Text>
         <Text style={styles.heroSubtitle}>
-          What would you like help with today?
+          I’m Finn, your AI Budget Advisor. How can I help today?
         </Text>
         <Text style={styles.heroDesc}>
           Record money, create a goal, or ask for straightforward
@@ -354,18 +351,32 @@ export default function ChatScreen() {
           </TouchableOpacity>
           <View style={styles.headerTitleContainer}>
             <View style={styles.aiAvatarHeader}>
-              <Text style={{ fontSize: 12 }}>🥜</Text>
+              <Image source={require("../assets/images/finn-mascot.png")} style={styles.finnHeaderImage} resizeMode="contain" />
             </View>
-            <Text style={styles.headerTitle} numberOfLines={1}>{conversationTitle}</Text>
+            <View style={styles.headerText}>
+              <Text style={styles.headerTitle} numberOfLines={1}>Chat with Finn</Text>
+              <Text style={styles.headerSubtitle} numberOfLines={1}>{conversationTitle}</Text>
+            </View>
           </View>
         </View>
         <View style={styles.headerRight}>
+          <TouchableOpacity
+            style={styles.planButton}
+            onPress={() => router.push('/plan-ahead' as never)}
+            accessibilityRole="button"
+            accessibilityLabel="Open Plan Ahead analysis"
+          >
+            <Ionicons name="analytics-outline" size={17} color={TEAL} />
+            <Text style={styles.planButtonText}>Plan</Text>
+          </TouchableOpacity>
           <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/messages' as never)} accessibilityLabel="Open messages inbox">
             <Ionicons name="mail-unread-outline" size={18} color={DEEP_GREEN} />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconButton} onPress={clearChat}>
-            <Ionicons name="trash-outline" size={18} color={EXPENSE} />
-          </TouchableOpacity>
+          {conversationId && (
+            <TouchableOpacity style={styles.iconButton} onPress={clearChat} accessibilityLabel="Delete conversation">
+              <Ionicons name="trash-outline" size={18} color={EXPENSE} />
+            </TouchableOpacity>
+          )}
         </View>
       </View>
 
@@ -400,7 +411,7 @@ export default function ChatScreen() {
                 key={label}
                 style={{ borderRadius: 16, borderWidth: 1, borderColor: '#D7E2DE', backgroundColor: '#F7F9F8', paddingHorizontal: 12, paddingVertical: 7 }}
                 onPress={() => sendChatMessage(prompt)}
-                disabled={isChatLoading || !isReady || !conversationId}
+                disabled={isChatLoading || !isReady}
               >
                 <Text style={{ color: DEEP_GREEN, fontSize: 12, fontWeight: '700' }}>{label}</Text>
               </TouchableOpacity>
@@ -422,7 +433,7 @@ export default function ChatScreen() {
 
             <TouchableOpacity
               onPress={() => sendChatMessage()}
-              disabled={!inputText.trim() || isChatLoading || !isReady || !conversationId}
+              disabled={!inputText.trim() || isChatLoading || !isReady}
               activeOpacity={0.85}
             >
               {!inputText.trim() || isChatLoading ? (
@@ -466,7 +477,7 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: "#ECE7DD",
   },
-  headerLeft: { flexDirection: "row", alignItems: "center" },
+  headerLeft: { flexDirection: "row", alignItems: "center", flex: 1, minWidth: 0 },
   iconButton: {
     width: 38,
     height: 38,
@@ -479,7 +490,10 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     marginLeft: 12,
+    flex: 1,
+    minWidth: 0,
   },
+  headerText: { flex: 1, minWidth: 0 },
   aiAvatarHeader: {
     width: 28,
     height: 28,
@@ -489,8 +503,12 @@ const styles = StyleSheet.create({
     alignItems: "center",
     marginRight: 8,
   },
-  headerTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: "700" },
-  headerRight: { flexDirection: "row", gap: 8 },
+  finnHeaderImage: { width: 26, height: 26 },
+  headerTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: "800" },
+  headerSubtitle: { color: SAGE, fontSize: 10, fontWeight: "600", marginTop: 1 },
+  headerRight: { flexDirection: "row", alignItems: "center", gap: 6 },
+  planButton: { height: 38, paddingHorizontal: 9, borderRadius: 13, backgroundColor: "#FFFFFF", flexDirection: "row", alignItems: "center", gap: 4 },
+  planButtonText: { color: TEAL, fontSize: 12, fontWeight: "800" },
   sourceLabel: { color: SAGE, fontSize: 9, fontWeight: "800", letterSpacing: 0.6, marginTop: 8 },
 
   // Hero Section (Zero State)
@@ -499,19 +517,7 @@ const styles = StyleSheet.create({
     paddingVertical: 30,
     paddingHorizontal: 16,
   },
-  bigAvatarContainer: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    justifyContent: "center",
-    alignItems: "center",
-    marginBottom: 16,
-    shadowColor: DEEP_GREEN,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.2,
-    shadowRadius: 12,
-    elevation: 4,
-  },
+  finnWelcomeImage: { width: 112, height: 112, marginBottom: -14 },
   heroTitle: {
     color: DEEP_GREEN,
     fontSize: 26,
@@ -591,6 +597,7 @@ const styles = StyleSheet.create({
     marginRight: 8,
     marginBottom: 4,
   },
+  finnSmallImage: { width: 28, height: 28 },
   messageBubble: { maxWidth: "78%", padding: 14, borderRadius: 20 },
   bubbleUser: {
     borderBottomRightRadius: 4,
