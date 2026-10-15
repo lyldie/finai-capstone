@@ -11,6 +11,11 @@ const CREAM = '#FAF7F2';
 const TRACK = '#ECE7DD';
 const RED = '#D94C43';
 const AMBER = '#A56300';
+const AMBER_BG = '#FFF8EC';
+const RED_BG = '#FFF1F0';
+const BLUE = '#2B6CB0';
+const BLUE_BG = '#EBF4FF';
+const GREEN_BG = '#EAF4EF';
 
 type Recommendation = {
   kind: string;
@@ -20,13 +25,35 @@ type Recommendation = {
   action: string;
   actions?: string[];
   context_question?: string;
+  how_calculated?: string;
   evidence?: Record<string, any>;
 };
+
+type HealthScore = {
+  available: boolean;
+  score: number | null;
+  label: string;
+  color: 'green' | 'teal' | 'amber' | 'red';
+  breakdown: {
+    budget: 'good' | 'watch' | 'alert' | 'none';
+    goals: 'good' | 'watch' | 'alert' | 'none';
+    cash_flow: 'good' | 'watch' | 'alert' | 'none';
+  };
+};
+
+type BudgetDailyAllowance = {
+  amount: number;
+  based_on: string;
+  period: string;
+} | null;
 
 type PlanningData = {
   summary: string;
   summary_source: 'ai' | 'rule_based' | string;
   recommendation_source?: 'ai' | 'rule_based' | string;
+  analysis_provider?: 'gemini' | 'groq' | null;
+  health_score?: HealthScore;
+  budget_daily_allowance?: BudgetDailyAllowance;
   metrics: {
     as_of_date: string;
     days_with_records: number;
@@ -37,6 +64,14 @@ type PlanningData = {
     period_series?: Record<string, { label: string; income: number; expense: number }[]>;
   };
   recommendations: Recommendation[];
+  positive_reinforcement?: {
+    kind: string;
+    on_track_count: number;
+    tracked_budget_count: number;
+    as_of_date: string;
+    message: string;
+    basis: string;
+  } | null;
   budget_forecasts?: { category: string; period: string; spent: number; limit: number; projected_period_end_spend: number; forecast_over_limit: boolean; percentage_used: number; days_remaining: number; daily_remaining_allowance: number; confidence: string }[];
   goal_plans?: { target: string; saved: number; goal: number; remaining: number; days_to_target?: number | null; suggested_monthly_saving?: number | null }[];
   data_note: string;
@@ -62,15 +97,29 @@ type Props = {
   error: string | null;
   onRefresh: () => void;
   onAskFinAI: (topic: 'general' | 'budget' | 'goals', prompt: string) => void;
+  onReviewBudget: (budget: { id: string; category_id: string; category: string; period: string }) => void;
   onViewInsights: () => void;
 };
 
 const peso = (value: unknown) => `₱${(Number(value) || 0).toLocaleString('en-PH', { maximumFractionDigits: 2 })}`;
-
 const signedPeso = (value: unknown) => {
   const amount = Number(value) || 0;
   return `${amount < 0 ? '−' : '+'}${peso(Math.abs(amount))}`;
 };
+
+/** Returns border/background colors for a recommendation card based on priority/kind */
+function urgencyStyle(item: Recommendation): { border: string; bg: string; badge: string; badgeText: string; badgeColor: string } {
+  if (item.priority === 'high' || item.kind === 'budget_risk') {
+    return { border: RED, bg: RED_BG, badge: 'ALERT', badgeText: RED, badgeColor: 'rgba(217,76,67,0.12)' };
+  }
+  if (item.kind === 'budget_watch') {
+    return { border: GOLD, bg: AMBER_BG, badge: 'WATCH', badgeText: AMBER, badgeColor: 'rgba(237,178,50,0.18)' };
+  }
+  if (item.kind.startsWith('goal_')) {
+    return { border: TEAL, bg: GREEN_BG, badge: 'GOAL', badgeText: TEAL, badgeColor: 'rgba(61,125,108,0.12)' };
+  }
+  return { border: BLUE, bg: BLUE_BG, badge: 'PLAN', badgeText: BLUE, badgeColor: 'rgba(43,108,176,0.10)' };
+}
 
 function evidenceFor(item: Recommendation) {
   const evidence = item.evidence || {};
@@ -110,7 +159,11 @@ function evidenceFor(item: Recommendation) {
     return [
       { label: 'Category', value: String(evidence.category || 'Spending') },
       { label: 'This month', value: peso(evidence.current_period_spending) },
-      { label: 'Prior period', value: peso(evidence.previous_period_to_same_day_spending) },
+      ...(Array.isArray(evidence.comparison_periods) ? evidence.comparison_periods.map((period: any) => ({
+        label: period.label,
+        value: peso(period.amount),
+      })) : [{ label: 'Prior period', value: peso(evidence.previous_period_to_same_day_spending) }]),
+      ...(evidence.average_previous_spending != null ? [{ label: 'Prior average', value: peso(evidence.average_previous_spending) }] : []),
       { label: 'Change', value: change == null ? 'No prior comparison' : `${Number(change) > 0 ? '+' : ''}${change}%` },
     ];
   }
@@ -124,7 +177,21 @@ function iconFor(kind: string): keyof typeof Ionicons.glyphMap {
   return 'git-compare-outline';
 }
 
-export default function PlanningInsightsPanel({ data, loading, error, onRefresh, onAskFinAI, onViewInsights }: Props) {
+function healthColorValue(color: string): string {
+  if (color === 'green') return TEAL;
+  if (color === 'teal') return TEAL;
+  if (color === 'amber') return AMBER;
+  return RED;
+}
+
+function indicatorDot(status: string) {
+  if (status === 'alert') return { color: RED, icon: 'close-circle' as const };
+  if (status === 'watch') return { color: GOLD, icon: 'warning' as const };
+  if (status === 'none') return { color: SAGE, icon: 'remove-circle-outline' as const };
+  return { color: TEAL, icon: 'checkmark-circle' as const };
+}
+
+export default function PlanningInsightsPanel({ data, loading, error, onRefresh, onAskFinAI, onReviewBudget, onViewInsights }: Props) {
   const [selectedPeriod, setSelectedPeriod] = useState<'day' | 'week' | 'month' | 'year'>('month');
   const [explaining, setExplaining] = useState<Recommendation | null>(null);
   const [showPlanTopics, setShowPlanTopics] = useState(false);
@@ -137,12 +204,14 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
   const budgetPeriod = { day: 'daily', week: 'weekly', month: 'monthly', year: 'annual' }[selectedPeriod];
   const periodBudgets = (data?.budget_forecasts || []).filter((item) => item.period === budgetPeriod);
   const recommendationTopic = (item: Recommendation) => item.kind.startsWith('goal_') ? 'goals' as const : item.kind.startsWith('budget_') || item.kind === 'spending_pattern' ? 'budget' as const : 'general' as const;
+
   const discussRecommendation = (item: Recommendation) => {
     const facts = evidenceFor(item).map((fact) => `${fact.label}: ${fact.value}`).join('; ');
     const prompt = `Please explain this Plan Ahead finding: ${item.title}. ${item.message}${facts ? ` Recorded figures: ${facts}.` : ''}${item.action ? ` Possible next step: ${item.action}.` : ''} Help me understand what it means and what I may want to consider.`.slice(0, 950);
     setExplaining(null);
     onAskFinAI(recommendationTopic(item), prompt);
   };
+
   const discussPlan = (topic: 'general' | 'budget' | 'goals') => {
     const relevant = (data?.recommendations || []).filter((item) => topic === 'general' || recommendationTopic(item) === topic).slice(0, topic === 'general' ? 3 : 2);
     const findings = relevant.map((item) => {
@@ -154,16 +223,21 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
     setShowPlanTopics(false);
     onAskFinAI(topic, prompt);
   };
+
+  const health = data?.health_score;
+  const dailyAllowance = data?.budget_daily_allowance;
+
   return (
     <View style={styles.container}>
+      {/* ── Hero Banner ── */}
       <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.hero}>
         <View style={styles.heroIcon}><Ionicons name="sparkles" size={22} color={GOLD} /></View>
         <View style={styles.heroCopy}>
           <Text style={styles.eyebrow}>FINAI PLANNING ADVISOR</Text>
           <Text style={styles.heroTitle}>Plan ahead with your numbers</Text>
-          <Text style={styles.heroSubtitle}>Gemini reviews your spending patterns, budget forecasts, and savings goals to suggest practical next steps.</Text>
+          <Text style={styles.heroSubtitle}>FinAI checks your recorded spending, budgets, and goals to surface what needs your attention.</Text>
         </View>
-        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Recalculate figures and request fresh Gemini planning recommendations" onPress={onRefresh} style={styles.refreshButton} disabled={loading}>
+        <TouchableOpacity accessibilityRole="button" accessibilityLabel="Refresh your planning analysis" onPress={onRefresh} style={styles.refreshButton} disabled={loading}>
           {loading ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Ionicons name="refresh-outline" size={19} color="#FFFFFF" />}
         </TouchableOpacity>
       </LinearGradient>
@@ -177,24 +251,71 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
       ) : error && !data ? (
         <View style={styles.stateCard}>
           <Ionicons name="cloud-offline-outline" size={32} color={AMBER} />
-          <Text style={styles.stateTitle}>Couldn’t load your planning analysis</Text>
+          <Text style={styles.stateTitle}>Couldn't load your planning analysis</Text>
           <Text style={styles.stateCopy}>{error}</Text>
           <TouchableOpacity onPress={onRefresh} style={styles.retryButton}><Text style={styles.retryText}>Try again</Text></TouchableOpacity>
         </View>
       ) : data ? (
         <>
-          <View style={styles.summaryCard}>
-            <View style={styles.summaryHeader}>
-              <View style={styles.summaryIcon}><Ionicons name="bulb-outline" size={19} color={GOLD} /></View>
-              <View style={styles.summaryHeading}>
-                <Text style={styles.summaryTitle}>Your planning overview</Text>
-                <Text style={styles.summaryDate}>Updated {data.metrics?.as_of_date || 'today'} · tap refresh to rerun</Text>
+          {/* ── Financial Health Score Widget ── */}
+          {health?.available && health.score != null && (
+            <View style={styles.healthCard}>
+              <View style={styles.healthLeft}>
+                <Text style={styles.healthEyebrow}>RECORDED FINANCIAL PICTURE</Text>
+                <Text style={[styles.healthScore, { color: healthColorValue(health.color) }]}>{health.score}<Text style={styles.healthScoreOf}>/100</Text></Text>
+                <View style={styles.healthBarTrack}>
+                  <View style={[styles.healthBarFill, { width: `${Math.min(health.score, 100)}%`, backgroundColor: healthColorValue(health.color) }]} />
+                </View>
+                <Text style={[styles.healthLabel, { color: healthColorValue(health.color) }]}>{health.label}</Text>
+                <Text style={styles.healthFootnote}>Based on recorded data in at least two areas; this is not a full financial assessment.</Text>
               </View>
-              <View style={styles.sourceBadge}><Text style={styles.sourceBadgeText}>{data.recommendation_source === 'ai' ? 'GEMINI ANALYSIS' : 'RULE-BASED'}</Text></View>
+              <View style={styles.healthRight}>
+                {([
+                  ['Budget', health.breakdown.budget],
+                  ['Goals', health.breakdown.goals],
+                  ['Cash Flow', health.breakdown.cash_flow],
+                ] as const).map(([label, status]) => {
+                  const dot = indicatorDot(status);
+                  return (
+                    <View key={label} style={styles.healthIndicatorRow}>
+                      <Ionicons name={dot.icon} size={14} color={dot.color} />
+                      <Text style={[styles.healthIndicatorLabel, { color: status === 'alert' ? RED : status === 'watch' ? AMBER : status === 'none' ? SAGE : DEEP_GREEN }]}>{label}</Text>
+                    </View>
+                  );
+                })}
+              </View>
             </View>
-            <Text style={styles.summaryText}>{data.summary}</Text>
-          </View>
+          )}
 
+          {/* ── Safe to Spend Today ── */}
+          {dailyAllowance && (
+            <View style={styles.safeSpendCard}>
+              <View style={styles.safeSpendIcon}><Ionicons name="wallet-outline" size={20} color={TEAL} /></View>
+              <View style={styles.safeSpendCopy}>
+                <Text style={styles.safeSpendEyebrow}>BUDGET-BASED DAILY ALLOWANCE</Text>
+                <Text style={styles.safeSpendAmount}>{peso(dailyAllowance.amount)}</Text>
+                <Text style={styles.safeSpendBasis}>For the {dailyAllowance.based_on} {dailyAllowance.period} budget only. Bills and unrecorded expenses aren’t included.</Text>
+              </View>
+            </View>
+          )}
+
+          {/* ── Positive Reinforcement ── */}
+          {!!data.positive_reinforcement && (
+            <View style={styles.momentumCard}>
+              <View style={styles.momentumIcon}><Ionicons name="sparkles" size={19} color={TEAL} /></View>
+              <View style={styles.momentumCopy}>
+                <Text style={styles.momentumEyebrow}>GOOD PROGRESS</Text>
+                <Text style={styles.momentumMessage}>{data.positive_reinforcement.message}</Text>
+                <Text style={styles.momentumBasis}>{data.positive_reinforcement.basis}</Text>
+              </View>
+              <View style={styles.momentumCount}>
+                <Text style={styles.momentumCountValue}>{data.positive_reinforcement.on_track_count}/{data.positive_reinforcement.tracked_budget_count}</Text>
+                <Text style={styles.momentumCountLabel}>on track</Text>
+              </View>
+            </View>
+          )}
+
+          {/* ── Your Numbers (Period Analytics) ── */}
           <View style={styles.periodCard}>
             <View style={styles.periodHeader}>
               <View>
@@ -221,7 +342,8 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                   <Text style={[styles.periodMetricValue, { color: metric.color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>{peso(metric.value)}</Text>
                 </View>
               ))}
-            </View> : <Text style={styles.periodHint}>Period totals are unavailable. Refresh the planning analysis to load current figures.</Text>}
+            </View> : <Text style={styles.periodHint}>Period totals are unavailable. Refresh to load current figures.</Text>}
+
             {selectedTotals && selectedPeriod !== 'day' && chartPoints.length > 0 && hasPeriodActivity ? (
               <>
                 <View style={styles.chartArea}>
@@ -241,22 +363,42 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                 </View>
               </>
             ) : (
-              <Text style={styles.periodHint}>{selectedPeriod === 'day' ? 'Today’s recorded totals are shown above.' : hasPeriodActivity ? 'There is no chart data for this period yet.' : `No income or expenses have been recorded for this ${periodLabels[selectedPeriod].toLowerCase()} yet.`}</Text>
+              <View style={styles.chartEmptyState}>
+                <Ionicons name="bar-chart-outline" size={28} color={TRACK} />
+                <Text style={styles.chartEmptyText}>
+                  {selectedPeriod === 'day'
+                    ? "Today's totals are shown above."
+                    : !hasPeriodActivity
+                    ? `No transactions recorded this ${periodLabels[selectedPeriod].toLowerCase()} yet.`
+                    : 'Chart will appear as you record more transactions.'}
+                </Text>
+              </View>
             )}
+
             {periodBudgets.length > 0 && (
               <View style={styles.periodBudgetBlock}>
                 <Text style={styles.periodBudgetHeading}>{periodLabels[selectedPeriod]} budget outlook</Text>
-                {periodBudgets.map((budget, index) => (
-                  <View key={`${budget.category}-${index}`} style={styles.periodBudgetRow}>
-                    <View style={styles.periodBudgetCopy}>
-                      <Text style={styles.periodBudgetName} numberOfLines={1}>{budget.category}</Text>
-                      <Text style={styles.periodBudgetMeta}>{peso(budget.spent)} of {peso(budget.limit)} · projected {peso(budget.projected_period_end_spend)}</Text>
+                {periodBudgets.map((budget, index) => {
+                  const pct = Math.min(budget.percentage_used, 100);
+                  const isOver = budget.forecast_over_limit;
+                  return (
+                    <View key={`${budget.category}-${index}`} style={styles.periodBudgetRow}>
+                      <View style={styles.periodBudgetCopy}>
+                        <View style={styles.periodBudgetNameRow}>
+                          <Text style={styles.periodBudgetName} numberOfLines={1}>{budget.category}</Text>
+                          <Ionicons name={isOver ? 'warning' : 'checkmark-circle'} size={15} color={isOver ? RED : TEAL} />
+                        </View>
+                        <View style={styles.budgetMiniTrack}>
+                          <View style={[styles.budgetMiniFill, { width: `${pct}%`, backgroundColor: isOver ? RED : pct >= 70 ? GOLD : TEAL }]} />
+                        </View>
+                        <Text style={styles.periodBudgetMeta}>{peso(budget.spent)} of {peso(budget.limit)} · {pct.toFixed(0)}% used</Text>
+                      </View>
                     </View>
-                    <Ionicons name={budget.forecast_over_limit ? 'warning' : 'checkmark-circle'} size={19} color={budget.forecast_over_limit ? RED : TEAL} />
-                  </View>
-                ))}
+                  );
+                })}
               </View>
             )}
+
             {data.metrics?.history_truncated && (
               <Text style={styles.coverageNote}>Some older records may be omitted from these totals and comparisons.</Text>
             )}
@@ -266,56 +408,53 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             </TouchableOpacity>
           </View>
 
+          {/* ── Long-term Outlook ── */}
           {data.long_term_outlook?.available && data.long_term_outlook.scenarios && <View style={styles.longTermCard}>
             <View style={styles.longTermHeader}>
               <View style={styles.longTermIcon}><Ionicons name="calendar-outline" size={19} color={TEAL} /></View>
               <View style={{ flex: 1 }}>
                 <Text style={styles.longTermTitle}>12-month cash-flow scenarios</Text>
                 <Text style={styles.longTermMeta}>
-                  {data.long_term_outlook?.observed_completed_months || 0} completed months with records · {data.long_term_outlook?.confidence || 'insufficient'} confidence
+                  {data.long_term_outlook?.observed_completed_months || 0} completed months · {data.long_term_outlook?.confidence || 'insufficient'} confidence
                 </Text>
               </View>
             </View>
-            {data.long_term_outlook?.available && data.long_term_outlook.scenarios ? (
-              <>
-                <View style={styles.scenarioRow}>
-                  {[
-                    { label: 'Cautious', value: data.long_term_outlook.scenarios.cautious_12_month_net_change },
-                    { label: 'Typical', value: data.long_term_outlook.scenarios.typical_12_month_net_change },
-                    { label: 'Strong', value: data.long_term_outlook.scenarios.strong_12_month_net_change },
-                  ].map((scenario) => (
-                    <View key={scenario.label} style={styles.scenarioCell}>
-                      <Text style={styles.scenarioLabel}>{scenario.label}</Text>
-                      <Text style={[styles.scenarioValue, Number(scenario.value) < 0 && { color: RED }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
-                        {signedPeso(scenario.value)}
-                      </Text>
-                    </View>
-                  ))}
+            <View style={styles.scenarioRow}>
+              {[
+                { label: 'Cautious', value: data.long_term_outlook.scenarios.cautious_12_month_net_change },
+                { label: 'Typical', value: data.long_term_outlook.scenarios.typical_12_month_net_change },
+                { label: 'Strong', value: data.long_term_outlook.scenarios.strong_12_month_net_change },
+              ].map((scenario) => (
+                <View key={scenario.label} style={styles.scenarioCell}>
+                  <Text style={styles.scenarioLabel}>{scenario.label}</Text>
+                  <Text style={[styles.scenarioValue, Number(scenario.value) < 0 && { color: RED }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                    {signedPeso(scenario.value)}
+                  </Text>
                 </View>
-                <Text style={styles.longTermNote}>Recorded net cash-flow scenarios over 12 months, based on observed monthly results. Months without records are excluded; these are not projected account balances or guarantees.</Text>
-                <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining({
-                  kind: 'long_term_cash_flow', priority: 'plan', title: '12-month cash-flow scenarios',
-                  message: 'These scenarios extend the average monthly net cash flow from completed months that contain records. They are illustrative changes in recorded net cash flow, not future account balances.',
-                  action: 'Compare the assumptions with your expected income and expenses before using the scenarios to plan.',
-                  evidence: {
-                    observed_completed_months: data.long_term_outlook?.observed_completed_months,
-                    average_monthly_recorded_income: data.long_term_outlook?.average_monthly_recorded_income,
-                    average_monthly_recorded_expenses: data.long_term_outlook?.average_monthly_recorded_expenses,
-                    average_monthly_recorded_net_cash_flow: data.long_term_outlook?.average_monthly_recorded_net_cash_flow,
-                  },
-                })} accessibilityRole="button">
-                  <Ionicons name="information-circle-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>Explain these scenarios</Text>
-                </TouchableOpacity>
-              </>
-            ) : (
-              <Text style={styles.longTermNote}>Record activity in at least 3 completed months to see scenarios. Missing months are not assumed to have zero income or expenses.</Text>
-            )}
+              ))}
+            </View>
+            <Text style={styles.longTermNote}>Recorded net cash-flow scenarios over 12 months, based on observed monthly results. Not projected account balances or guarantees.</Text>
+            <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining({
+              kind: 'long_term_cash_flow', priority: 'plan', title: '12-month cash-flow scenarios',
+              message: 'These scenarios use the 25th, 50th, and 75th percentiles of recorded monthly net cash flow, each extended over 12 months.',
+              action: 'Compare the assumptions with your expected income and expenses before using the scenarios to plan.',
+              how_calculated: `Cautious / typical / strong = 25th / 50th / 75th percentile of observed monthly net cash flow × 12, using ${data.long_term_outlook?.observed_completed_months} completed months.`,
+              evidence: {
+                observed_completed_months: data.long_term_outlook?.observed_completed_months,
+                average_monthly_recorded_income: data.long_term_outlook?.average_monthly_recorded_income,
+                average_monthly_recorded_expenses: data.long_term_outlook?.average_monthly_recorded_expenses,
+                average_monthly_recorded_net_cash_flow: data.long_term_outlook?.average_monthly_recorded_net_cash_flow,
+              },
+            })} accessibilityRole="button">
+              <Ionicons name="information-circle-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>How we calculated this</Text>
+            </TouchableOpacity>
           </View>}
 
+          {/* ── Recommendations Section ── */}
           <View style={styles.sectionHeading}>
             <View>
               <Text style={styles.sectionTitle}>Recommendations</Text>
-              <Text style={styles.sectionSubtitle}>Overall guidance across budgets, spending, and goals</Text>
+              <Text style={styles.sectionSubtitle}>What needs your attention now</Text>
             </View>
             <View style={styles.countBadge}><Text style={styles.countText}>{data.recommendations?.length || 0}</Text></View>
           </View>
@@ -330,35 +469,63 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
               <Text style={styles.stateTitle}>
                 {data.metrics?.days_with_records === 0 && !data.metrics?.active_budget_count && !data.metrics?.active_goal_count
                   ? 'Add data to start planning'
-                  : 'No immediate planning flags'}
+                  : 'No flags right now 👍'}
               </Text>
               <Text style={styles.stateCopy}>
                 {data.metrics?.days_with_records === 0 && !data.metrics?.active_budget_count && !data.metrics?.active_goal_count
-                  ? 'Record transactions, set a budget, or create a savings goal. FinAI needs some of your financial context before it can make useful suggestions.'
-                  : 'This only means no flags were found in the available records. Keep recording transactions and review your plan as your situation changes.'}
+                  ? 'Record transactions, set a budget, or create a savings goal to start getting insights.'
+                  : 'No issues found in your current data. Keep recording transactions and check back as your situation changes.'}
               </Text>
             </View>
           ) : data.recommendations.map((item, index) => {
             const facts = evidenceFor(item);
-            const isHigh = item.priority === 'high';
-            const confidence = item.evidence?.confidence;
             const usedPercent = Number(item.evidence?.percentage_used) || 0;
+            const confidence = item.evidence?.confidence;
+            const colors = urgencyStyle(item);
+            const actionButtons = (item.actions?.length ? item.actions : item.action ? [item.action] : []).slice(0, 2);
+            const questionButtons = item.context_question?.includes('|')
+              ? item.context_question.split('|').map(s => s.trim()).filter(Boolean)
+              : item.context_question ? [item.context_question] : [];
+
             return (
-              <View key={`${item.kind}-${index}`} style={styles.recommendationCard}>
+              <View key={`${item.kind}-${index}`} style={[styles.recommendationCard, { borderLeftColor: colors.border, backgroundColor: colors.bg }]}>
+                {/* Card header row */}
                 <View style={styles.recommendationHeader}>
-                  <View style={[styles.recommendationIcon, isHigh && styles.recommendationIconHigh]}>
-                    <Ionicons name={iconFor(item.kind)} size={19} color={isHigh ? RED : TEAL} />
+                  <View style={[styles.recommendationIcon, { backgroundColor: `${colors.border}1A` }]}>
+                    <Ionicons name={iconFor(item.kind)} size={19} color={colors.border} />
                   </View>
                   <View style={styles.recommendationHeading}>
                     <Text style={styles.recommendationTitle}>{item.title}</Text>
-                    <Text style={styles.recommendationMessage}>{item.message}</Text>
                   </View>
-                  <View style={[styles.priorityBadge, isHigh && styles.priorityBadgeHigh]}>
-                    <Text style={[styles.priorityText, isHigh && styles.priorityTextHigh]}>{isHigh ? 'WATCH' : item.kind.startsWith('goal_') ? 'GOAL' : 'PLAN'}</Text>
+                  <View style={[styles.priorityBadge, { backgroundColor: colors.badgeColor }]}>
+                    <Text style={[styles.priorityText, { color: colors.badgeText }]}>{colors.badge}</Text>
                   </View>
                 </View>
-                <Text style={styles.recommendationScope}>{item.kind.startsWith('goal_') ? 'Goal planning' : item.evidence?.period ? `${item.evidence.period} budget` : item.kind === 'long_term_cash_flow' ? 'Long-term pattern' : 'Overall planning'}</Text>
 
+                {/* One-line message headline */}
+                {!!item.message && (
+                  <Text style={styles.recommendationMessage}>{item.message}</Text>
+                )}
+
+                {/* Budget progress bar with projected tick */}
+                {item.kind.startsWith('budget_') && (
+                  <View style={styles.budgetProgressWrap}>
+                    <View style={styles.budgetProgressTrack}>
+                      <View style={[styles.budgetProgressFill, { width: `${Math.min(usedPercent, 100)}%`, backgroundColor: colors.border }]} />
+                      {item.evidence?.projected_period_end_spend && item.evidence?.limit && (
+                        <View style={[styles.budgetProjectedTick, {
+                          left: `${Math.min((item.evidence.projected_period_end_spend / item.evidence.limit) * 100, 100)}%`,
+                        }]} />
+                      )}
+                    </View>
+                    <View style={styles.budgetProgressMeta}>
+                      <Text style={[styles.confidenceText, { color: colors.badgeText }]}>{usedPercent.toFixed(0)}% used</Text>
+                      <Text style={styles.confidenceText}>{confidence || 'low'} confidence · {item.evidence?.days_remaining ?? 0} days left</Text>
+                    </View>
+                  </View>
+                )}
+
+                {/* Evidence grid (numbers) */}
                 {facts.length > 0 && (
                   <View style={styles.evidenceGrid}>
                     {facts.map((fact) => (
@@ -370,35 +537,67 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                   </View>
                 )}
 
-                {item.kind.startsWith('budget_') && (
-                  <View style={styles.budgetProgressWrap}>
-                    <View style={styles.budgetProgressTrack}>
-                      <View style={[styles.budgetProgressFill, { width: `${Math.min(usedPercent, 100)}%`, backgroundColor: isHigh ? RED : GOLD }]} />
-                    </View>
-                    <Text style={styles.confidenceText}>{usedPercent.toFixed(0)}% used · {confidence || 'low'} confidence forecast</Text>
+                {/* Suggestions are supporting text; only the controls below are tappable. */}
+                {actionButtons.length > 0 && (
+                  <View style={styles.suggestionList}>
+                    {actionButtons.map((action, ai) => (
+                      <View key={`action-${ai}`} style={styles.suggestionRow}>
+                        <Ionicons name="bulb-outline" size={14} color={colors.border} />
+                        <Text style={styles.suggestionText}>Consider: {action}</Text>
+                      </View>
+                    ))}
                   </View>
                 )}
 
-                {(item.actions?.length ? item.actions : item.action ? [item.action] : []).map((action, actionIndex) => (
-                  <View key={`action-${actionIndex}`} style={styles.actionBox}>
-                    <Ionicons name="arrow-forward-circle-outline" size={18} color={TEAL} />
-                    <Text style={styles.actionText}>{action}</Text>
-                  </View>
-                ))}
-                {!!item.context_question && (
-                  <View style={styles.questionBox}>
-                    <Ionicons name="chatbubble-ellipses-outline" size={16} color={TEAL} />
-                    <Text style={styles.questionText}>{item.context_question}</Text>
+                {/* Context question as action buttons */}
+                {questionButtons.length > 0 && (
+                  <View style={styles.questionButtonRow}>
+                    {questionButtons.map((q, qi) => (
+                      <TouchableOpacity
+                        key={`q-${qi}`}
+                        style={styles.questionButton}
+                        onPress={() => discussRecommendation({ ...item, action: q })}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.questionButtonText}>{q}</Text>
+                      </TouchableOpacity>
+                    ))}
                   </View>
                 )}
-                <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining(item)} accessibilityRole="button" accessibilityLabel={`Explain ${item.title}`}>
-                  <Ionicons name="information-circle-outline" size={17} color={TEAL} />
-                  <Text style={styles.explainButtonText}>Explain this insight</Text>
-                </TouchableOpacity>
+
+                {/* Bottom action row */}
+                <View style={styles.recommendationActions}>
+                  {item.kind.startsWith('budget_') && !!item.evidence?.budget_id && (
+                    <TouchableOpacity
+                      style={styles.reviewBudgetButton}
+                      onPress={() => onReviewBudget({
+                        id: String(item.evidence?.budget_id),
+                        category_id: String(item.evidence?.category_id || ''),
+                        category: String(item.evidence?.category || ''),
+                        period: String(item.evidence?.period || ''),
+                      })}
+                      accessibilityRole="button"
+                    >
+                      <Ionicons name="create-outline" size={16} color={TEAL} />
+                      <Text style={styles.reviewBudgetText}>Review budget</Text>
+                    </TouchableOpacity>
+                  )}
+                  {item.kind === 'spending_pattern' && (
+                    <TouchableOpacity style={styles.reviewBudgetButton} onPress={onViewInsights} accessibilityRole="button">
+                      <Ionicons name="search-outline" size={16} color={TEAL} />
+                      <Text style={styles.reviewBudgetText}>Review spending</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining(item)} accessibilityRole="button" accessibilityLabel={`How we calculated ${item.title}`}>
+                    <Ionicons name="calculator-outline" size={17} color={TEAL} />
+                    <Text style={styles.explainButtonText}>How we calculated this</Text>
+                  </TouchableOpacity>
+                </View>
               </View>
             );
           })}
 
+          {/* ── Goal Progress ── */}
           {!!data.goal_plans?.length && (
             <>
               <View style={[styles.sectionHeading, { marginTop: 6 }]}>
@@ -409,10 +608,14 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
               </View>
               {data.goal_plans.map((goal, index) => {
                 const progress = goal.goal > 0 ? Math.min(100, Math.max(0, (goal.saved / goal.goal) * 100)) : 0;
+                const isLagging = goal.suggested_monthly_saving != null && goal.suggested_monthly_saving > 0;
                 const goalRecommendation: Recommendation = {
                   kind: 'goal_plan', priority: 'goal', title: goal.target,
-                  message: `${peso(goal.saved)} is recorded toward a ${peso(goal.goal)} savings target, with ${peso(goal.remaining)} remaining.`,
-                  action: goal.suggested_monthly_saving != null ? `A suggested pace is ${peso(goal.suggested_monthly_saving)} per month; check that it fits your budget.` : 'Review the target date and choose a contribution pace that fits your budget.',
+                  message: `${peso(goal.saved)} saved of ${peso(goal.goal)} · ${peso(goal.remaining)} to go.`,
+                  action: goal.suggested_monthly_saving != null ? `A suggested pace is ${peso(goal.suggested_monthly_saving)} per month; check it fits your budget.` : 'Review the target date and choose a contribution pace that fits your budget.',
+                  how_calculated: goal.suggested_monthly_saving != null && goal.days_to_target != null
+                    ? `₱${goal.remaining.toLocaleString('en-PH', { maximumFractionDigits: 0 })} remaining ÷ ${goal.days_to_target} days × 30.4375 = ₱${goal.suggested_monthly_saving.toLocaleString('en-PH', { maximumFractionDigits: 0 })}/mo`
+                    : undefined,
                   evidence: { saved: goal.saved, goal: goal.goal, remaining: goal.remaining, days_to_target: goal.days_to_target },
                 };
                 return (
@@ -423,12 +626,24 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                         <Text style={styles.goalTitle} numberOfLines={1}>{goal.target}</Text>
                         <Text style={styles.goalAmount}>{peso(goal.saved)} saved of {peso(goal.goal)}</Text>
                       </View>
-                      <Text style={styles.goalPercent}>{progress.toFixed(0)}%</Text>
+                      <View style={styles.goalMetaRight}>
+                        <Text style={styles.goalPercent}>{progress.toFixed(0)}%</Text>
+                        {goal.days_to_target != null && (
+                          <Text style={styles.goalDaysLeft}>{goal.days_to_target}d left</Text>
+                        )}
+                      </View>
                     </View>
                     <View style={styles.goalTrack}><View style={[styles.goalFill, { width: `${progress}%` }]} /></View>
-                    <Text style={styles.goalPace}>{goal.suggested_monthly_saving != null ? `Suggested pace: ${peso(goal.suggested_monthly_saving)} per month` : `${peso(goal.remaining)} remaining · review the target date`}</Text>
+                    {goal.suggested_monthly_saving != null && (
+                      <View style={styles.goalPaceRow}>
+                        <View style={[styles.goalPacePill, { backgroundColor: isLagging ? AMBER_BG : GREEN_BG }]}>
+                          <Ionicons name="trending-up-outline" size={13} color={isLagging ? AMBER : TEAL} />
+                          <Text style={[styles.goalPaceText, { color: isLagging ? AMBER : TEAL }]}>Need {peso(goal.suggested_monthly_saving)}/mo</Text>
+                        </View>
+                      </View>
+                    )}
                     <TouchableOpacity style={styles.explainButton} onPress={() => setExplaining(goalRecommendation)} accessibilityRole="button">
-                      <Ionicons name="information-circle-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>Explain this goal</Text>
+                      <Ionicons name="calculator-outline" size={17} color={TEAL} /><Text style={styles.explainButtonText}>How we calculated this</Text>
                     </TouchableOpacity>
                   </View>
                 );
@@ -438,7 +653,7 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
 
           <View style={styles.disclosureCard}>
             <Ionicons name="information-circle-outline" size={16} color={SAGE} />
-            <Text style={styles.disclosureText}>Gemini uses a summary of your financial records. Forecasts are estimates and may miss unrecorded activity.</Text>
+            <Text style={styles.disclosureText}>Forecasts are estimates and may miss unrecorded activity. An AI service may help generate recommendations.</Text>
           </View>
 
           <TouchableOpacity style={styles.chatButton} onPress={() => setShowPlanTopics(true)} activeOpacity={0.85}>
@@ -446,6 +661,7 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             <Text style={styles.chatButtonText}>Discuss my plan with Finn</Text>
           </TouchableOpacity>
 
+          {/* ── Explain Sheet Modal ── */}
           <Modal visible={!!explaining} transparent animationType="slide" onRequestClose={() => setExplaining(null)}>
             <View style={styles.modalBackdrop}>
               <View style={styles.explainSheet}>
@@ -459,19 +675,55 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
                     </View>
                     <TouchableOpacity onPress={() => setExplaining(null)} style={styles.closeSheetButton} accessibilityLabel="Close explanation"><Ionicons name="close" size={20} color={DEEP_GREEN} /></TouchableOpacity>
                   </View>
+
+                  {/* How we calculated this — shown first, prominently */}
+                  {!!explaining?.how_calculated && (
+                    <View style={styles.howCalcBox}>
+                      <Text style={styles.howCalcLabel}>HOW WE CALCULATED THIS</Text>
+                      <Text style={styles.howCalcText}>{explaining.how_calculated}</Text>
+                    </View>
+                  )}
+
                   <Text style={styles.sheetSectionTitle}>What the analysis says</Text>
                   <Text style={styles.sheetBody}>{explaining?.message}</Text>
+
                   {!!explaining && evidenceFor(explaining).length > 0 && <>
                     <Text style={styles.sheetSectionTitle}>Figures behind it</Text>
                     <View style={styles.sheetEvidence}>
                       {evidenceFor(explaining).map((fact) => <View key={fact.label} style={styles.sheetFact}><Text style={styles.evidenceLabel}>{fact.label}</Text><Text style={styles.evidenceValue}>{fact.value}</Text></View>)}
                     </View>
                   </>}
+
                   {!!explaining?.action && <>
                     <Text style={styles.sheetSectionTitle}>One option to consider</Text>
                     <Text style={styles.sheetBody}>{explaining.action}</Text>
                   </>}
-                  <Text style={styles.sheetCaveat}>This explanation uses the figures shown here. Forecasts are estimates and may omit activity that has not been recorded.</Text>
+
+                  <Text style={styles.sheetCaveat}>{explaining?.kind === 'spending_pattern'
+                    ? 'This compares recorded spending so far this month with matching dates in prior months that had recorded expenses. A change in the records does not show its cause, and missing transactions can affect the comparison.'
+                    : 'Forecasts are estimates and may omit activity that has not been recorded. Figures are drawn from your FinAI transaction history only.'}</Text>
+
+                  {explaining?.kind.startsWith('budget_') && !!explaining.evidence?.budget_id && (
+                    <TouchableOpacity style={styles.reviewBudgetButton} onPress={() => {
+                      const evidence = explaining.evidence || {};
+                      setExplaining(null);
+                      onReviewBudget({
+                        id: String(evidence.budget_id),
+                        category_id: String(evidence.category_id || ''),
+                        category: String(evidence.category || ''),
+                        period: String(evidence.period || ''),
+                      });
+                    }} activeOpacity={0.85}>
+                      <Ionicons name="create-outline" size={17} color={TEAL} />
+                      <Text style={styles.reviewBudgetText}>Review this budget</Text>
+                    </TouchableOpacity>
+                  )}
+                  {explaining?.kind === 'spending_pattern' && (
+                    <TouchableOpacity style={styles.reviewBudgetButton} onPress={() => { setExplaining(null); onViewInsights(); }} activeOpacity={0.85}>
+                      <Ionicons name="search-outline" size={17} color={TEAL} />
+                      <Text style={styles.reviewBudgetText}>Review spending</Text>
+                    </TouchableOpacity>
+                  )}
                   <TouchableOpacity style={styles.chatButton} onPress={() => explaining && discussRecommendation(explaining)} activeOpacity={0.85}>
                     <Ionicons name="chatbubble-ellipses-outline" size={18} color="#FFFFFF" />
                     <Text style={styles.chatButtonText}>Discuss this with Finn</Text>
@@ -481,11 +733,12 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
             </View>
           </Modal>
 
+          {/* ── Discuss Plan Topics Modal ── */}
           <Modal visible={showPlanTopics} transparent animationType="fade" onRequestClose={() => setShowPlanTopics(false)}>
             <View style={styles.modalBackdrop}>
               <View style={styles.topicSheet}>
                 <Text style={styles.sheetSectionTitle}>What would you like to discuss?</Text>
-                <Text style={styles.sheetBody}>Finn will open the matching saved conversation and prepare a question you can edit before sending.</Text>
+                <Text style={styles.sheetBody}>Finn will open the matching saved conversation with context from your latest Plan Ahead data.</Text>
                 {([
                   ['budget', 'Budgets and spending', 'pie-chart-outline'],
                   ['goals', 'Savings goals', 'flag-outline'],
@@ -505,6 +758,8 @@ export default function PlanningInsightsPanel({ data, loading, error, onRefresh,
 
 const styles = StyleSheet.create({
   container: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 30 },
+
+  // Hero
   hero: { borderRadius: 22, padding: 19, flexDirection: 'row', alignItems: 'flex-start', gap: 12, marginBottom: 16 },
   heroIcon: { width: 42, height: 42, borderRadius: 14, backgroundColor: 'rgba(255,255,255,0.14)', alignItems: 'center', justifyContent: 'center' },
   heroCopy: { flex: 1, minWidth: 0 },
@@ -512,15 +767,41 @@ const styles = StyleSheet.create({
   heroTitle: { color: '#FFFFFF', fontSize: 19, lineHeight: 24, fontWeight: '900', marginTop: 5 },
   heroSubtitle: { color: 'rgba(255,255,255,0.82)', fontSize: 13, lineHeight: 18, marginTop: 5 },
   refreshButton: { width: 36, height: 36, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
-  summaryCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
-  summaryHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  summaryIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: 'rgba(237,178,50,0.17)', alignItems: 'center', justifyContent: 'center' },
-  summaryHeading: { flex: 1, minWidth: 0 },
-  summaryTitle: { color: DEEP_GREEN, fontSize: 15, fontWeight: '900' },
-  summaryDate: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 2 },
-  sourceBadge: { backgroundColor: 'rgba(61,125,108,0.1)', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 5 },
-  sourceBadgeText: { color: TEAL, fontSize: 9, fontWeight: '900', letterSpacing: 0.4 },
-  summaryText: { color: DEEP_GREEN, fontSize: 14, lineHeight: 21, marginTop: 13 },
+
+  // Health Score
+  healthCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 18, marginBottom: 14, borderWidth: 1, borderColor: 'rgba(28,60,54,0.06)', flexDirection: 'row', alignItems: 'center', gap: 16 },
+  healthLeft: { flex: 1 },
+  healthEyebrow: { color: SAGE, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  healthScore: { fontSize: 40, fontWeight: '900', lineHeight: 46, marginTop: 2 },
+  healthScoreOf: { fontSize: 18, fontWeight: '700', color: SAGE },
+  healthBarTrack: { height: 7, backgroundColor: TRACK, borderRadius: 4, overflow: 'hidden', marginTop: 8 },
+  healthBarFill: { height: '100%', borderRadius: 4 },
+  healthLabel: { fontSize: 13, fontWeight: '900', marginTop: 5 },
+  healthFootnote: { color: SAGE, fontSize: 9, lineHeight: 13, marginTop: 5, maxWidth: 235 },
+  healthRight: { gap: 10 },
+  healthIndicatorRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  healthIndicatorLabel: { fontSize: 12, fontWeight: '800' },
+
+  // Safe to spend
+  safeSpendCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: GREEN_BG, borderRadius: 18, borderWidth: 1, borderColor: 'rgba(61,125,108,0.18)', padding: 14, marginBottom: 14 },
+  safeSpendIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+  safeSpendCopy: { flex: 1 },
+  safeSpendEyebrow: { color: TEAL, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  safeSpendAmount: { color: DEEP_GREEN, fontSize: 26, fontWeight: '900', lineHeight: 32, marginTop: 2 },
+  safeSpendBasis: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 2 },
+
+  // Momentum
+  momentumCard: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: GREEN_BG, borderRadius: 20, borderWidth: 1, borderColor: 'rgba(61,125,108,0.15)', padding: 15, marginBottom: 14 },
+  momentumIcon: { width: 40, height: 40, borderRadius: 14, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFFFFF' },
+  momentumCopy: { flex: 1, minWidth: 0 },
+  momentumEyebrow: { color: TEAL, fontSize: 9, fontWeight: '900', letterSpacing: 1 },
+  momentumMessage: { color: DEEP_GREEN, fontSize: 13, lineHeight: 18, fontWeight: '800', marginTop: 4 },
+  momentumBasis: { color: SAGE, fontSize: 10, lineHeight: 14, marginTop: 4 },
+  momentumCount: { minWidth: 55, alignItems: 'center', paddingVertical: 8, paddingHorizontal: 7, borderRadius: 13, backgroundColor: '#FFFFFF' },
+  momentumCountValue: { color: TEAL, fontSize: 15, fontWeight: '900' },
+  momentumCountLabel: { color: SAGE, fontSize: 9, fontWeight: '700', marginTop: 2 },
+
+  // Period card
   periodCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 18, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
   periodHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   periodTitle: { color: DEEP_GREEN, fontSize: 16, fontWeight: '900' },
@@ -541,16 +822,23 @@ const styles = StyleSheet.create({
   chartLabel: { color: SAGE, fontSize: 9, marginTop: 5, marginBottom: 3 },
   chartLegend: { flexDirection: 'row', justifyContent: 'center', gap: 18, marginTop: 9 },
   chartLegendItem: { color: SAGE, fontSize: 10, fontWeight: '700' },
+  chartEmptyState: { alignItems: 'center', paddingVertical: 22, gap: 8 },
+  chartEmptyText: { color: SAGE, fontSize: 12, textAlign: 'center', lineHeight: 17, paddingHorizontal: 16 },
   periodHint: { color: SAGE, fontSize: 11, lineHeight: 16, marginTop: 12 },
   coverageNote: { color: AMBER, fontSize: 10, lineHeight: 15, fontWeight: '700', marginTop: 10 },
   periodBudgetBlock: { borderTopWidth: 1, borderTopColor: TRACK, marginTop: 14, paddingTop: 12 },
   periodBudgetHeading: { color: DEEP_GREEN, fontSize: 13, fontWeight: '900', marginBottom: 6 },
-  periodBudgetRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 },
-  periodBudgetCopy: { flex: 1, minWidth: 0 },
-  periodBudgetName: { color: DEEP_GREEN, fontSize: 12, fontWeight: '800' },
-  periodBudgetMeta: { color: SAGE, fontSize: 10, marginTop: 3 },
+  periodBudgetRow: { paddingVertical: 8 },
+  periodBudgetCopy: { flex: 1 },
+  periodBudgetNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 5 },
+  periodBudgetName: { flex: 1, color: DEEP_GREEN, fontSize: 12, fontWeight: '800' },
+  budgetMiniTrack: { height: 5, backgroundColor: TRACK, borderRadius: 3, overflow: 'hidden', marginBottom: 4 },
+  budgetMiniFill: { height: '100%', borderRadius: 3 },
+  periodBudgetMeta: { color: SAGE, fontSize: 10, marginTop: 2 },
   insightsLink: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, borderTopWidth: 1, borderTopColor: TRACK, paddingTop: 12, marginTop: 13 },
   insightsLinkText: { color: TEAL, fontSize: 12, fontWeight: '800' },
+
+  // Long term
   longTermCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 17, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
   longTermHeader: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   longTermIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: 'rgba(61,125,108,0.1)', alignItems: 'center', justifyContent: 'center' },
@@ -561,51 +849,80 @@ const styles = StyleSheet.create({
   scenarioLabel: { color: SAGE, fontSize: 10, fontWeight: '700' },
   scenarioValue: { color: DEEP_GREEN, fontSize: 13, fontWeight: '900', marginTop: 5 },
   longTermNote: { color: SAGE, fontSize: 11, lineHeight: 16, marginTop: 11 },
+
+  // Section headings
   sectionHeading: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 },
   sectionTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '900' },
   sectionSubtitle: { color: SAGE, fontSize: 12, fontWeight: '600', marginTop: 3 },
   countBadge: { minWidth: 30, height: 30, paddingHorizontal: 8, borderRadius: 15, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(61,125,108,0.12)' },
   countText: { color: TEAL, fontSize: 13, fontWeight: '900' },
-  recommendationCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 17, marginBottom: 12, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
+
+  // Recommendation cards — left border accent
+  recommendationCard: { borderRadius: 20, padding: 17, marginBottom: 14, borderWidth: 1, borderLeftWidth: 4, borderColor: 'rgba(28,60,54,0.06)' },
   recommendationHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
-  recommendationIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: 'rgba(61,125,108,0.1)', alignItems: 'center', justifyContent: 'center' },
-  recommendationIconHigh: { backgroundColor: 'rgba(255,98,89,0.12)' },
+  recommendationIcon: { width: 38, height: 38, borderRadius: 13, alignItems: 'center', justifyContent: 'center' },
   recommendationHeading: { flex: 1, minWidth: 0 },
   recommendationTitle: { color: DEEP_GREEN, fontSize: 15, lineHeight: 20, fontWeight: '900' },
-  recommendationMessage: { color: SAGE, fontSize: 12, lineHeight: 17, marginTop: 3 },
-  recommendationScope: { color: TEAL, fontSize: 10, fontWeight: '800', marginTop: 7 },
+  recommendationMessage: { color: '#47645D', fontSize: 13, lineHeight: 18, marginTop: 6, fontWeight: '600' },
+  priorityBadge: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 9 },
+  priorityText: { fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
+
+  // Budget progress with projected tick
+  budgetProgressWrap: { marginTop: 12 },
+  budgetProgressTrack: { height: 8, backgroundColor: TRACK, borderRadius: 4, overflow: 'visible', position: 'relative' },
+  budgetProgressFill: { height: '100%', borderRadius: 4 },
+  budgetProjectedTick: { position: 'absolute', top: -3, width: 2, height: 14, backgroundColor: DEEP_GREEN, borderRadius: 1 },
+  budgetProgressMeta: { flexDirection: 'row', justifyContent: 'space-between', marginTop: 5 },
+  confidenceText: { color: SAGE, fontSize: 10, fontWeight: '700' },
+
+  // Evidence grid
+  evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: 'rgba(255,255,255,0.7)', borderRadius: 14, paddingVertical: 10, paddingHorizontal: 7, marginTop: 12, gap: 2 },
+  evidenceCell: { width: '48%', paddingHorizontal: 7, paddingVertical: 6 },
+  evidenceLabel: { color: SAGE, fontSize: 10, fontWeight: '700' },
+  evidenceValue: { color: DEEP_GREEN, fontSize: 13, fontWeight: '900', marginTop: 3 },
+
+  // Supporting suggestions, visually separate from tappable controls
+  suggestionList: { gap: 7, marginTop: 12 },
+  suggestionRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 7 },
+  suggestionText: { flex: 1, color: '#47645D', fontSize: 12, lineHeight: 17, fontWeight: '600' },
+
+  // Context question as real buttons
+  questionButtonRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 },
+  questionButton: { paddingVertical: 8, paddingHorizontal: 14, borderRadius: 20, backgroundColor: DEEP_GREEN },
+  questionButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+
+  // Bottom action row
+  recommendationActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 16, rowGap: 4, marginTop: 12 },
+
+  // Goal cards
   goalCard: { backgroundColor: '#FFFFFF', borderRadius: 18, padding: 15, marginBottom: 10, borderWidth: 1, borderColor: 'rgba(28,60,54,0.05)' },
   goalTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   goalIcon: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(61,125,108,0.1)' },
   goalCopy: { flex: 1, minWidth: 0 },
   goalTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900' },
   goalAmount: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 3 },
-  goalPercent: { color: TEAL, fontSize: 14, fontWeight: '900' },
+  goalMetaRight: { alignItems: 'flex-end' },
+  goalPercent: { color: TEAL, fontSize: 15, fontWeight: '900' },
+  goalDaysLeft: { color: SAGE, fontSize: 10, fontWeight: '700', marginTop: 2 },
   goalTrack: { height: 9, backgroundColor: TRACK, borderRadius: 5, overflow: 'hidden', marginTop: 12 },
   goalFill: { height: '100%', backgroundColor: TEAL, borderRadius: 5 },
-  goalPace: { color: SAGE, fontSize: 11, fontWeight: '700', marginTop: 8 },
-  priorityBadge: { backgroundColor: 'rgba(237,178,50,0.18)', paddingHorizontal: 8, paddingVertical: 5, borderRadius: 9 },
-  priorityBadgeHigh: { backgroundColor: 'rgba(255,98,89,0.13)' },
-  priorityText: { color: AMBER, fontSize: 9, fontWeight: '900', letterSpacing: 0.5 },
-  priorityTextHigh: { color: RED },
-  evidenceGrid: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: CREAM, borderRadius: 14, paddingVertical: 10, paddingHorizontal: 7, marginTop: 14 },
-  evidenceCell: { width: '50%', paddingHorizontal: 7, paddingVertical: 5 },
-  evidenceLabel: { color: SAGE, fontSize: 10, fontWeight: '700' },
-  evidenceValue: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900', marginTop: 2 },
-  budgetProgressWrap: { marginTop: 12 },
-  budgetProgressTrack: { height: 8, backgroundColor: TRACK, borderRadius: 4, overflow: 'hidden' },
-  budgetProgressFill: { height: '100%', borderRadius: 4 },
-  confidenceText: { color: SAGE, fontSize: 10, fontWeight: '700', marginTop: 5, textTransform: 'capitalize' },
-  actionBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: 'rgba(61,125,108,0.08)', padding: 12, borderRadius: 13, marginTop: 13 },
-  actionText: { flex: 1, color: DEEP_GREEN, fontSize: 13, lineHeight: 19, fontWeight: '700' },
-  questionBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingHorizontal: 3, marginTop: 10 },
-  questionText: { flex: 1, color: TEAL, fontSize: 12, lineHeight: 18, fontWeight: '700' },
+  goalPaceRow: { flexDirection: 'row', marginTop: 10 },
+  goalPacePill: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 20 },
+  goalPaceText: { fontSize: 12, fontWeight: '800' },
+
+  // Disclosure
   disclosureCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, paddingHorizontal: 4, marginTop: 8 },
   disclosureText: { flex: 1, color: SAGE, fontSize: 11, lineHeight: 16 },
+
+  // Buttons
   chatButton: { flexDirection: 'row', minHeight: 48, gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: DEEP_GREEN, borderRadius: 15, marginTop: 18, paddingHorizontal: 16 },
   chatButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   explainButton: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 13, paddingVertical: 4 },
   explainButtonText: { color: TEAL, fontSize: 13, fontWeight: '800' },
+  reviewBudgetButton: { flexDirection: 'row', alignItems: 'center', alignSelf: 'flex-start', gap: 6, marginTop: 13, paddingVertical: 5, paddingHorizontal: 10, borderRadius: 11, borderWidth: 1, borderColor: 'rgba(61,125,108,0.25)', backgroundColor: 'rgba(61,125,108,0.06)' },
+  reviewBudgetText: { color: TEAL, fontSize: 12, fontWeight: '800' },
+
+  // Modals
   modalBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(14,32,29,0.48)' },
   explainSheet: { maxHeight: '84%', backgroundColor: CREAM, borderTopLeftRadius: 26, borderTopRightRadius: 26, paddingHorizontal: 20, paddingTop: 10, paddingBottom: 26 },
   topicSheet: { backgroundColor: CREAM, borderTopLeftRadius: 24, borderTopRightRadius: 24, padding: 22, paddingBottom: 30 },
@@ -616,6 +933,12 @@ const styles = StyleSheet.create({
   finnNoteEyebrow: { color: TEAL, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   finnNoteTitle: { color: DEEP_GREEN, fontSize: 17, lineHeight: 22, fontWeight: '900', marginTop: 4 },
   closeSheetButton: { width: 34, height: 34, borderRadius: 17, backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center' },
+
+  // How calculated box in explain sheet
+  howCalcBox: { backgroundColor: '#FFFFFF', borderRadius: 14, padding: 14, marginBottom: 4, borderLeftWidth: 3, borderLeftColor: TEAL },
+  howCalcLabel: { color: TEAL, fontSize: 9, fontWeight: '900', letterSpacing: 1, marginBottom: 5 },
+  howCalcText: { color: DEEP_GREEN, fontSize: 14, fontWeight: '800', lineHeight: 20, fontFamily: 'SpaceMono-Regular' },
+
   sheetSectionTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900', marginTop: 12 },
   sheetBody: { color: '#47645D', fontSize: 13, lineHeight: 19, marginTop: 6 },
   sheetEvidence: { flexDirection: 'row', flexWrap: 'wrap', backgroundColor: '#FFFFFF', borderRadius: 14, padding: 9, marginTop: 8 },
@@ -624,6 +947,8 @@ const styles = StyleSheet.create({
   topicOption: { flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: '#FFFFFF', borderRadius: 14, padding: 15, marginTop: 10 },
   topicOptionText: { flex: 1, color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
   cancelTopicButton: { alignSelf: 'center', padding: 12, marginTop: 4 },
+
+  // State cards
   stateCard: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 26, alignItems: 'center', justifyContent: 'center', marginBottom: 14, minHeight: 180 },
   stateTitle: { color: DEEP_GREEN, fontSize: 16, lineHeight: 21, fontWeight: '900', textAlign: 'center', marginTop: 13 },
   stateCopy: { color: SAGE, fontSize: 13, lineHeight: 19, textAlign: 'center', marginTop: 6 },

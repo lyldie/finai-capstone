@@ -85,6 +85,12 @@ async def create_goal(goal: GoalCreate, current_user: dict = Depends(get_current
     if not created_goal:
         raise HTTPException(status_code=500, detail="Failed to retrieve created goal")
 
+    from . import advisor
+    try:
+        await advisor.queue_proactive_goal_pace_check(current_user["id"], created_goal)
+    except Exception as exc:
+        print(f"Could not evaluate proactive goal guidance for user {current_user['id']}: {exc}")
+
     return GoalResponse(
         id=str(created_goal["_id"]),
         user_id=created_goal.get("user_id", ""),
@@ -129,6 +135,12 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Goal not found")
+
+    from . import advisor
+    try:
+        await advisor.queue_proactive_goal_pace_check(current_user["id"], updated)
+    except Exception as exc:
+        print(f"Could not evaluate proactive goal guidance for user {current_user['id']}: {exc}")
 
     return GoalResponse(
         id=str(updated["_id"]),

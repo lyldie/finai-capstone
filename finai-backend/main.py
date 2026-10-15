@@ -22,6 +22,9 @@ from google.genai import types
 from dotenv import load_dotenv
 import uvicorn
 
+# Load provider configuration before importing routers/services that create clients.
+load_dotenv()
+
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db, ensure_indexes
 from email_utils import send_otp_email
@@ -99,7 +102,6 @@ app.add_middleware(
 
 
 # 3. Security, Gemini Client & Email Config
-load_dotenv()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 try:
@@ -1982,9 +1984,8 @@ async def check_system_health():
     except ImportError:
         health_status["ocr"] = "error"
 
-    # 3. Check AI Budget Advisor (Gemini/OpenAI Key Check)
-    # Palitan mo yung "GEMINI_API_KEY" ng kung ano mang variable name gamit mo sa .env
-    ai_key = os.getenv("GEMINI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    # 3. The advisor can use Gemini or Groq as its configured AI providers.
+    ai_key = os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")
     if ai_key:
         health_status["advisor"] = "ok"
     else:

@@ -96,6 +96,21 @@ export default function PlanAheadScreen() {
           error={error}
           onRefresh={() => setRefreshKey((value) => value + 1)}
           onAskFinAI={openFinnChat}
+          onReviewBudget={(budget) => {
+            if (budget.id && ['weekly', 'monthly', 'annual'].includes(budget.period)) {
+              router.push({
+                pathname: '/setbudget',
+                params: {
+                  id: budget.id,
+                  category_id: budget.category_id,
+                  categoryName: budget.category,
+                  period_type: budget.period,
+                },
+              });
+            } else {
+              router.push('/(tabs)/insights' as never);
+            }
+          }}
           onViewInsights={() => router.push('/(tabs)/insights' as never)}
         />
       </ScrollView>

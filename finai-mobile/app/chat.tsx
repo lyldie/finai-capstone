@@ -33,7 +33,7 @@ interface ChatMessage {
   id: string;
   text: string;
   sender: "user" | "ai";
-  source?: "gemini" | "rule_based" | "user";
+  source?: "gemini" | "groq" | "rule_based" | "user";
   message_type?: "planning_insight";
 }
 
@@ -77,9 +77,25 @@ export default function ChatScreen() {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.detail || "Could not load this conversation.");
         if (active) {
-          setMessages(Array.isArray(payload.messages) ? payload.messages : []);
+          const loadedMsgs = Array.isArray(payload.messages) ? payload.messages : [];
+          setMessages(loadedMsgs);
           setConversationTitle(payload.conversation?.title || "FinAI Advisor");
 
+          // Proactive check-in: if thread has no check-in yet or is opened fresh, query check-in
+          fetch(`${API_URL}/advisor/conversations/${conversationId}/check-in`, {
+            method: "POST",
+            headers: { Authorization: `Bearer ${user.token}` },
+          })
+            .then(async (ciRes) => {
+              const ciData = await ciRes.json().catch(() => ({}));
+              if (ciRes.ok && ciData.created && ciData.message && active) {
+                setMessages((prev) => {
+                  if (prev.some((m) => m.id === ciData.message.id)) return prev;
+                  return [...prev, ciData.message];
+                });
+              }
+            })
+            .catch(() => undefined);
         }
       })
       .catch((error) => {
@@ -217,12 +233,24 @@ export default function ChatScreen() {
             </Text>
           </LinearGradient>
         ) : (
-          <View style={[styles.messageBubble, styles.bubbleAI]}>
+          <View style={[
+            styles.messageBubble,
+            styles.bubbleAI,
+            item.message_type === "planning_insight" && styles.bubbleProactive,
+          ]}>
+            {item.message_type === "planning_insight" && (
+              <View style={styles.proactiveHeaderRow}>
+                <Ionicons name="sparkles" size={13} color={GOLD} />
+                <Text style={styles.proactiveBadge}>FINN CHECK-IN</Text>
+              </View>
+            )}
             <Text style={[styles.messageText, styles.textAI]}>{item.text}</Text>
             {(item.message_type === "planning_insight" || item.source === "rule_based") && (
               <Text style={styles.sourceLabel}>
                 {item.message_type === "planning_insight"
-                  ? item.source === "gemini" ? "PROACTIVE INSIGHT · GEMINI ANALYSIS" : "PROACTIVE INSIGHT · RECORDED DATA"
+                  ? item.source === "gemini" ? "PROACTIVE INSIGHT · GEMINI ANALYSIS"
+                    : item.source === "groq" ? "PROACTIVE INSIGHT · GROQ AI ANALYSIS"
+                    : "PROACTIVE INSIGHT · RECORDED DATA"
                   : "BASED ON YOUR RECORDED DATA"}
               </Text>
             )}
@@ -248,19 +276,13 @@ export default function ChatScreen() {
           I’m Finn, your AI Budget Advisor. How can I help today?
         </Text>
         <Text style={styles.heroDesc}>
-          Record money, create a goal, or ask for straightforward
-          advice.
+          Ask me about your spending trends, budget limits, or savings targets anytime.
         </Text>
 
         <View style={styles.actionGrid}>
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() =>
-              router.push({
-                pathname: "/(tabs)/two",
-                params: { type: "Expense" },
-              })
-            }
+            onPress={() => sendChatMessage("How much have I spent so far this month, and is it within my usual pace?")}
           >
             <View
               style={[
@@ -268,57 +290,15 @@ export default function ChatScreen() {
                 { backgroundColor: "rgba(255, 98, 89, 0.12)" },
               ]}
             >
-              <Ionicons name="receipt-outline" size={20} color={EXPENSE} />
+              <Ionicons name="trending-down-outline" size={20} color={EXPENSE} />
             </View>
-            <Text style={styles.actionTitle}>Log Expense</Text>
-            <Text style={styles.actionSubtitle}>Add a purchase or bill</Text>
+            <Text style={styles.actionTitle}>Pacing Check</Text>
+            <Text style={styles.actionSubtitle}>Am I overspending this month?</Text>
           </TouchableOpacity>
 
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() =>
-              router.push({
-                pathname: "/(tabs)/two",
-                params: { type: "Income" },
-              })
-            }
-          >
-            <View
-              style={[
-                styles.actionIconBox,
-                { backgroundColor: "rgba(16, 185, 129, 0.12)" },
-              ]}
-            >
-              <Ionicons name="cash-outline" size={20} color={INCOME} />
-            </View>
-            <Text style={styles.actionTitle}>Log Income</Text>
-            <Text style={styles.actionSubtitle}>Salary, sahod, or raket</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() =>
-              router.push({
-                pathname: "/(tabs)/two",
-                params: { type: "Transfer" },
-              })
-            }
-          >
-            <View
-              style={[
-                styles.actionIconBox,
-                { backgroundColor: "rgba(61, 125, 108, 0.12)" },
-              ]}
-            >
-              <Ionicons name="swap-horizontal-outline" size={20} color={TEAL} />
-            </View>
-            <Text style={styles.actionTitle}>Transfer</Text>
-            <Text style={styles.actionSubtitle}>Transfer money between accounts</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.actionCard}
-            onPress={() => router.push("/goals" as never)}
+            onPress={() => sendChatMessage("Are any of my active budgets close to exceeding their limits?")}
           >
             <View
               style={[
@@ -326,10 +306,42 @@ export default function ChatScreen() {
                 { backgroundColor: "rgba(237, 178, 50, 0.16)" },
               ]}
             >
-              <Ionicons name="flag-outline" size={20} color={GOLD} />
+              <Ionicons name="pie-chart-outline" size={20} color={GOLD} />
             </View>
-            <Text style={styles.actionTitle}>Savings Goal</Text>
-            <Text style={styles.actionSubtitle}>Give your money a mission</Text>
+            <Text style={styles.actionTitle}>Budget Outlook</Text>
+            <Text style={styles.actionSubtitle}>Categories nearing their limit</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionCard}
+            onPress={() => sendChatMessage("Based on my income and targets, how much should I set aside for my savings goals?")}
+          >
+            <View
+              style={[
+                styles.actionIconBox,
+                { backgroundColor: "rgba(16, 185, 129, 0.12)" },
+              ]}
+            >
+              <Ionicons name="flag-outline" size={20} color={INCOME} />
+            </View>
+            <Text style={styles.actionTitle}>Goal Feasibility</Text>
+            <Text style={styles.actionSubtitle}>Target savings pace review</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionCard}
+            onPress={() => sendChatMessage("Give me 2 practical tips to improve my cash flow based on my recent transactions.")}
+          >
+            <View
+              style={[
+                styles.actionIconBox,
+                { backgroundColor: "rgba(61, 125, 108, 0.12)" },
+              ]}
+            >
+              <Ionicons name="sparkles-outline" size={20} color={TEAL} />
+            </View>
+            <Text style={styles.actionTitle}>Smart Advice</Text>
+            <Text style={styles.actionSubtitle}>Personalized money tips</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -615,6 +627,23 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.04,
     shadowRadius: 6,
     elevation: 1,
+  },
+  bubbleProactive: {
+    borderLeftWidth: 3,
+    borderLeftColor: GOLD,
+    backgroundColor: "#FFFCF5",
+  },
+  proactiveHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    marginBottom: 6,
+  },
+  proactiveBadge: {
+    color: GOLD,
+    fontSize: 9,
+    fontWeight: "900",
+    letterSpacing: 0.8,
   },
   messageText: { fontSize: 14, lineHeight: 22, fontWeight: "500" },
   textUser: { color: "#FFFFFF" },
