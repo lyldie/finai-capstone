@@ -5,6 +5,8 @@ import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Invalid receipt']);
 
@@ -17,6 +19,19 @@ interface ReceiptScannerModalProps {
 }
 
 const MAX_MULTI_PHOTOS = 4;
+// The backend may try both configured Gemini models, with up to 20 seconds per attempt.
+const RECEIPT_SCAN_TIMEOUT_MS = 45_000;
+
+function receiptScanErrorMessage(error: unknown): string {
+  const candidate = error as { name?: string; message?: string } | null;
+  const detail = `${candidate?.name || ''} ${candidate?.message || ''}`.toLowerCase();
+
+  if (/aborterror|fetchrequestcanceled|request.*cancel|network request failed|failed to fetch|timed? ?out|timeout/.test(detail)) {
+    return "We couldn't reach the receipt scanning service in time. Check your internet connection and try again, or enter the details manually.";
+  }
+
+  return "We couldn't scan this receipt right now. Please try again, or enter the details manually.";
+}
 
 type ReviewField = { value: string; status: string; engines: string[] };
 type ReviewData = {
@@ -142,11 +157,11 @@ export default function ReceiptScannerModal({
       if (userId) {
         formData.append('user_id', userId);
       }
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       setProcessingMessage('Sending receipt for analysis...');
 
       const controller = new AbortController();
-      const requestTimeout = setTimeout(() => controller.abort(), 20000);
+      const requestTimeout = setTimeout(() => controller.abort(), RECEIPT_SCAN_TIMEOUT_MS);
       let response: Response;
       try {
         setProcessingMessage('Gemini is analyzing your receipt...');
@@ -197,11 +212,8 @@ export default function ReceiptScannerModal({
       });
     } catch (error: any) {
       console.log("OCR Handled Error:", error?.message || error);
-      const isTimeout = error?.name === 'AbortError';
-      const message = isTimeout
-        ? 'The scan timed out. Check your connection, then retry or enter the receipt details manually.'
-        : (error?.message || 'Receipt scanning is temporarily unavailable. Retry or enter the details manually.');
-      Alert.alert('Gemini receipt scan unavailable', message, [
+      const message = receiptScanErrorMessage(error);
+      Alert.alert('Receipt scan unavailable', message, [
         { text: 'Enter manually', style: 'cancel', onPress: onClose },
         { text: 'Retry', onPress: () => { void submitPhotosToBackend(photos); } },
       ]);

@@ -17,6 +17,7 @@ const TEAL = '#3D7D6C';
 const GOLD = '#edb232';
 const SAGE = '#7C9A95';
 const CREAM = '#FAF7F2';
+const RED = '#D94C43';
 const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
 
@@ -33,7 +34,9 @@ export default function HomeDashboard() {
     categories,
     budgets,
     getAccountBalance,
-    isLoading
+    isLoading,
+    isRefreshing,
+    notifications,
   } = useTransactions();
 
   const router = useRouter();
@@ -82,22 +85,14 @@ export default function HomeDashboard() {
     const periodDays = Math.round((endDate - startDate) / 86400000) + 1;
     const elapsedDays = Math.round((todayDate - startDate) / 86400000) + 1;
     const daysRemaining = Math.max(periodDays - elapsedDays, 0);
-    if (used >= 100) return `${category} is over its ${period} limit. You have spent ₱${spent.toLocaleString()} of ₱${limit.toLocaleString()}.`;
-    if (used >= 90) return `${category} is close to its ${period} limit (${used.toFixed(0)}% used). ₱${remaining.toLocaleString()} remains.`;
+    if (used > 100) return `${category} is over its ${period} limit. You have spent \u20B1${spent.toLocaleString()} of \u20B1${limit.toLocaleString()}.`;
+    if (used >= 100) return `${category} has reached its ${period} limit. You have spent \u20B1${spent.toLocaleString()} of \u20B1${limit.toLocaleString()}.`;
+    if (used >= 90) return `${category} is close to its ${period} limit (${used.toFixed(0)}% used). \u20B1${remaining.toLocaleString()} remains.`;
     if (used >= 70 && periodDays > 0 && elapsedDays > 0 && elapsedDays <= periodDays / 2) {
-      return `${category} has used ${used.toFixed(0)}% of its ${period} limit with ${daysRemaining} days remaining. About ₱${remaining.toLocaleString()} remains; review upcoming expenses if useful.`;
+      return `${category} has used ${used.toFixed(0)}% of its ${period} limit with ${daysRemaining} days remaining. About \u20B1${remaining.toLocaleString()} remains; review upcoming expenses if useful.`;
     }
-    if (used >= 70) return `${category} has used ${used.toFixed(0)}% of its ${period} limit. About ₱${remaining.toLocaleString()} remains.`;
-    return `Your most-used budget is ${category} at ${used.toFixed(0)}%. About ₱${remaining.toLocaleString()} remains for this ${period} period.`;
-  }, [mostUsedBudget]);
-
-  const budgetHealthStatus = useMemo(() => {
-    if (!mostUsedBudget) return { label: 'No Active Budget', color: SAGE, percentage: 0 };
-    const percentage = mostUsedBudget.usage;
-    if (percentage >= 100) return { label: 'Over Budget', color: EXPENSE, percentage };
-    if (percentage >= 90) return { label: 'Critical Budget Warning', color: EXPENSE, percentage };
-    if (percentage >= 70) return { label: 'Budget Warning', color: GOLD, percentage };
-    return { label: 'Budget on Track', color: INCOME, percentage };
+    if (used >= 70) return `${category} has used ${used.toFixed(0)}% of its ${period} limit. About \u20B1${remaining.toLocaleString()} remains.`;
+    return `Your most-used budget is ${category} at ${used.toFixed(0)}%. About \u20B1${remaining.toLocaleString()} remains for this ${period} period.`;
   }, [mostUsedBudget]);
 
   if (isLoading) {
@@ -132,9 +127,18 @@ export default function HomeDashboard() {
           </TouchableOpacity>
           <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
             <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
+            {notifications.filter((n) => !n.is_read).length > 0 && (
+              <View style={styles.notificationBadge}>
+                <Text style={styles.notificationBadgeText}>
+                  {notifications.filter((n) => !n.is_read).length > 99 ? '99+' : notifications.filter((n) => !n.is_read).length}
+                </Text>
+              </View>
+            )}
           </TouchableOpacity>
         </View>
       </View>
+
+      {isRefreshing && <Text style={styles.refreshingHint}>Updating your latest data…</Text>}
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
 
@@ -178,7 +182,7 @@ export default function HomeDashboard() {
                 <Ionicons name="arrow-up" size={14} color="#5FE3B3" />
               </View>
               <View>
-                <Text style={styles.statLabel}>Income</Text>
+                <Text style={styles.statLabel}>Total income</Text>
                 <Text style={[styles.statValue, { color: '#5FE3B3' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   +₱{(totalIncome || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
@@ -192,7 +196,7 @@ export default function HomeDashboard() {
                 <Ionicons name="arrow-down" size={14} color="#FF9B93" />
               </View>
               <View>
-                <Text style={styles.statLabel}>Expenses</Text>
+                <Text style={styles.statLabel}>Total expenses</Text>
                 <Text style={[styles.statValue, { color: '#FF9B93' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   -₱{(totalExpense || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
@@ -200,22 +204,6 @@ export default function HomeDashboard() {
             </View>
           </View>
 
-          <View style={styles.healthContainer}>
-            <View style={styles.healthHeaderRow}>
-              <Text style={styles.healthTitle}>Budget Health Status</Text>
-              <Text style={[styles.healthStatusText, { color: budgetHealthStatus.color === SAGE ? 'rgba(255,255,255,0.7)' : budgetHealthStatus.color }]}>
-                {budgetHealthStatus.label}
-              </Text>
-            </View>
-            <View style={styles.progressBarBackground}>
-              <View
-                style={[
-                  styles.progressBarFill,
-                  { width: `${Math.min(budgetHealthStatus.percentage, 100)}%`, backgroundColor: budgetHealthStatus.color === SAGE ? 'rgba(255,255,255,0.4)' : budgetHealthStatus.color }
-                ]}
-              />
-            </View>
-          </View>
         </LinearGradient>
 
         <View
@@ -347,6 +335,7 @@ export default function HomeDashboard() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: CREAM },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: CREAM },
+  refreshingHint: { color: SAGE, fontSize: 11, fontWeight: '600', textAlign: 'right', paddingHorizontal: 22, paddingTop: 4 },
 
   header: {
     flexDirection: 'row',
@@ -367,9 +356,16 @@ const styles = StyleSheet.create({
   },
   notificationButton: {
     width: 42, height: 42, borderRadius: 21, backgroundColor: '#FFFFFF',
+    position: 'relative',
     justifyContent: 'center', alignItems: 'center',
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.06, shadowRadius: 8, elevation: 2
   },
+  notificationBadge: {
+    position: 'absolute', top: -3, right: -3, minWidth: 18, height: 18,
+    paddingHorizontal: 4, borderRadius: 9, backgroundColor: RED,
+    borderWidth: 1.5, borderColor: CREAM, alignItems: 'center', justifyContent: 'center',
+  },
+  notificationBadgeText: { color: '#FFFFFF', fontSize: 9, fontWeight: '900' },
   scrollContent: { padding: 20, paddingBottom: 110 },
 
   heroCardsStack: { position: 'relative', overflow: 'visible' },
@@ -400,13 +396,6 @@ const styles = StyleSheet.create({
   statLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
   statValue: { fontSize: 14, fontWeight: '800', marginTop: 2 },
   statDivider: { width: 1, height: 35, backgroundColor: 'rgba(255,255,255,0.14)', marginHorizontal: 15 },
-
-  healthContainer: { marginTop: 20, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' },
-  healthHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  healthTitle: { color: '#FFFFFF', fontSize: 12, fontWeight: '700', letterSpacing: 0.4 },
-  healthStatusText: { fontSize: 11, fontWeight: '800', textTransform: 'uppercase' },
-  progressBarBackground: { height: 6, backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 3, overflow: 'hidden' },
-  progressBarFill: { height: '100%', borderRadius: 3 },
 
   sectionHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sectionTitle: { color: DEEP_GREEN, fontSize: 18, fontWeight: '800' },

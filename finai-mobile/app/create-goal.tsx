@@ -140,7 +140,10 @@ export default function CreateGoal() {
       }
       router.back();
     } catch (error) {
-      Alert.alert("Error", "Bumagsak ang pag-save ng goal.");
+      Alert.alert(
+        isEditMode ? 'Could not update goal' : 'Could not save goal',
+        error instanceof Error ? error.message : 'We couldn’t save the goal. Check your connection and try again.'
+      );
     }
   };
 

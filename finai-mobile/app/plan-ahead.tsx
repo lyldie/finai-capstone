@@ -48,6 +48,11 @@ export default function PlanAheadScreen() {
     }
 
     const controller = new AbortController();
+    let timedOut = false;
+    const requestTimeout = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, 30000);
     setLoading(true);
     setError(null);
     fetch(`${API_URL}/advisor/planning`, {
@@ -68,13 +73,20 @@ export default function PlanAheadScreen() {
       .catch((requestError) => {
         if (!controller.signal.aborted) {
           setError(requestError instanceof Error ? requestError.message : 'Please check your connection and try again.');
+        } else if (timedOut) {
+          setError('The plan is taking longer than expected. Try again in a moment; your recorded insights are still available.');
         }
       })
       .finally(() => {
+        clearTimeout(requestTimeout);
         if (!controller.signal.aborted) setLoading(false);
+        else if (timedOut) setLoading(false);
       });
 
-    return () => controller.abort();
+    return () => {
+      clearTimeout(requestTimeout);
+      controller.abort();
+    };
   }, [user?.id, user?.token, refreshKey]));
 
   return (

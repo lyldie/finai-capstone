@@ -4,9 +4,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { useTransactions } from '../context/TransactionContext';
+import { getBudgetStatusColor, getBudgetStatusTint } from '../utils/budgetThresholdColors';
 
 const DEEP_GREEN = '#1c3c36';
 const SAGE = '#7C9A95';
+const formatPercentage = (value: number) => Number(value).toLocaleString('en-US', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
 
 export default function TransactionToastHost() {
   const { transactionToast, clearTransactionToast } = useTransactions();
@@ -16,12 +21,11 @@ export default function TransactionToastHost() {
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isBudgetAlert = transactionToast?.kind === 'budget';
   const threshold = transactionToast?.threshold || 0;
-  const overBudget = transactionToast?.level === 'over_budget' || threshold > 100;
-  const critical = !overBudget && (transactionToast?.level === 'critical' || threshold >= 90);
   const displayPercentage = transactionToast?.percentage_used ?? threshold;
-  const accent = !isBudgetAlert ? '#16845B' : overBudget ? '#B42318' : critical ? '#C2410C' : '#A16207';
-  const tint = !isBudgetAlert ? '#ECFDF3' : overBudget ? '#FEF3F2' : critical ? '#FFF7ED' : '#FFFBEB';
-  const severity = overBudget ? 'Over budget' : critical ? 'Budget nearly reached' : 'Budget warning';
+  const overBudget = transactionToast?.level === 'over_budget' || threshold > 100;
+  const accent = isBudgetAlert ? getBudgetStatusColor(threshold) : '#16845B';
+  const tint = isBudgetAlert ? getBudgetStatusTint(threshold) : '#ECFDF3';
+  const severity = overBudget ? 'Over budget' : threshold >= 100 ? 'Budget limit reached' : threshold >= 90 ? 'High budget use' : 'Budget warning';
 
   const dismiss = useCallback(() => {
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
@@ -66,7 +70,7 @@ export default function TransactionToastHost() {
               <Text style={styles.title}>{transactionToast.title}</Text>
               {isBudgetAlert && <Text style={[styles.severity, { color: accent }]}>{severity}</Text>}
             </View>
-            {isBudgetAlert && <Text style={[styles.percent, { color: accent }]}>{displayPercentage.toFixed(0)}%</Text>}
+            {isBudgetAlert && <Text style={[styles.percent, { color: accent }]}>{formatPercentage(displayPercentage)}%</Text>}
           </View>
           <TouchableOpacity onPress={dismiss} hitSlop={10} accessibilityLabel="Dismiss message">
             <Ionicons name="close" size={18} color={SAGE} />

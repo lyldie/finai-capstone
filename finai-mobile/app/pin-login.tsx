@@ -6,6 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
+import { verifyOfflinePin } from '../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -17,18 +19,7 @@ export default function PinLoginScreen() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const { user, logoutUser } = useAuth();
-
-  // Traffic Cop: Direct bypass check kapag admin o kapag valid na session
-  useEffect(() => {
-    const checkRoleBypass = async () => {
-      const role = await AsyncStorage.getItem('user_role');
-      if (role === 'admin') {
-        router.replace('/(admin)/admin-dashboard');
-      }
-    };
-    checkRoleBypass();
-  }, []);
+  const { user, loginUser, logoutUser } = useAuth();
 
   const handlePress = (num: string) => {
     if (pin.length < 4 && !loading) setPin(prev => prev + num);
@@ -50,8 +41,6 @@ export default function PinLoginScreen() {
 
     try {
       const email = user?.email || await AsyncStorage.getItem('user_email');
-      const savedPin = await AsyncStorage.getItem('user_pin');
-
       // 1. Backend Verification (Primary)
       if (email) {
         const response = await fetch(`${API_URL}/verify-pin`, {
@@ -63,7 +52,14 @@ export default function PinLoginScreen() {
         const data = await response.json();
 
         if (response.ok) {
-          const role = user?.role || await AsyncStorage.getItem('user_role');
+          await loginUser({
+            id: data.id,
+            name: data.name,
+            email: data.email,
+            role: data.role,
+            token: data.token,
+          });
+          const role = data.role;
           if (role === 'admin') {
             router.replace('/(admin)/admin-dashboard');
           } else {
@@ -71,6 +67,11 @@ export default function PinLoginScreen() {
           }
           return;
         } else {
+          if (response.status === 404) {
+            await logoutUser();
+            router.replace('/login?session=unavailable');
+            return;
+          }
           Alert.alert('Incorrect PIN', data.detail || 'The PIN does not match.');
           setPin('');
           setLoading(false);
@@ -79,10 +80,15 @@ export default function PinLoginScreen() {
       }
 
       // 2. Offline Fallback Verification (Kapag walang email record sa session)
-      if (savedPin && pin === savedPin) {
+      const offlineResult = await verifyOfflinePin(pin);
+      if (offlineResult.locked) {
+        Alert.alert('Too many attempts', 'Offline PIN access is locked for 15 minutes.');
+        setPin('');
+      } else if (offlineResult.verified) {
         const role = await AsyncStorage.getItem('user_role');
         if (role === 'admin') {
-          router.replace('/(admin)/admin-dashboard');
+          Alert.alert('Connection required', 'Sign in with your administrator password when the server is available.');
+          setPin('');
         } else {
           router.replace('/(tabs)');
         }
@@ -93,16 +99,20 @@ export default function PinLoginScreen() {
 
     } catch (e) {
       // 3. Network Failure Fallback (Kapag offline / walang internet)
-      const savedPin = await AsyncStorage.getItem('user_pin');
-      if (savedPin && pin === savedPin) {
-        const role = await AsyncStorage.getItem('user_role');
-        if (role === 'admin') {
-          router.replace('/(admin)/admin-dashboard');
-        } else {
-          router.replace('/(tabs)');
-        }
+      const role = user?.role || await AsyncStorage.getItem('user_role');
+      if (role === 'admin') {
+        Alert.alert('Connection required', 'Administrator access must be verified online. Try again when the server is available.');
+        setPin('');
+        return;
+      }
+      const offlineResult = await verifyOfflinePin(pin);
+      if (offlineResult.locked) {
+        Alert.alert('Too many attempts', 'Offline PIN access is locked for 15 minutes.');
+        setPin('');
+      } else if (offlineResult.verified) {
+        router.replace('/(tabs)');
       } else {
-        Alert.alert('Connection error', 'Could not reach the server to verify your PIN.');
+        Alert.alert('PIN verification failed', 'Could not verify this PIN offline. Check your connection and try again.');
         setPin('');
       }
     } finally {

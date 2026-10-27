@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
-import { 
-  View, Text, FlatList, TouchableOpacity, StyleSheet, 
-  ActivityIndicator, StatusBar, SafeAreaView, Alert, Modal, TextInput, Dimensions 
+import {
+  View, Text, FlatList, TouchableOpacity, StyleSheet,
+  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -31,7 +32,7 @@ export default function GoalTypesScreen() {
   const [goalTypes, setGoalTypes] = useState<GoalType[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'active' | 'archived'>('active');
-  
+
   const [modalVisible, setModalVisible] = useState(false);
   const [editingGoalType, setEditingGoalType] = useState<GoalType | null>(null);
   const [newName, setNewName] = useState('');
@@ -63,7 +64,7 @@ export default function GoalTypesScreen() {
   const archiveGoalType = async (id: string) => {
     Alert.alert("Archive Goal Type", "This will hide it from active use. You can restore it anytime from the Archived tab.", [
       { text: "Cancel", style: "cancel" },
-      { 
+      {
         text: "Archive", style: "destructive",
         onPress: async () => {
           const response = await fetch(`${API_URL}/api/goal-types/${id}/archive`, {
@@ -102,7 +103,7 @@ export default function GoalTypesScreen() {
                 method: 'DELETE',
                 headers: { Authorization: `Bearer ${user?.token}` },
               });
-              
+
               if (response.ok) {
                 fetchGoalTypes(view);
               } else {
@@ -139,7 +140,7 @@ export default function GoalTypesScreen() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${user?.token}`,
         },
-        body: JSON.stringify({ name: newName, icon: editEmoji.trim() || getGoalEmoji(newName) }), 
+        body: JSON.stringify({ name: newName, icon: editEmoji.trim() || getGoalEmoji(newName) }),
       });
       if (response.ok) {
         setModalVisible(false);
@@ -193,7 +194,7 @@ export default function GoalTypesScreen() {
   return (
     <SafeAreaView style={styles.container}>
       <StatusBar barStyle="light-content" />
-      
+
       {/* Modern Gradient Header Banner */}
       <LinearGradient colors={[TEAL, DEEP_GREEN]} style={styles.header}>
         <View style={styles.headerTop}>
@@ -247,7 +248,7 @@ export default function GoalTypesScreen() {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Goal Type</Text>
-            
+
             <View style={styles.previewRow}>
               <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getGoalEmoji(newName)} context="goal" tint={GOAL_TINT} accessibilityLabel="Choose goal type emoji" />
               <View style={{ flex: 1 }}>
@@ -263,14 +264,14 @@ export default function GoalTypesScreen() {
               </View>
             </View>
 
-            <TextInput 
-              style={styles.input} 
-              value={newName} 
-              onChangeText={setNewName} 
+            <TextInput
+              style={styles.input}
+              value={newName}
+              onChangeText={setNewName}
               placeholder="Goal Type Name"
               placeholderTextColor={SAGE}
             />
-            
+
             <TouchableOpacity style={styles.saveBtn} onPress={updateGoalType}>
               <Text style={{color: 'white', fontWeight: '800', fontSize: 15}}>Save Changes</Text>
             </TouchableOpacity>
@@ -286,12 +287,12 @@ export default function GoalTypesScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: BG },
-  header: { 
-    paddingHorizontal: 20, 
-    paddingTop: 30, 
-    paddingBottom: 20, 
-    borderBottomLeftRadius: 30, 
-    borderBottomRightRadius: 30, 
+  header: {
+    paddingHorizontal: 20,
+    paddingTop: 30,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 30,
+    borderBottomRightRadius: 30,
     elevation: 6,
     shadowColor: DEEP_GREEN,
     shadowOpacity: 0.2,
@@ -302,7 +303,7 @@ const styles = StyleSheet.create({
   backBtn: { padding: 8, backgroundColor: 'rgba(255, 255, 255, 0.15)', borderRadius: 12 },
   title: { fontSize: 24, fontWeight: '900', color: '#FFFFFF', letterSpacing: 0.5 },
   addBtnHeader: { width: 38, height: 38, borderRadius: 12, backgroundColor: GOLD, justifyContent: 'center', alignItems: 'center', elevation: 2 },
-  
+
   tabRow: { flexDirection: 'row', backgroundColor: 'rgba(255, 255, 255, 0.15)', borderRadius: 14, padding: 4, marginTop: 4 },
   tabBtn: { flex: 1, paddingVertical: 10, alignItems: 'center', borderRadius: 11 },
   tabBtnActive: { backgroundColor: '#ffffff', shadowColor: '#000', shadowOpacity: 0.08, shadowRadius: 4, elevation: 2 },
@@ -312,7 +313,7 @@ const styles = StyleSheet.create({
   listContent: { paddingHorizontal: 20, paddingTop: 15, paddingBottom: 40 },
   emptyState: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 12, paddingBottom: 60 },
   emptyText: { color: SAGE, fontSize: 14, fontWeight: '600' },
-  
+
   card: {
     backgroundColor: '#ffffff', padding: 16, borderRadius: 20, marginBottom: 12,
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
@@ -332,16 +333,16 @@ const styles = StyleSheet.create({
 
   restoreBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E0F2FE', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14 },
   restoreText: { color: TEAL, fontWeight: '800', fontSize: 12 },
-  
+
   modalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.6)', justifyContent: 'center', alignItems: 'center' },
   modalContent: { backgroundColor: 'white', padding: 25, borderRadius: 26, width: '88%', elevation: 10 },
   modalTitle: { fontSize: 20, fontWeight: '900', marginBottom: 20, color: DEEP_GREEN },
-  
+
   previewRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 20 },
   previewCircle: { width: 54, height: 54, borderRadius: 16, marginRight: 14, fontSize: 26, padding: 0, backgroundColor: GOAL_TINT },
   previewHint: { fontSize: 12, color: SAGE, fontWeight: '600' },
   resetLink: { fontSize: 11, color: TEAL, fontWeight: '800', marginTop: 3 },
-  
+
   input: { backgroundColor: '#F9FAFB', padding: 16, borderRadius: 16, marginBottom: 20, borderWidth: 1, borderColor: '#E5E7EB', color: DEEP_GREEN, fontWeight: '600' },
   saveBtn: { backgroundColor: TEAL, padding: 16, borderRadius: 16, alignItems: 'center', elevation: 2 },
 });

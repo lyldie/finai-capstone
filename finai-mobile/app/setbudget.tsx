@@ -7,6 +7,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTransactions } from '../context/TransactionContext'; 
 import { API_URL } from '../config';
 import QuickAddCategoryModal from '../components/QuickAddCategoryModal';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
@@ -75,7 +77,7 @@ export default function SetBudgetScreen() {
         await updateBudget(id as string, numericAmount, rolloverEnabled);
       } else {
         const userId = await AsyncStorage.getItem('user_id');
-        const token = await AsyncStorage.getItem('user_token');
+        const token = await getSecureItem('user_token');
         if (!userId || !token) throw new Error('Your session has expired. Please log in again.');
         const payload = {
           user_id: userId,
@@ -107,7 +109,9 @@ export default function SetBudgetScreen() {
       if (router.canGoBack()) router.back();
       else router.replace('/(tabs)/insights' as never);
     } catch (error) {
-      Alert.alert('Could not save budget', error instanceof Error ? error.message : 'The request could not be completed. Please try again.');
+      Alert.alert('Could not save budget', error instanceof Error
+        ? error.message
+        : 'We couldn’t save this limit. Check your connection and try again.');
     } finally {
       setLoading(false);
     }

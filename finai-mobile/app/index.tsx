@@ -1,83 +1,74 @@
 import { Redirect } from 'expo-router';
-
 import { useEffect, useState } from 'react';
-
 import AsyncStorage from '@react-native-async-storage/async-storage';
-
-import { View, ActivityIndicator } from 'react-native';
-
+import { ActivityIndicator, View } from 'react-native';
+import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext';
+import { getSecureItem } from '../utils/secureStorage';
 
 
 export default function Index() {
-
   const [rootScreen, setRootScreen] = useState<string | null>(null);
-
-
+  const { isLoading: authLoading, logoutUser } = useAuth();
 
   useEffect(() => {
+    if (authLoading) return;
+    let active = true;
 
     const checkUserStatus = async () => {
-
       try {
+        const [savedPin, userId, token] = await Promise.all([
+          getSecureItem('user_pin'),
+          AsyncStorage.getItem('user_id'),
+          getSecureItem('user_token'),
+        ]);
 
-        // Tinitignan natin kung may naka-set nang PIN
-
-        const savedPin = await AsyncStorage.getItem('user_pin');
-
-       
-
-        if (savedPin) {
-
-          // Kung meron na, diretso sa PIN Login
-
-          setRootScreen('/pin-login');
-
-        } else {
-
-          // Kung wala pa, First Time user 'to, sa Get Started muna
-
-          setRootScreen('/getstarted');
-
+        if (!userId || !token) {
+          if (active) setRootScreen('/getstarted');
+          return;
         }
 
-      } catch (e) {
+        const response = await fetch(`${API_URL}/api/users/me/session`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (response.status === 401 || response.status === 403) {
+          await logoutUser();
+          if (active) setRootScreen('/login?session=unavailable');
+          return;
+        }
+        if (!response.ok) throw new Error('Could not verify this session.');
 
-        // Default sa getstarted kapag may error
-
-        setRootScreen('/getstarted');
-
+        const session = await response.json();
+        if (session.role === 'admin') {
+          if (active) setRootScreen('/(admin)/admin-dashboard');
+        } else if (session.has_pin) {
+          if (active) setRootScreen('/pin-login');
+        } else if (active) setRootScreen('/setup-pin');
+      } catch {
+        // Admin access is never granted from a cached local role while offline.
+        // Regular users can still unlock their locally stored PIN for offline viewing.
+        const savedRole = await AsyncStorage.getItem('user_role');
+        if (savedRole === 'admin') {
+          if (active) setRootScreen('/login?session=unavailable');
+        } else if (await getSecureItem('user_pin')) {
+          if (active) setRootScreen('/pin-login');
+        } else if (active) {
+          setRootScreen('/login?session=unavailable');
+        }
       }
-
     };
 
-
-
-    checkUserStatus();
-
-  }, []);
-
-
-
-  // Habang nag-iisip pa yung app (loading), ipakita muna natin 'to
+    void checkUserStatus();
+    return () => { active = false; };
+  }, [authLoading, logoutUser]);
 
   if (!rootScreen) {
-
     return (
-
       <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#1c3c36' }}>
-
         <ActivityIndicator size="large" color="#edb232" />
-
       </View>
-
     );
-
   }
 
-
-
-  // Kapag may decision na, ire-redirect na niya sa tamang screen
-
   return <Redirect href={rootScreen as any} />;
-
 }

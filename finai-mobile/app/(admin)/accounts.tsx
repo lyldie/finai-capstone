@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, SafeAreaView, Alert, Modal, TextInput, Dimensions
+  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -19,6 +20,11 @@ const SAGE = '#8BA19D';
 const BG = '#F4F7F6';
 const DANGER = '#EF4444';
 const ACCOUNT_TINT = '#FFF9E6';
+
+const getResponseDetail = async (response: Response, fallback: string) => {
+  const data = await response.json().catch(() => ({}));
+  return typeof data?.detail === 'string' ? data.detail : fallback;
+};
 
 interface Account {
   id: string;
@@ -73,8 +79,8 @@ export default function AccountsScreen() {
             headers: { Authorization: `Bearer ${user?.token}` },
           });
           if (response.ok) fetchAccounts(view);
-          else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
-          else Alert.alert("Error", "Couldn't archive this account.");
+          else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
+          else Alert.alert('Could not archive account', await getResponseDetail(response, 'Please try again.'));
         }
       }
     ]);
@@ -86,8 +92,8 @@ export default function AccountsScreen() {
       headers: { Authorization: `Bearer ${user?.token}` },
     });
     if (response.ok) fetchAccounts(view);
-    else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
-    else Alert.alert("Error", "Couldn't restore this account.");
+    else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
+    else Alert.alert('Could not restore account', await getResponseDetail(response, 'Check whether another active preset already uses this name, then try again.'));
   };
 
   // 👈 BAGONG IDINAGDAG: Permanent Delete handler para sa Archived items na may error handling
@@ -153,12 +159,12 @@ export default function AccountsScreen() {
         setModalVisible(false);
         fetchAccounts(view);
       } else if (response.status === 401) {
-        Alert.alert("Session Expired", "Please log in again.");
+        Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
       } else {
-        Alert.alert('Could not update account', 'Please try again.');
+        Alert.alert('Could not update account', await getResponseDetail(response, 'Review the account name, then try again.'));
       }
     } catch (error) {
-      Alert.alert("Connection Error", "Check your internet connection and try again.");
+      Alert.alert('Could not update account', 'We couldn’t reach FinAI. Check your connection and try again.');
     }
   };
 

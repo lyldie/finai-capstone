@@ -297,10 +297,13 @@ export default function TabTwoScreen() {
         const advisorNotification = budgetNotifications
           .filter((notification) => notification.threshold >= 90 && notification.advisor_conversation_id)
           .sort((a, b) => b.threshold - a.threshold)[0];
+        const highestBudgetAlert = [...budgetNotifications].sort((a, b) => b.threshold - a.threshold)[0];
         showTransactionToast({
           kind: 'budget',
           title: toastTitle,
-          threshold: Math.max(...budgetNotifications.map((notification) => notification.threshold)),
+          threshold: highestBudgetAlert.threshold,
+          percentage_used: highestBudgetAlert.percentage_used,
+          level: highestBudgetAlert.level,
           messages: [transactionSummary, ...new Set(budgetNotifications.map((notification) => notification.message))],
           advisorConversationId: advisorNotification?.advisor_conversation_id,
         });

@@ -31,3 +31,24 @@ async def mark_notification_read(notification_id: str, current_user: dict = Depe
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"status": "Success"}
+
+
+@router.post("/mark-all-read")
+async def mark_all_notifications_read(current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    result = await db.notifications.update_many(
+        {"user_id": user_id, "is_read": False, "suppressed": {"$ne": True}},
+        {"$set": {"is_read": True}},
+    )
+    return {"status": "Success", "modified_count": result.modified_count}
+
+
+@router.post("/clear-all")
+async def clear_all_notifications(current_user: dict = Depends(get_current_user)):
+    """Soft-suppress all notifications for the user to keep audit trails intact while clearing the UI inbox."""
+    user_id = current_user["id"]
+    result = await db.notifications.update_many(
+        {"user_id": user_id, "suppressed": {"$ne": True}},
+        {"$set": {"suppressed": True, "is_read": True}},
+    )
+    return {"status": "Success", "modified_count": result.modified_count}

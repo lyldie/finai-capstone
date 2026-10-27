@@ -1,8 +1,9 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, SectionList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, SafeAreaView, Alert, Modal, TextInput, Dimensions
+  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -20,6 +21,11 @@ const BG = '#F4F7F6';
 const DANGER = '#EF4444';
 const INCOME_TINT = '#E8F5E9';
 const EXPENSE_TINT = '#FFEBEE';
+
+const getResponseDetail = async (response: Response, fallback: string) => {
+  const data = await response.json().catch(() => ({}));
+  return typeof data?.detail === 'string' ? data.detail : fallback;
+};
 
 interface Category {
   _id: string;
@@ -76,8 +82,8 @@ export default function CategoriesScreen() {
             headers: { Authorization: `Bearer ${user?.token}` },
           });
           if (response.ok) fetchCategories(view);
-          else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
-          else Alert.alert("Error", "Couldn't archive this category.");
+          else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
+          else Alert.alert('Could not archive category', await getResponseDetail(response, 'Please try again.'));
         }
       }
     ]);
@@ -89,8 +95,8 @@ export default function CategoriesScreen() {
       headers: { Authorization: `Bearer ${user?.token}` },
     });
     if (response.ok) fetchCategories(view);
-    else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
-    else Alert.alert("Error", "Couldn't restore this category.");
+    else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
+    else Alert.alert('Could not restore category', await getResponseDetail(response, 'Check whether another active preset already uses this name, then try again.'));
   };
 
   // 👈 BAGONG IDINAGDAG: Permanent Delete handler para sa mga na-archive na Categories
@@ -159,12 +165,12 @@ export default function CategoriesScreen() {
         setModalVisible(false);
         fetchCategories(view);
       } else if (response.status === 401) {
-        Alert.alert("Session Expired", "Please log in again.");
+        Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
       } else {
-        Alert.alert('Could not update category', 'Please try again.');
+        Alert.alert('Could not update category', await getResponseDetail(response, 'Review the category name and type, then try again.'));
       }
     } catch (error) {
-      Alert.alert("Error", "Check connection.");
+      Alert.alert('Could not update category', 'We couldn’t reach FinAI. Check your connection and try again.');
     }
   };
 

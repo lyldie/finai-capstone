@@ -2,6 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from database import db
 from schemas.account import AccountCreate, AccountResponse
 from typing import List, Optional
@@ -18,12 +19,15 @@ async def calculate_account_balance(account_name: str, user_id: Optional[str], i
         return float(initial_balance)
     balance = float(initial_balance)
     account_key = str(account_id) if account_id else None
+    account_keys = [account_key] if account_key else []
+    if account_key and ObjectId.is_valid(account_key):
+        account_keys.append(ObjectId(account_key))
     account_match = (
         {"$or": [
-            {"account_id": account_key},
-            {"account_id": {"$exists": False}, "account": account_name},
-            {"to_account_id": account_key},
-            {"to_account_id": {"$exists": False}, "to_account": account_name},
+            {"account_id": {"$in": account_keys}},
+            {"account_id": {"$in": [None, ""]}, "account": account_name},
+            {"to_account_id": {"$in": account_keys}},
+            {"to_account_id": {"$in": [None, ""]}, "to_account": account_name},
         ]} if account_key else {"$or": [{"account": account_name}, {"to_account": account_name}]}
     )
     query = {"user_id": user_id, "is_archived": {"$ne": True}, **account_match}
@@ -82,7 +86,12 @@ async def _check_duplicate_name(name: str, user_id: Optional[str], exclude_id: O
         scope_query["_id"] = {"$ne": exclude_id}
     duplicate = await db.accounts.find_one(scope_query)
     if duplicate:
-        raise HTTPException(status_code=409, detail="An account with this name already exists.")
+        detail = (
+            "You already have a custom account with this name. Choose a different name or edit the existing account."
+            if user_id
+            else "An admin account preset with this name already exists. Choose a different name."
+        )
+        raise HTTPException(status_code=409, detail=detail)
 
 
 @router.get("/", response_model=List[AccountResponse])
@@ -153,6 +162,9 @@ async def create_account(account: AccountCreate, current_user: dict = Depends(ge
     account_data["user_id"] = current_user["id"]
 
     account_data["account_role"] = "user"
+    account_data["owner_scope"] = current_user["id"]
+    account_data["name_key"] = account_data["name"].casefold()
+    account_data["is_archived"] = False
     template_id = account_data.get("parent_template_id")
     if template_id:
         try:
@@ -167,7 +179,10 @@ async def create_account(account: AccountCreate, current_user: dict = Depends(ge
         account_data["parent_template_id"] = str(template_oid)
     await _check_duplicate_name(account_data["name"], account_data["user_id"])
 
-    new_acc = await db.accounts.insert_one(account_data)
+    try:
+        new_acc = await db.accounts.insert_one(account_data)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="An account with this name already exists.") from exc
     created_acc = await db.accounts.find_one({"_id": new_acc.inserted_id})
     init_bal = float(created_acc.get("initial_balance", 0.0))
     acc_data = {**created_acc, "id": str(created_acc["_id"]), "current_balance": init_bal}
@@ -184,12 +199,17 @@ async def create_admin_account_preset(account: AccountCreate, admin: dict = Depe
 
     account_data["user_id"] = None
     account_data["account_role"] = "admin"
+    account_data["owner_scope"] = "admin"
+    account_data["name_key"] = account_data["name"].casefold()
     account_data["parent_template_id"] = None
     account_data["is_archived"] = False
 
     await _check_duplicate_name(account_data["name"], None)
 
-    new_acc = await db.accounts.insert_one(account_data)
+    try:
+        new_acc = await db.accounts.insert_one(account_data)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="An admin account preset with this name already exists.") from exc
     created_acc = await db.accounts.find_one({"_id": new_acc.inserted_id})
     init_bal = float(created_acc.get("initial_balance", 0.0))
     acc_data = {**created_acc, "id": str(created_acc["_id"]), "current_balance": init_bal}
@@ -214,6 +234,8 @@ async def update_account(
     existing = await db.accounts.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Account not found")
+    if existing.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Restore this account before editing it.")
 
     admin_actor = None
     if existing.get("account_role") == "admin":
@@ -229,6 +251,8 @@ async def update_account(
 
     account_data["user_id"] = existing.get("user_id")
     account_data["account_role"] = existing.get("account_role", "admin")
+    account_data["owner_scope"] = "admin" if account_data["account_role"] == "admin" else current_user["id"]
+    account_data["name_key"] = account_data["name"].casefold()
     account_data["parent_template_id"] = existing.get("parent_template_id")
     account_data["is_archived"] = existing.get("is_archived", False)
 
@@ -280,10 +304,15 @@ async def update_account(
                 updated, old_name = await session.with_transaction(commit_account_update)
         except HTTPException:
             raise
+        except DuplicateKeyError as exc:
+            raise HTTPException(status_code=409, detail="An account with this name already exists.") from exc
         except Exception as exc:
             raise HTTPException(status_code=503, detail="We couldn't safely update this account. Please try again.") from exc
     else:
-        updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": account_data}, return_document=True)
+        try:
+            updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": account_data}, return_document=True)
+        except DuplicateKeyError as exc:
+            raise HTTPException(status_code=409, detail="An account with this name already exists.") from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Account not found")
 
@@ -395,12 +424,24 @@ async def restore_account(
 
     await _check_duplicate_name(account.get("name", ""), account.get("user_id"), exclude_id=oid)
 
-    updated = await db.accounts.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
+    try:
+        updated = await db.accounts.find_one_and_update(
+            {"_id": oid, "is_archived": True},
+            {"$set": {"is_archived": False}},
+            return_document=True,
+        )
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="An active account with this name already exists. Rename it or archive it before restoring this account.") from exc
+    if not updated:
+        raise HTTPException(status_code=409, detail="This account changed while it was being restored. Refresh and try again.")
     if admin:
         await log_action(admin["name"], f"Restored account '{account.get('name')}'")
 
     init_bal = float(updated.get("initial_balance", 0.0))
-    return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": init_bal})
+    current_balance = await calculate_account_balance(
+        updated.get("name", ""), updated.get("user_id"), init_bal, account_id=updated["_id"]
+    )
+    return AccountResponse(**{**updated, "id": str(updated["_id"]), "current_balance": current_balance})
 
 
 @router.delete("/{account_id}/permanent")
@@ -413,9 +454,15 @@ async def permanently_delete_personal_account(account_id: str, current_user: dic
     account = await db.accounts.find_one({"_id": oid, "user_id": current_user["id"], "account_role": "user", "is_archived": True})
     if not account:
         raise HTTPException(status_code=404, detail="Archived account not found")
+    account_key = str(oid)
     linked = await db.expenses.find_one({
         "user_id": current_user["id"],
-        "$or": [{"account": account["name"]}, {"to_account": account["name"]}],
+        "$or": [
+            {"account_id": {"$in": [account_key, oid]}},
+            {"to_account_id": {"$in": [account_key, oid]}},
+            {"account_id": {"$in": [None, ""]}, "account": account["name"]},
+            {"to_account_id": {"$in": [None, ""]}, "to_account": account["name"]},
+        ],
     })
     if linked:
         raise HTTPException(status_code=409, detail="This account has transaction history and cannot be permanently deleted.")
@@ -444,11 +491,26 @@ async def permanent_delete_account(account_id: str, admin: dict = Depends(get_cu
     account_name = account.get("name")
 
     # I-check kung may active transactions pang nakatali sa account na ito
-    linked_transaction = await db.expenses.find_one({"$or": [{"account": account_name}, {"to_account": account_name}]})
+    account_key = str(oid)
+    linked_transaction = await db.expenses.find_one({
+        "$or": [
+            {"account_id": {"$in": [account_key, oid]}},
+            {"to_account_id": {"$in": [account_key, oid]}},
+            {"account_id": {"$in": [None, ""]}, "account": account_name},
+            {"to_account_id": {"$in": [None, ""]}, "to_account": account_name},
+        ]
+    })
     if linked_transaction:
         raise HTTPException(
             status_code=400, 
             detail="This account cannot be permanently deleted because active transactions still use it."
+        )
+
+    linked_personal_account = await db.accounts.find_one({"parent_template_id": {"$in": [account_key, oid]}})
+    if linked_personal_account:
+        raise HTTPException(
+            status_code=409,
+            detail="This account preset is still linked to personal accounts. Remove those account links before permanently deleting the preset.",
         )
 
     result = await db.accounts.delete_one({"_id": oid})
@@ -483,9 +545,16 @@ async def delete_account(
     if str(account.get("user_id")) != user_id:
         raise HTTPException(status_code=403, detail="You don't have permission to delete this account.")
 
-    transaction_query = {"is_archived": {"$ne": True}, "$or": [{"account": account["name"]}, {"to_account": account["name"]}]}
-    if account.get("user_id"):
-        transaction_query["user_id"] = account["user_id"]
+    account_key = str(oid)
+    transaction_query = {
+        "user_id": user_id,
+        "$or": [
+            {"account_id": {"$in": [account_key, oid]}},
+            {"to_account_id": {"$in": [account_key, oid]}},
+            {"account_id": {"$in": [None, ""]}, "account": account["name"]},
+            {"to_account_id": {"$in": [None, ""]}, "to_account": account["name"]},
+        ],
+    }
 
     linked_transaction = await db.expenses.find_one(transaction_query)
     if linked_transaction:

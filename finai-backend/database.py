@@ -1,4 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ASCENDING
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -11,6 +12,13 @@ if not MONGO_URL:
 # I-initialize ang client at db
 client = AsyncIOMotorClient(MONGO_URL)
 db = client.FinAI_DB
+
+
+async def _backfill_unique_keys(collection, key_field: str, key_builder) -> None:
+    async for document in collection.find({}):
+        key = key_builder(document)
+        if key is not None and document.get(key_field) != key:
+            await collection.update_one({"_id": document["_id"]}, {"$set": {key_field: key}})
 
 
 async def ensure_indexes():
@@ -32,11 +40,69 @@ async def ensure_indexes():
         unique=True,
     )
 
+    # Canonical keys let Mongo enforce the same case/whitespace-insensitive
+    # uniqueness as the API checks, including when concurrent requests race.
+    await _backfill_unique_keys(
+        db.users, "email_key",
+        lambda doc: doc.get("email", "").strip().casefold() if isinstance(doc.get("email"), str) and doc.get("email", "").strip() else None,
+    )
+    async for user in db.users.find({"email": {"$type": "string"}}):
+        normalized_email = user["email"].strip().lower()
+        if user["email"] != normalized_email:
+            await db.users.update_one({"_id": user["_id"]}, {"$set": {"email": normalized_email}})
+    await _backfill_unique_keys(
+        db.categories, "name_key",
+        lambda doc: doc.get("name", "").strip().casefold() if isinstance(doc.get("name"), str) and doc.get("name", "").strip() else None,
+    )
+    await _backfill_unique_keys(
+        db.accounts, "name_key",
+        lambda doc: doc.get("name", "").strip().casefold() if isinstance(doc.get("name"), str) and doc.get("name", "").strip() else None,
+    )
+    async for category in db.categories.find({"name_key": {"$type": "string"}}):
+        role = category.get("category_role", "user")
+        owner_scope = "admin" if role == "admin" else str(category.get("user_id", ""))
+        await db.categories.update_one(
+            {"_id": category["_id"]},
+            {"$set": {
+                "owner_scope": owner_scope,
+                "category_role": role,
+                "type": str(category.get("type", "")).strip().lower(),
+                "is_archived": bool(category.get("is_archived", False)),
+            }},
+        )
+    async for account in db.accounts.find({"name_key": {"$type": "string"}}):
+        role = account.get("account_role", "admin")
+        owner_scope = "admin" if role == "admin" else str(account.get("user_id", ""))
+        await db.accounts.update_one(
+            {"_id": account["_id"]},
+            {"$set": {
+                "owner_scope": owner_scope,
+                "account_role": role,
+                "is_archived": bool(account.get("is_archived", False)),
+            }},
+        )
+
+    # Existing collisions must be resolved explicitly; startup now fails rather
+    # than silently running without the protections these indexes provide.
+    await db.users.create_index([("email_key", ASCENDING)], unique=True, name="users_email_key_unique", partialFilterExpression={"email_key": {"$type": "string"}})
+    await db.categories.create_index(
+        [("category_role", ASCENDING), ("owner_scope", ASCENDING), ("type", ASCENDING), ("name_key", ASCENDING)],
+        unique=True, name="categories_owner_type_name_unique",
+        partialFilterExpression={"name_key": {"$type": "string"}, "is_archived": False},
+    )
+    await db.accounts.create_index(
+        [("account_role", ASCENDING), ("owner_scope", ASCENDING), ("name_key", ASCENDING)],
+        unique=True, name="accounts_owner_name_unique",
+        partialFilterExpression={"name_key": {"$type": "string"}, "is_archived": False},
+    )
+
     # FIX: pending_signups now backs OTP verification (previously an in-memory dict --
     # see main.py's /register and /verify-otp). This TTL index auto-deletes any
     # unverified registration 15 minutes after it was created, a small safety margin
     # past the 10-minute app-level expiry check, so abandoned signups don't pile up.
     await db.pending_signups.create_index("timestamp", expireAfterSeconds=900)
+    await db.auth_attempts.create_index("expires_at", expireAfterSeconds=0, name="auth_attempts_ttl")
+    await db.category_name_locks.create_index("expires_at", expireAfterSeconds=0, name="category_name_locks_ttl")
 
     # Keeps date-range analytics (dashboard and advisor) scoped to one user's
     # non-archived transaction history instead of scanning the entire collection.

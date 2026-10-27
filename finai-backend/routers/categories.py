@@ -2,6 +2,10 @@
 from fastapi import APIRouter, HTTPException, Depends
 from fastapi.security import HTTPAuthorizationCredentials
 from bson import ObjectId
+import asyncio
+import secrets
+from datetime import datetime, timedelta, timezone
+from pymongo.errors import DuplicateKeyError
 from typing import Optional
 from schemas.category import CategoryCreate, CategoryResponse
 from database import db
@@ -12,6 +16,44 @@ import re
 from .logs import log_action
 
 router = APIRouter(prefix="/api/categories", tags=["Categories"])
+
+
+async def _insert_category_with_name_lock(category_data: dict, duplicate_query: dict, detail: str):
+    """Serialize overlapping user/admin category names before checking and inserting."""
+    lock_key = f"{category_data['type']}:{category_data['name_key']}"
+    owner = secrets.token_urlsafe(18)
+    deadline = asyncio.get_running_loop().time() + 5
+    acquired = False
+
+    # Atomically claim a short lease. The unique _id means only one request can
+    # create a missing lock; concurrent upserts retry until the current owner
+    # releases it or its lease expires. This works without Mongo transactions.
+    while asyncio.get_running_loop().time() < deadline:
+        now = datetime.now(timezone.utc)
+        try:
+            lock = await db.category_name_locks.find_one_and_update(
+                {"_id": lock_key, "$or": [{"expires_at": {"$lte": now}}, {"expires_at": {"$exists": False}}]},
+                {"$set": {"owner": owner, "expires_at": now + timedelta(seconds=15)}},
+                upsert=True,
+                return_document=True,
+            )
+            if lock and lock.get("owner") == owner:
+                acquired = True
+                break
+        except DuplicateKeyError:
+            # Another request owns the unexpired lock; retry briefly.
+            pass
+        await asyncio.sleep(0.05)
+
+    if not acquired:
+        raise HTTPException(status_code=503, detail="Category is being saved. Please try again in a moment.")
+
+    try:
+        if await db.categories.find_one(duplicate_query):
+            raise HTTPException(status_code=409, detail=detail)
+        return await db.categories.insert_one(category_data)
+    finally:
+        await db.category_name_locks.delete_one({"_id": lock_key, "owner": owner})
 
 def get_default_icon(name: str):
     """(unchanged)"""
@@ -71,14 +113,30 @@ async def create_category(category: CategoryCreate, current_user: dict = Depends
         "is_archived": {"$ne": True}
     })
     if existing_cat:
-        raise HTTPException(status_code=409, detail="A category with this name already exists.")
+        if existing_cat.get("category_role") == "admin":
+            detail = "This category is already available in the Admin presets. Select it from the category list instead of creating another."
+        else:
+            detail = "You already created a custom category with this name. Choose a different name."
+        raise HTTPException(status_code=409, detail=detail)
 
     cat_data["category_role"] = "user"
+    cat_data["owner_scope"] = user_id
+    cat_data["name_key"] = cat_data["name"].casefold()
     cat_data["is_archived"] = False
     if not cat_data.get("icon"):
         cat_data["icon"] = get_default_icon(cat_data["name"])
 
-    new_cat = await db.categories.insert_one(cat_data)
+    try:
+        new_cat = await _insert_category_with_name_lock(
+            cat_data,
+            {"$or": [
+                {"category_role": "admin", "type": cat_data["type"], "name_key": cat_data["name_key"], "is_archived": False},
+                {"category_role": "user", "user_id": user_id, "type": cat_data["type"], "name_key": cat_data["name_key"], "is_archived": False},
+            ]},
+            "This category is already available to this user or exists in your custom categories.",
+        )
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="A category with this name and type already exists in this scope.") from exc
     created_cat = await db.categories.find_one({"_id": new_cat.inserted_id})
     created_cat_data = {**created_cat, "id": str(created_cat["_id"])}
     return CategoryResponse(**created_cat_data)
@@ -95,21 +153,31 @@ async def create_admin_category(category: CategoryCreate, admin: dict = Depends(
 
     # 🛡️ FIX: Duplicate category check for admins
     existing_cat = await db.categories.find_one({
-        "category_role": "admin",
-        "name": {"$regex": f"^{re.escape(cat_data['name'])}$", "$options": "i"},
         "type": cat_data["type"],
-        "is_archived": {"$ne": True}
+        "name_key": cat_data["name"].casefold(),
+        "is_archived": {"$ne": True},
+        "$or": [{"category_role": "admin"}, {"category_role": "user"}],
     })
     if existing_cat:
-        raise HTTPException(status_code=400, detail="An admin preset with this name already exists.")
+        raise HTTPException(status_code=409, detail="An active category with this name and type already exists. Choose a different name or resolve the existing custom category first.")
 
     cat_data["user_id"] = None
     cat_data["category_role"] = "admin"
+    cat_data["owner_scope"] = "admin"
+    cat_data["name_key"] = cat_data["name"].casefold()
     cat_data["is_archived"] = False
     if not cat_data.get("icon"):
         cat_data["icon"] = get_default_icon(cat_data["name"])
 
-    new_cat = await db.categories.insert_one(cat_data)
+    try:
+        new_cat = await _insert_category_with_name_lock(
+            cat_data,
+            {"type": cat_data["type"], "name_key": cat_data["name_key"], "is_archived": False,
+             "$or": [{"category_role": "admin"}, {"category_role": "user"}]},
+            "An active category with this name and type already exists.",
+        )
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="An admin preset with this name and type already exists.") from exc
     created_cat = await db.categories.find_one({"_id": new_cat.inserted_id})
     created_cat_data = {**created_cat, "id": str(created_cat["_id"])}
 
@@ -133,6 +201,8 @@ async def update_category(
     existing_cat = await db.categories.find_one({"_id": oid})
     if not existing_cat:
         raise HTTPException(status_code=404, detail="Category not found")
+    if existing_cat.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Restore this category preset before editing it.")
 
     admin_actor = None
     if existing_cat.get("category_role") == "admin":
@@ -142,6 +212,7 @@ async def update_category(
             raise HTTPException(status_code=403, detail="You don't have permission to edit this category.")
 
     old_name = existing_cat.get("name")
+    old_type = str(existing_cat.get("type", "")).lower()
 
     category_data = category.model_dump(exclude={"user_id", "category_role"})
     category_data["name"] = category_data["name"].strip()
@@ -150,12 +221,17 @@ async def update_category(
         raise HTTPException(status_code=422, detail="Category name and a valid type (expense or income) are required.")
     category_data["user_id"] = existing_cat.get("user_id")
     category_data["category_role"] = existing_cat.get("category_role", "user")
+    category_data["owner_scope"] = "admin" if category_data["category_role"] == "admin" else current_user["id"]
+    category_data["name_key"] = category_data["name"].casefold()
     duplicate_query = {
         "_id": {"$ne": oid}, "is_archived": {"$ne": True}, "type": category_data["type"],
         "name": {"$regex": f"^{re.escape(category_data['name'])}$", "$options": "i"},
     }
     if existing_cat.get("category_role") == "admin":
-        duplicate_query["category_role"] = "admin"
+        duplicate_query["$or"] = [
+            {"category_role": "admin"},
+            {"category_role": "user"},
+        ]
     else:
         duplicate_query["$or"] = [
             {"category_role": "admin"},
@@ -163,16 +239,44 @@ async def update_category(
         ]
     if await db.categories.find_one(duplicate_query):
         raise HTTPException(status_code=409, detail="A category with this name and type already exists.")
-    updated_cat = await db.categories.find_one_and_update({"_id": oid}, {"$set": category_data}, return_document=True)
+
+    # Category type determines whether a transaction is income or expense. Do
+    # not let a used category switch types and leave its historical records
+    # pointing at a category of the wrong type.
+    if old_type != category_data["type"]:
+        category_key = str(oid)
+        reference_scope = {} if existing_cat.get("category_role") == "admin" else {"user_id": current_user["id"]}
+        linked_transaction = await db.expenses.find_one({
+            **reference_scope,
+            "$or": [
+                {"category_id": {"$in": [category_key, oid]}},
+                {"category_id": {"$in": [None, ""]}, "category": old_name,
+                 "type": {"$regex": f"^{re.escape(old_type)}$", "$options": "i"}},
+            ],
+        })
+        linked_budget = await db.budgets.find_one({
+            **reference_scope, "category_id": {"$in": [category_key, oid]}
+        })
+        if linked_transaction or linked_budget:
+            raise HTTPException(
+                status_code=409,
+                detail="This category is already used by transactions or a budget, so its type can’t be changed. Create a separate category for the other type.",
+            )
+
+    try:
+        updated_cat = await db.categories.find_one_and_update({"_id": oid}, {"$set": category_data}, return_document=True)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="A category with this name and type already exists in this scope.") from exc
     if not updated_cat:
         raise HTTPException(status_code=404, detail="Category not found")
 
-    new_name = category.name
+    new_name = category_data["name"]
     if new_name and new_name != old_name:
         category_key = str(oid)
         expense_query = {"$or": [
-            {"category_id": category_key},
-            {"category_id": {"$in": [None, ""]}, "category": old_name},
+            {"category_id": {"$in": [category_key, oid]}},
+            {"category_id": {"$in": [None, ""]}, "category": old_name,
+             "type": {"$regex": f"^{re.escape(old_type)}$", "$options": "i"}},
         ]}
         if existing_cat.get("category_role") != "admin":
             expense_query["user_id"] = current_user["id"]
@@ -228,14 +332,24 @@ async def restore_category(category_id: str, admin: dict = Depends(get_current_a
     if category.get("category_role") != "admin" or not category.get("is_archived", False):
         raise HTTPException(status_code=400, detail="Only archived admin category presets can be restored.")
     duplicate = await db.categories.find_one({
-        "_id": {"$ne": oid}, "category_role": "admin", "type": category.get("type"),
-        "name": {"$regex": f"^{re.escape(category.get('name', ''))}$", "$options": "i"},
+        "_id": {"$ne": oid}, "type": category.get("type"),
+        "name_key": str(category.get("name", "")).strip().casefold(),
         "is_archived": {"$ne": True},
+        "$or": [{"category_role": "admin"}, {"category_role": "user"}],
     })
     if duplicate:
-        raise HTTPException(status_code=409, detail="An active category with this name and type already exists.")
+        raise HTTPException(status_code=409, detail="An active category with this name and type already exists, so this preset cannot be restored yet.")
 
-    updated = await db.categories.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
+    try:
+        updated = await db.categories.find_one_and_update(
+            {"_id": oid, "is_archived": True},
+            {"$set": {"is_archived": False}},
+            return_document=True,
+        )
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail="An active category with this name and type already exists.") from exc
+    if not updated:
+        raise HTTPException(status_code=409, detail="This category changed while it was being restored. Refresh and try again.")
     await log_action(admin["name"], f"Restored category '{category.get('name')}'")
     return CategoryResponse(**{**updated, "id": str(updated["_id"])})
 
@@ -260,11 +374,18 @@ async def permanent_delete_category(category_id: str, admin: dict = Depends(get_
     category_name = category.get("name")
     
     # 🛡️ FIX: Pinalitan ng db.expenses dahil yun ang tamang collection name ninyo
-    linked_transaction = await db.expenses.find_one({"category": category_name})
+    category_key = str(oid)
+    linked_transaction = await db.expenses.find_one({
+        "$or": [
+            {"category_id": {"$in": [category_key, oid]}},
+            {"category_id": {"$in": [None, ""]}, "category": category_name,
+             "type": {"$regex": f"^{re.escape(str(category.get('type', '')))}$", "$options": "i"}},
+        ]
+    })
     if linked_transaction:
         raise HTTPException(
             status_code=400, 
-            detail="This category cannot be permanently deleted because active transactions still use it."
+            detail="This category cannot be permanently deleted because recorded transactions still reference it."
         )
 
     linked_budget = await db.budgets.find_one({"category_id": {"$in": [str(oid), oid]}})
@@ -310,10 +431,29 @@ async def delete_category(
     if linked_budget:
         raise HTTPException(status_code=400, detail="This category has an active budget. Delete or reassign that budget first.")
 
-    # 🛡️ FIX: Check kung may TRANSACTIONS na gumagamit nito para hindi magka-multong data
-    linked_expense = await db.expenses.find_one({"category": existing.get("name"), "user_id": user_id})
-    if linked_expense:
-        raise HTTPException(status_code=400, detail="This category cannot be deleted while transactions use it. Edit or remove those transactions first.")
+    # Match transactions by stable category ID. Older records without an ID
+    # fall back to both category label and transaction type so same-name income
+    # and expense categories do not block each other's deletion.
+    category_key = str(oid)
+    category_type = str(existing.get("type", ""))
+    linked_transaction_query = {
+        "user_id": user_id,
+        "$or": [
+            {"category_id": {"$in": [category_key, oid]}},
+            {"category_id": {"$in": [None, ""]}, "category": existing.get("name"),
+             "type": {"$regex": f"^{re.escape(category_type)}$", "$options": "i"}},
+        ],
+    }
+    linked_transaction_count = await db.expenses.count_documents(linked_transaction_query)
+    if linked_transaction_count:
+        category_kind = "income" if category_type.lower() == "income" else "expense"
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f'This {category_kind} category is linked to {linked_transaction_count} '
+                f'recorded transaction(s). Edit or reassign those transactions before deleting it.'
+            ),
+        )
 
     result = await db.categories.delete_one({"_id": oid})
     if result.deleted_count == 0:
@@ -350,6 +490,16 @@ async def seed_categories(admin: dict = Depends(get_current_admin)):
     existing_count = await db.categories.count_documents({})
     if existing_count > 0:
         return {"status": "Info", "message": f"The database already contains {existing_count} items. No seeding is needed."}
+
+    for category in all_data:
+        category["name"] = category["name"].strip()
+        category["name_key"] = category["name"].casefold()
+        category["owner_scope"] = "admin"
+        category["is_archived"] = False
+    for account in accounts_list:
+        account["name_key"] = account["name"].strip().casefold()
+        account["owner_scope"] = "admin"
+        account["is_archived"] = False
 
     await db.categories.insert_many(all_data)
     await db.accounts.insert_many(accounts_list)

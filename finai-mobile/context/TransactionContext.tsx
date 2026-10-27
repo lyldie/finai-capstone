@@ -4,6 +4,8 @@ import { Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { useAuth } from './AuthContext';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 export type TransactionType = 'Income' | 'Expense' | 'Transfer' | 'Contribution';
 export type Transaction = { id: string; amount: string; category: string; category_id?: string; note: string; type: TransactionType; account: string; account_id?: string; to_account?: string; to_account_id?: string; date: string; goal_id?: string; };
@@ -44,6 +46,7 @@ type TransactionContextType = {
   goals: Goal[];
   goalTypes: GoalTypePreset[];
   isLoading: boolean;
+  isRefreshing: boolean;
   addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
   updateTransaction: (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
   archiveTransaction: (id: string) => Promise<void>;
@@ -60,6 +63,8 @@ type TransactionContextType = {
   balance: number;
   fetchTransactions: (showLoading?: boolean) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
+  markAllNotificationsRead: () => Promise<void>;
+  clearAllNotifications: () => Promise<void>;
 };
 
 const TransactionContext = createContext<TransactionContextType | undefined>(undefined);
@@ -86,8 +91,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [archivedAccountBalance, setArchivedAccountBalance] = useState(0);
   const [goalTypes, setGoalTypes] = useState<GoalTypePreset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const activeUserId = useRef<string | null>(null);
   const fetchRequestId = useRef(0);
+  const foregroundRequestActive = useRef(false);
   const showTransactionToast = useCallback((notice: Omit<TransactionToastNotice, 'id'>) => {
     setTransactionToast({ ...notice, id: `${Date.now()}-${Math.random().toString(36).slice(2)}` });
   }, []);
@@ -95,8 +102,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   // Option for silent refresh (showLoading = false) para iwas flicker sa UI
   const fetchTransactions = useCallback(async (showLoading = true) => {
+    // A screen-focus refresh must not invalidate the initial load: doing so would
+    // leave the shared loading state true because silent refreshes never clear it.
+    if (!showLoading && foregroundRequestActive.current) return;
     const requestId = ++fetchRequestId.current;
-    if (showLoading) setIsLoading(true);
+    if (showLoading) {
+      foregroundRequestActive.current = true;
+      setIsRefreshing(true);
+      setIsLoading(true);
+    }
     try {
       const userId = user?.id;
       if (!userId) {
@@ -111,7 +125,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setArchivedGoalSavings(0);
         setArchivedAccountBalance(0);
         setGoalTypes([]);
-        if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
+        if (showLoading && requestId === fetchRequestId.current) {
+          setIsLoading(false);
+          setIsRefreshing(false);
+        }
         return;
       }
       if (activeUserId.current !== userId) {
@@ -154,6 +171,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       if (cachedTrans) setTransactions(cachedTrans);
       if (cachedBudgets) setBudgets(cachedBudgets);
       if (cachedAccounts) setAccounts(cachedAccounts);
+      // First render this user's own cached financial data; keep the network sync
+      // running in the background so returning users don't wait on every endpoint.
+      if (showLoading && cachedTrans !== null) setIsLoading(false);
 
       // 2. BACKGROUND SYNC: Subukan kunin ang latest sa server nang may safe fallbacks
       const fetchAllTransactions = async () => {
@@ -235,7 +255,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // Kahit mag-error, may makikita pa ring data ang user dahil sa cache
       console.log("Offline mode active or network error:", e);
     } finally {
-      if (showLoading && requestId === fetchRequestId.current) setIsLoading(false);
+      if (showLoading && requestId === fetchRequestId.current) {
+        foregroundRequestActive.current = false;
+        setIsRefreshing(false);
+        setIsLoading(false);
+      }
     }
   }, [user?.id]);
 
@@ -284,7 +308,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     // alert even though nothing was actually saved. Letting the error propagate here
     // (matching how it worked before the offline-mode changes) means two.tsx's existing
     // try/catch correctly shows a failure message instead of a false success.
-    const token = await AsyncStorage.getItem('user_token');
+    const token = await getSecureItem('user_token');
     const res = await fetch(`${API_URL}/add-expense`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
 
     if (!res.ok) throw await transactionRequestError(res, 'Save failed. Please review the transaction and try again.');
@@ -315,7 +339,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
     // FIX: same reasoning as addTransaction above -- let the error propagate instead of
     // swallowing it, so two.tsx's own error handling reflects what actually happened.
-    const token = await AsyncStorage.getItem('user_token');
+    const token = await getSecureItem('user_token');
     const res = await fetch(`${API_URL}/update-expense/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify(payload) });
     if (!res.ok) throw await transactionRequestError(res, 'Update failed. Please review the transaction and try again.');
     const result = await res.json();
@@ -338,7 +362,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const archiveTransaction = async (id: string) => {
-    const token = await AsyncStorage.getItem('user_token');
+    const token = await getSecureItem('user_token');
     const res = await fetch(`${API_URL}/archive-expense/${id}`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -352,7 +376,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
 
   const markNotificationRead = async (id: string) => {
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const response = await fetch(`${API_URL}/api/notifications/${id}/read`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
       if (response.ok) {
         setNotifications((current) => current.map((item) => item.id === id ? { ...item, is_read: true } : item));
@@ -360,10 +384,40 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     } catch (error) { console.error('Notification read error:', error); }
   };
 
+  const markAllNotificationsRead = async () => {
+    try {
+      const token = await getSecureItem('user_token');
+      const response = await fetch(`${API_URL}/api/notifications/mark-all-read`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token || ''}` },
+      });
+      if (!response.ok) throw new Error('Could not mark notifications as read. Please try again.');
+      setNotifications((current) => current.map((item) => ({ ...item, is_read: true })));
+    } catch (error) {
+      console.error('Mark all notifications read error:', error);
+      Alert.alert('Could not update notifications', 'Please check your connection and try again.');
+    }
+  };
+
+  const clearAllNotifications = async () => {
+    try {
+      const token = await getSecureItem('user_token');
+      const response = await fetch(`${API_URL}/api/notifications/clear-all`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token || ''}` },
+      });
+      if (!response.ok) throw new Error('Could not clear notifications. Please try again.');
+      setNotifications([]);
+    } catch (error) {
+      console.error('Clear notifications error:', error);
+      Alert.alert('Could not clear notifications', 'Please check your connection and try again.');
+    }
+  };
+
   const updateBudget = async (id: string, amount: number, rollover_enabled?: boolean) => {
     const userId = await AsyncStorage.getItem('user_id');
     if (!userId) throw new Error('Your session has expired. Please log in again.');
-    const token = await AsyncStorage.getItem('user_token');
+    const token = await getSecureItem('user_token');
     const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, user_id: userId }) });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
@@ -375,37 +429,49 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const deleteBudget = async (id: string) => {
     try {
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const token = await AsyncStorage.getItem('user_token');
+      if (!userId) { Alert.alert('Sign-in required', 'Your session has expired. Please sign in again, then retry.'); return; }
+      const token = await getSecureItem('user_token');
       const res = await fetch(`${API_URL}/api/budgets/delete/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) {
         setBudgets((current) => current.filter((budget) => budget.id !== id));
         setNotifications((current) => current.filter((notification) => notification.budget_id !== id));
         void fetchTransactions(false);
-      } else Alert.alert("Error", "Failed to delete budget.");
-    } catch (e) { console.error(e); }
+      } else Alert.alert('Could not delete budget', 'The budget could not be deleted. Refresh your budgets and try again.');
+    } catch (e) { console.error(e); Alert.alert('Could not delete budget', 'We couldn’t reach FinAI. Check your internet connection and try again.'); }
   };
 
   const addGoal = async (name: string, target_amount: number, target_date: string, goal_type_id: string) => {
     try {
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const token = await AsyncStorage.getItem('user_token');
+      if (!userId) throw new Error('Your session has expired. Please sign in again, then retry.');
+      const token = await getSecureItem('user_token');
       const response = await fetch(`${API_URL}/api/goals/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
         body: JSON.stringify({ user_id: userId, goal_type_id, target_name: name, target_amount, current_savings: 0, target_date }),
       });
-      if (!response.ok) throw new Error('Failed to add goal');
+      if (!response.ok) {
+        const message = response.status === 400
+          ? 'Choose an active goal type from the list, then try again.'
+          : response.status === 422
+            ? 'Check the goal details and target date, then try again.'
+            : response.status === 401
+              ? 'Your session may have expired. Please sign in again, then retry.'
+              : 'We couldn’t save this goal. Please try again.';
+        throw new Error(message);
+      }
       void fetchTransactions(false);
-    } catch (error) { console.error("addGoal Error:", error); Alert.alert("Error", "Bumagsak ang pag-save ng goal."); }
+    } catch (error) {
+      console.error('addGoal Error:', error);
+      throw new Error(error instanceof Error ? error.message : 'We couldn’t save this goal. Please try again.');
+    }
   };
 
   const updateGoal = async (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings: number = 0) => {
     try {
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const token = await AsyncStorage.getItem('user_token');
+      if (!userId) throw new Error('Your session has expired. Please sign in again, then retry.');
+      const token = await getSecureItem('user_token');
 
       const response = await fetch(`${API_URL}/api/goals/${id}`, {
         method: 'PUT',
@@ -420,11 +486,20 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         }),
       });
 
-      if (!response.ok) throw new Error('Failed to update goal');
+      if (!response.ok) {
+        const message = response.status === 400
+          ? 'Choose an active goal type from the list, then try again.'
+          : response.status === 404
+            ? 'This goal could not be found. Refresh the list and try again.'
+            : response.status === 422
+              ? 'Check the goal details and target date, then try again.'
+              : 'We couldn’t update this goal. Please try again.';
+        throw new Error(message);
+      }
       void fetchTransactions(false);
     } catch (error) {
       console.error("updateGoal Error:", error);
-      Alert.alert("Error", "Bumagsak ang pag-update ng goal.");
+      throw new Error(error instanceof Error ? error.message : 'We couldn’t update this goal. Please try again.');
     }
   };
 
@@ -433,21 +508,22 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // FIX: the backend now requires and verifies user_id (ownership check on
       // DELETE /api/goals/{id}) so only the goal's owner can delete it.
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return; }
-      const token = await AsyncStorage.getItem('user_token');
+      if (!userId) { Alert.alert('Sign-in required', 'Your session has expired. Please sign in again, then retry.'); return; }
+      const token = await getSecureItem('user_token');
       const res = await fetch(`${API_URL}/api/goals/${id}?user_id=${encodeURIComponent(userId)}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
       if (res.ok) {
         setGoals((current) => current.filter((goal) => goal.id !== id));
         void fetchTransactions(false);
-      } else Alert.alert("Error", "Failed to delete goal.");
+      } else Alert.alert('Could not delete goal', res.status === 404 ? 'This goal may already have been removed. Refresh the list and try again.' : 'The goal could not be deleted. Please try again.');
     } catch (e) {
-      Alert.alert("Error", "Network connection failed.");
+      console.error('deleteGoal error:', e);
+      Alert.alert('Could not delete goal', 'We couldn’t reach FinAI. Check your internet connection and try again.');
     }
   };
 
   const archiveGoal = async (id: string) => {
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const response = await fetch(`${API_URL}/api/goals/${id}/archive`, {
         method: 'PATCH',
         headers: { Authorization: `Bearer ${token || ''}` },
@@ -458,7 +534,12 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       }
       else {
         const error = await response.json().catch(() => ({}));
-        Alert.alert('Unable to archive goal', error.detail || 'Please try again.');
+        const message = response.status === 404
+          ? 'This goal could not be found. Refresh the list and try again.'
+          : response.status === 401
+            ? 'Your session may have expired. Please sign in again, then retry.'
+            : 'The goal could not be archived. Please try again.';
+        Alert.alert('Unable to archive goal', message);
       }
     } catch {
       Alert.alert('Unable to archive goal', 'Check your connection and try again.');
@@ -481,8 +562,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       // check at all, so anyone with a goal_id could deposit into a different user's
       // goal and inject a fake transaction into their history.
       const userId = await AsyncStorage.getItem('user_id');
-      if (!userId) { Alert.alert("Error", "User session not found."); return false; }
-      const token = await AsyncStorage.getItem('user_token');
+      if (!userId) { Alert.alert('Sign-in required', 'Your session has expired. Please sign in again, then retry.'); return false; }
+      const token = await getSecureItem('user_token');
 
       const response = await fetch(`${API_URL}/api/goals/${goalId}/deposit`, {
         method: 'PATCH',
@@ -525,7 +606,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   }, [visibleAccounts, getAccountBalance, totalExpense, totalIncome, visibleTransactions, visibleGoals, hasCurrentUserData, archivedAccountBalance, archivedGoalSavings]);
 
   return (
-    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead }}>
+    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>
       {children}
     </TransactionContext.Provider>
   );

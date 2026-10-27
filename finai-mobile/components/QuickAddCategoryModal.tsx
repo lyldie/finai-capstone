@@ -67,9 +67,11 @@ export default function QuickAddCategoryModal({ visible, type, onClose, onCreate
       });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const message = response.status === 409
-          ? 'A category with this name already exists.'
-          : (typeof result?.detail === 'string' ? result.detail : 'The category could not be created. Please try again.');
+        const message = typeof result?.detail === 'string'
+          ? result.detail
+          : response.status === 409
+            ? 'A category with this name already exists. Choose another name or select the existing category.'
+            : 'The category could not be created. Please try again.';
         Alert.alert('Could not create category', message);
         return;
       }

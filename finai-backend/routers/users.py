@@ -1,6 +1,7 @@
 # finai-backend/routers/users.py
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from database import db
 from typing import List, Optional
 from pydantic import BaseModel, EmailStr, Field
@@ -111,12 +112,16 @@ async def create_admin_account(data: AdminAccountCreate, admin: dict = Depends(g
     new_admin = {
         'name': clean_name,
         'email': clean_email,
+        'email_key': clean_email.casefold(),
         'password': pwd_context.hash(password),
         'role': 'admin',
         'onboarding_completed': True,
         'created_at': datetime.utcnow(),
     }
-    result = await db.users.insert_one(new_admin)
+    try:
+        result = await db.users.insert_one(new_admin)
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail='An account with this email already exists.') from exc
     new_admin['_id'] = result.inserted_id
     await log_action(admin['name'], f"Created administrator account for '{clean_email}'")
     return format_admin_account(new_admin)
@@ -143,10 +148,14 @@ async def update_admin_account(admin_id: str, data: AdminAccountUpdate, admin: d
     if duplicate:
         raise HTTPException(status_code=409, detail='An account with this email already exists.')
 
-    updates = {'name': clean_name, 'email': clean_email}
+    updates = {'name': clean_name, 'email': clean_email, 'email_key': clean_email.casefold()}
     if data.password:
         updates['password'] = pwd_context.hash(validate_admin_password(data.password))
-    await db.users.update_one({'_id': target_id, 'role': 'admin'}, {'$set': updates})
+        updates['token_version'] = int(target.get('token_version', 0)) + 1
+    try:
+        await db.users.update_one({'_id': target_id, 'role': 'admin'}, {'$set': updates})
+    except DuplicateKeyError as exc:
+        raise HTTPException(status_code=409, detail='An account with this email already exists.') from exc
     updated = await db.users.find_one({'_id': target_id})
     await log_action(admin['name'], f"Updated administrator account for '{clean_email}'")
     return format_admin_account(updated)
@@ -164,7 +173,10 @@ async def archive_admin_account(admin_id: str, admin: dict = Depends(get_current
     if str(target.get('email', '')).strip().lower() == SUPER_ADMIN_EMAIL or admin_id == admin['id']:
         raise HTTPException(status_code=403, detail='You cannot archive the configured super-admin account.')
 
-    await db.users.update_one({'_id': target_id}, {'$set': {'is_archived': True}})
+    await db.users.update_one(
+        {'_id': target_id},
+        {'$set': {'is_archived': True}, '$inc': {'token_version': 1}},
+    )
     await log_action(admin['name'], f"Archived administrator account for '{target.get('email', admin_id)}'")
     return {'message': 'Administrator account archived.'}
 
@@ -178,7 +190,10 @@ async def restore_admin_account(admin_id: str, admin: dict = Depends(get_current
     target = await db.users.find_one({'_id': target_id, 'role': 'admin'})
     if not target:
         raise HTTPException(status_code=404, detail='Administrator account not found.')
-    await db.users.update_one({'_id': target_id}, {'$set': {'is_archived': False}})
+    await db.users.update_one(
+        {'_id': target_id},
+        {'$set': {'is_archived': False}, '$inc': {'token_version': 1}},
+    )
     await log_action(admin['name'], f"Restored administrator account for '{target.get('email', admin_id)}'")
     return {'message': 'Administrator account restored.'}
 
@@ -199,6 +214,26 @@ async def get_all_users(admin: dict = Depends(get_current_admin), archived: bool
         }
         users.append(UserResponse(**user_data))
     return users
+
+
+@router.get("/me/session")
+async def get_own_session(current_user: dict = Depends(get_current_user)):
+    """Return current server-side role and PIN state for safe app startup routing."""
+    try:
+        user_oid = ObjectId(current_user["id"])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid session. Please log in again.")
+    user = await db.users.find_one({"_id": user_oid})
+    if not user or user.get("is_archived"):
+        raise HTTPException(status_code=401, detail="Session is no longer valid. Please log in again.")
+    return {
+        "id": str(user["_id"]),
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "role": user.get("role", "user"),
+        "has_pin": bool(user.get("pin")),
+        "onboarding_completed": bool(user.get("onboarding_completed", False)),
+    }
 
 
 @router.patch("/{user_id}/archive")
@@ -222,7 +257,10 @@ async def archive_user(user_id: str, admin: dict = Depends(get_current_admin)):
     if target_user.get("role") == "admin":
         raise HTTPException(status_code=403, detail="Admin accounts cannot be archived through this endpoint.")
 
-    await db.users.update_one({"_id": oid}, {"$set": {"is_archived": True}})
+    await db.users.update_one(
+        {"_id": oid},
+        {"$set": {"is_archived": True}, "$inc": {"token_version": 1}},
+    )
     await log_action(admin["name"], f"Archived user '{target_user.get('name', user_id)}'")
 
     return {"message": "User archived successfully"}
@@ -241,7 +279,10 @@ async def restore_user(user_id: str, admin: dict = Depends(get_current_admin)):
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    await db.users.update_one({"_id": oid}, {"$set": {"is_archived": False}})
+    await db.users.update_one(
+        {"_id": oid},
+        {"$set": {"is_archived": False}, "$inc": {"token_version": 1}},
+    )
     await log_action(admin["name"], f"Restored user '{target_user.get('name', user_id)}'")
 
     return {"message": "User restored successfully"}
@@ -349,7 +390,7 @@ async def change_password(
     new_password = validate_user_password(data.new_password)
     await db.users.update_one(
         {"_id": oid},
-        {"$set": {"password": pwd_context.hash(new_password)}}
+        {"$set": {"password": pwd_context.hash(new_password)}, "$inc": {"token_version": 1}}
     )
     email = user.get("email")
     if email:

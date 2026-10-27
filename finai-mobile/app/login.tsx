@@ -4,7 +4,7 @@ import {
   ActivityIndicator, TouchableOpacity, StatusBar, Image, 
   KeyboardAvoidingView, Platform 
 } from 'react-native';
-import { useRouter, Stack } from 'expo-router';
+import { useRouter, Stack, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
@@ -23,6 +23,7 @@ export default function LoginScreen() {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const router = useRouter();
+  const { session } = useLocalSearchParams<{ session?: string }>();
   
   const { loginUser } = useAuth(); 
 
@@ -106,6 +107,9 @@ export default function LoginScreen() {
 
           <View style={styles.loginCard}>
             <Text style={styles.helloText}>hello!</Text>
+            {session === 'unavailable' && (
+              <Text style={styles.sessionNotice}>Your saved sign-in is no longer valid. Sign in again to continue.</Text>
+            )}
 
             <View style={styles.inputGroup}>
               <View style={styles.inputWrapper}>
@@ -163,6 +167,7 @@ const styles = StyleSheet.create({
   logo: { width: 120, height: 120 },
   loginCard: { backgroundColor: 'white', marginHorizontal: 30, borderRadius: 45, padding: 35, alignItems: 'center', elevation: 5, shadowColor: DEEP_GREEN, shadowOpacity: 0.15, shadowRadius: 15 },
   helloText: { fontSize: 48, fontWeight: '900', color: GOLD, marginBottom: 30, fontStyle: 'italic' },
+  sessionNotice: { color: '#8A342D', backgroundColor: '#FFF1F0', borderRadius: 12, padding: 12, marginBottom: 18, textAlign: 'center', fontSize: 13, lineHeight: 18 },
   inputGroup: { width: '100%', marginBottom: 30 },
   inputWrapper: { flexDirection: 'row', alignItems: 'center', borderWidth: 2, borderColor: TEAL, borderRadius: 30, paddingHorizontal: 15, height: 60, marginBottom: 15 },
   inputIcon: { marginRight: 10 },

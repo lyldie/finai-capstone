@@ -1,8 +1,9 @@
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Modal, StyleSheet,
-  Text, TextInput, TouchableOpacity, View, StatusBar, SafeAreaView, KeyboardAvoidingView, Platform
+  Text, TextInput, TouchableOpacity, View, StatusBar, KeyboardAvoidingView, Platform
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -13,6 +14,8 @@ import { Account } from '../context/TransactionContext';
 // Import natin ang emoji helper
 import { getAccountDisplayEmoji, getAccountEmoji } from '../utils/accountEmoji';
 import EmojiPicker from '../components/EmojiPicker';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -45,7 +48,7 @@ export default function PersonalAccountsScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) return;
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const [accountResponse, templateResponse] = await Promise.all([
         fetch(`${API_URL}/api/accounts/user/${userId}`, { headers: { Authorization: `Bearer ${token || ''}` } }),
         fetch(`${API_URL}/api/accounts/templates`),
@@ -119,7 +122,7 @@ export default function PersonalAccountsScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) throw new Error('Your session has expired. Please log in again.');
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
 
       const url = editingAccount ? `${API_URL}/api/accounts/${editingAccount.id}` : `${API_URL}/api/accounts/`;
       const method = editingAccount ? 'PUT' : 'POST';
@@ -160,7 +163,7 @@ export default function PersonalAccountsScreen() {
     Alert.alert('Archive account?', 'This account will move to the archive. You can restore it later.', [
       { text: 'Cancel', style: 'cancel' },
       { text: 'Archive', style: 'destructive', onPress: async () => {
-        const token = await AsyncStorage.getItem('user_token');
+        const token = await getSecureItem('user_token');
         const response = await fetch(`${API_URL}/api/accounts/${account.id}/archive`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
         const result = await response.json().catch(() => ({}));
         if (!response.ok) Alert.alert('Cannot archive account', result.detail || 'Please try again.');

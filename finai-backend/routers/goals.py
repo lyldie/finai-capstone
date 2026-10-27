@@ -111,6 +111,12 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid goal ID format")
 
+    existing_goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"]})
+    if not existing_goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    if existing_goal.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Restore this goal before editing it.")
+
     try:
         goal_dict = goal.model_dump()
     except AttributeError:
@@ -129,7 +135,7 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
     except ValueError:
         raise HTTPException(status_code=422, detail="Target date must be a valid calendar date.")
     updated = await db.goals.find_one_and_update(
-        {"_id": oid, "user_id": current_user["id"]},
+        {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
         {"$set": goal_dict},
         return_document=True
     )
@@ -277,9 +283,14 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         )
         if not current_goal:
             raise HTTPException(status_code=404, detail="Goal not found")
+        current_account = await db.accounts.find_one(
+            {"_id": account["_id"], "is_archived": {"$ne": True}}, session=session
+        )
+        if not current_account:
+            raise HTTPException(status_code=409, detail="The selected account was archived. Choose an active account and try again.")
         available_balance = await calculate_account_balance(
-            account.get("name", ""), current_user["id"], float(account.get("initial_balance", 0) or 0),
-            session=session, account_id=str(account["_id"]),
+            current_account.get("name", ""), current_user["id"], float(current_account.get("initial_balance", 0) or 0),
+            session=session, account_id=str(current_account["_id"]),
         )
         if deposit.amount > available_balance:
             raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")

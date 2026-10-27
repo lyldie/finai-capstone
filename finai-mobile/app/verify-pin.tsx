@@ -6,6 +6,8 @@ import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config'; 
 import { useAuth } from '../context/AuthContext';
+import { verifyOfflinePin } from '../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -17,7 +19,7 @@ export default function VerifyPinScreen() {
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
-  const { user, logoutUser } = useAuth();
+  const { user, loginUser, logoutUser } = useAuth();
 
   // Traffic Cop - Check role agad pagka-load
   useEffect(() => {
@@ -72,7 +74,8 @@ export default function VerifyPinScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        const role = user?.role || await AsyncStorage.getItem('user_role');
+        await loginUser({ id: data.id, name: data.name, email: data.email, role: data.role, token: data.token });
+        const role = data.role;
         if (role === 'admin') {
           router.replace('/(admin)/admin-dashboard');
         } else {
@@ -83,17 +86,21 @@ export default function VerifyPinScreen() {
         setPin(''); 
       }
     } catch (e) {
-      const savedPin = await AsyncStorage.getItem('user_pin');
-      if (savedPin && pin === savedPin) {
-        const role = user?.role || await AsyncStorage.getItem('user_role');
-        if (role === 'admin') {
-          router.replace('/(admin)/admin-dashboard');
-        } else {
-          router.replace('/(tabs)');
-        }
-      } else {
-        Alert.alert('Connection error', 'Could not reach the server to verify your PIN.');
+      const role = user?.role || await AsyncStorage.getItem('user_role');
+      if (role === 'admin') {
+        Alert.alert('Connection required', 'Administrator access must be verified online. Try again when the server is available.');
         setPin('');
+      } else {
+        const offlineResult = await verifyOfflinePin(pin);
+        if (offlineResult.locked) {
+          Alert.alert('Too many attempts', 'Offline PIN access is locked for 15 minutes.');
+          setPin('');
+        } else if (offlineResult.verified) {
+          router.replace('/(tabs)');
+        } else {
+          Alert.alert('PIN verification failed', 'Could not verify this PIN offline. Check your connection and try again.');
+          setPin('');
+        }
       }
     } finally {
       setLoading(false);

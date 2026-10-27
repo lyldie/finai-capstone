@@ -15,6 +15,8 @@ import * as DocumentPicker from 'expo-document-picker';
 import { useAuth } from '../../context/AuthContext';
 import { useTransactions } from '../../context/TransactionContext';
 import { API_URL } from '../../config';
+import { setSecureItem } from '../../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -118,7 +120,7 @@ export default function ProfileScreen() {
         Alert.alert('Could not update baseline', typeof data.detail === 'string' ? data.detail : 'Please try again.');
       }
     } catch (error) {
-      Alert.alert('Connection Error', 'Check your backend server.');
+      Alert.alert('Could not update baseline', 'We couldn’t reach FinAI. Check your internet connection and try again.');
     }
   };
 
@@ -137,7 +139,7 @@ export default function ProfileScreen() {
       
       const data = await response.json();
       if (response.ok) {
-        await AsyncStorage.setItem('user_pin', newPin);
+        await setSecureItem('user_pin', newPin);
         Alert.alert('Success', 'App PIN changed successfully!');
         setPinModalVisible(false);
         setOldPin('');
@@ -146,7 +148,7 @@ export default function ProfileScreen() {
         Alert.alert('Could not change PIN', typeof data.detail === 'string' ? data.detail : 'Check your current PIN and try again.');
       }
     } catch (error) {
-      Alert.alert('Connection Error', 'Check your backend server.');
+      Alert.alert('Could not change PIN', 'We couldn’t reach FinAI. Check your internet connection and try again.');
     }
   };
 
@@ -170,10 +172,15 @@ export default function ProfileScreen() {
       const data = await response.json().catch(() => ({}));
       if (response.ok) {
         Alert.alert(
-          'Success',
-          data.security_notification_queued
-            ? 'Password changed successfully. A security notice has been queued for your account email.'
-            : 'Password changed successfully.'
+          'Password changed',
+          `${data.security_notification_queued ? 'A security notice has been queued for your account email. ' : ''}Sign in again with your new password.`,
+          [{
+            text: 'Sign in again',
+            onPress: async () => {
+              await logoutUser();
+              router.replace('/login');
+            },
+          }],
         );
         setPasswordModalVisible(false);
         setOldPassword('');
@@ -183,7 +190,7 @@ export default function ProfileScreen() {
         Alert.alert('Could not change password', typeof data.detail === 'string' ? data.detail : 'Check your current password and try again.');
       }
     } catch (error) {
-      Alert.alert('Connection Error', 'Check your backend server.');
+      Alert.alert('Could not change password', 'We couldn’t reach FinAI. Check your internet connection and try again.');
     }
   };
 

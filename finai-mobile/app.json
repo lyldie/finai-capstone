@@ -36,7 +36,8 @@
       "expo-web-browser",
       "expo-splash-screen",
       "expo-status-bar",
-      "expo-sharing"
+      "expo-sharing",
+      "expo-secure-store"
     ],
     "experiments": {
       "typedRoutes": true

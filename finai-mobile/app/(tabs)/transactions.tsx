@@ -51,6 +51,7 @@ export default function TransactionsScreen() {
     archiveTransaction,
     fetchTransactions,
     isLoading,
+    isRefreshing,
     categories,
     accounts,
     notifications
@@ -365,12 +366,7 @@ export default function TransactionsScreen() {
               <Ionicons name="archive-outline" size={20} color="#FFFFFF" />
             </TouchableOpacity>
 
-            <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/notifications' as never)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
-              <Ionicons name="notifications-outline" size={20} color="#FFFFFF" />
-              {unreadNotifications > 0 && (
-                <View style={styles.notificationBadge}><Text style={styles.notificationBadgeText}>{unreadNotifications}</Text></View>
-              )}
-            </TouchableOpacity>
+
           </View>
         </View>
 
@@ -393,6 +389,7 @@ export default function TransactionsScreen() {
             <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
+        {isRefreshing && <Text style={styles.refreshingHint}>Updating your latest data…</Text>}
       </LinearGradient>
 
       {/* -------------------- DAILY TAB -------------------- */}
@@ -760,6 +757,7 @@ const CARD_SHADOW = {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: CREAM },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: CREAM },
+  refreshingHint: { color: 'rgba(255,255,255,0.78)', fontSize: 11, fontWeight: '600', textAlign: 'right', marginTop: 2 },
 
   // ---- Gradient header (top padding comes from the safe-area inset) ----
   headerGradient: { paddingBottom: 16, paddingHorizontal: 20, borderBottomLeftRadius: 28, borderBottomRightRadius: 28 },

@@ -10,6 +10,8 @@ import { getAccountDisplayEmoji } from '../utils/accountEmoji';
 import { getCategoryEmoji } from '../utils/categoryEmoji';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -54,7 +56,7 @@ export default function ArchiveScreen() {
     try {
       const userId = await AsyncStorage.getItem('user_id');
       if (!userId) throw new Error('Your session is missing. Please log in again.');
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       if (!token) throw new Error('Your session has expired. Please log in again.');
 
       let endpoint = '';
@@ -124,7 +126,7 @@ export default function ArchiveScreen() {
   const handleRestore = async (id: string) => {
     setBusyId(id);
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       // Restore endpoint for each kind of item
       let endpoint = `${API_URL}/restore-expense/${id}`;
       if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/restore`;
@@ -158,7 +160,7 @@ export default function ArchiveScreen() {
           onPress: async () => {
             setBusyId(id);
             try {
-              const token = await AsyncStorage.getItem('user_token');
+              const token = await getSecureItem('user_token');
               // Permanent delete endpoint for each kind of item
               let endpoint = `${API_URL}/permanent-delete-expense/${id}`;
               if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/permanent`;

@@ -12,6 +12,8 @@ import { useAuth } from '../context/AuthContext';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
+import { setSecureItem } from '../utils/secureStorage';
+
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -150,7 +152,7 @@ export default function SetupPinScreen() {
       const res = await response.json();
 
       if (response.ok) {
-        await AsyncStorage.setItem('user_pin', pin);
+        await setSecureItem('user_pin', pin);
 
         Alert.alert(
           'Setup complete',
@@ -307,10 +309,15 @@ export default function SetupPinScreen() {
             </TouchableOpacity>
             {showGoalDatePicker && (
               <View style={styles.datePickerContainer}>
+                <Text style={styles.datePickerTitle}>Choose a target date</Text>
+                <Text style={styles.datePickerHint}>Select the month, day, and year for your goal.</Text>
                 <DateTimePicker
                   value={goalDate || getTomorrowInPhilippines()}
                   mode="date"
                   display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  themeVariant="light"
+                  textColor={DEEP_GREEN}
+                  accentColor={TEAL}
                   minimumDate={getTomorrowInPhilippines()}
                   onValueChange={onGoalDateChange}
                   onDismiss={() => setShowGoalDatePicker(false)}
@@ -456,12 +463,16 @@ const styles = StyleSheet.create({
   placeholderText: { color: SAGE, fontWeight: '500' },
   goalTypeEmoji: { fontSize: 20, marginRight: 10 },
   datePickerContainer: {
-    backgroundColor: CREAM,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#E4EBE7',
     borderRadius: 12,
     marginBottom: 14,
-    paddingVertical: 8,
+    paddingTop: 13,
     alignItems: 'center',
   },
+  datePickerTitle: { alignSelf: 'flex-start', color: DEEP_GREEN, fontSize: 14, fontWeight: '800', paddingHorizontal: 16 },
+  datePickerHint: { alignSelf: 'flex-start', color: '#607B74', fontSize: 12, marginTop: 3, paddingHorizontal: 16 },
   datePickerDone: { alignSelf: 'flex-end', paddingHorizontal: 18, paddingVertical: 10 },
   datePickerDoneText: { color: TEAL, fontSize: 14, fontWeight: '700' },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(10, 25, 22, 0.48)', justifyContent: 'flex-end' },

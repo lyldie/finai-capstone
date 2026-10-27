@@ -3,12 +3,13 @@ from pydantic import BaseModel, EmailStr, Field
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bson import ObjectId
+from pymongo.errors import DuplicateKeyError
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
 from passlib.context import CryptContext
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-import random
+import secrets
 import string
 import os
 import cv2
@@ -31,6 +32,7 @@ from email_utils import send_otp_email
 
 # JWT session creation for user and admin authentication.
 from auth import create_access_token, get_current_user
+from security import enforce_auth_rate_limit, clear_auth_rate_limit
 
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export
@@ -46,17 +48,16 @@ from services.gemini_service import (
 app = FastAPI(title="FinAi Backend", version="1.0")
 
 
-# 0. Startup â€” ensure required DB indexes exist (e.g. the unique index on budgets that
-# prevents duplicate user/category/period budgets from a double-tapped save). Wrapped in
-# try/except so a startup-time issue (like leftover duplicate data from before the index
-# existed) logs an error instead of blocking the entire app from booting.
+# 0. Startup â€” create required database indexes before serving requests. Startup fails
+# if legacy duplicate records prevent a unique index from being built, so the backend
+# cannot silently run without its integrity constraints.
 @app.on_event("startup")
 async def on_startup():
-    try:
-        await ensure_indexes()
-        print("[Startup] Database indexes ready.")
-    except Exception as e:
-        print(f"[Startup] Could not create indexes (check for duplicate data): {e}")
+    # Required unique constraints must be present before accepting requests.
+    # If legacy duplicates prevent index creation, fail startup so the issue is
+    # visible and can be cleaned up rather than running without integrity guards.
+    await ensure_indexes()
+    print("[Startup] Database indexes ready.")
 
 
 # 1. Terminal Truth - Error Debugger
@@ -1124,8 +1125,12 @@ async def safely_refresh_budget_notifications(user_id: str, category_id: Optiona
 
 # --- 8. AUTH ENDPOINTS ---
 @app.post("/register")
-async def register(user: UserSignup):
+async def register(user: UserSignup, request: Request):
     clean_email = user.email.lower().strip()
+    await enforce_auth_rate_limit(request, "register", clean_email, max_attempts=4, ip_max_attempts=20, window_seconds=1800)
+    clean_name = user.name.strip()
+    if not clean_name:
+        raise HTTPException(status_code=422, detail="Enter your name.")
     password = user.password
     if len(password.encode('utf-8')) > 72:
         raise HTTPException(status_code=400, detail="Password must be no more than 72 bytes.")
@@ -1135,7 +1140,7 @@ async def register(user: UserSignup):
     if existing_user:
         raise HTTPException(status_code=400, detail="This email address is already registered.")
 
-    otp_code = "".join(random.choices(string.digits, k=6))
+    otp_code = "".join(secrets.choice(string.digits) for _ in range(6))
     if send_otp_email(clean_email, otp_code):
         hashed_password = pwd_context.hash(password)
         # FIX: OTPs previously lived in a plain in-memory dict (otp_storage = {}).
@@ -1148,7 +1153,7 @@ async def register(user: UserSignup):
         await db.pending_signups.update_one(
             {"email": clean_email},
             {"$set": {
-                "name": user.name.strip(),
+                "name": clean_name,
                 "password": hashed_password,
                 "otp": otp_code,
                 "timestamp": datetime.utcnow()
@@ -1160,9 +1165,10 @@ async def register(user: UserSignup):
 
 
 @app.post("/verify-otp")
-async def verify_otp(data: OTPVerify):
+async def verify_otp(data: OTPVerify, request: Request):
     clean_email = data.email.lower().strip()
     user_otp = data.otp.strip()
+    await enforce_auth_rate_limit(request, "otp", clean_email, max_attempts=5, ip_max_attempts=30, window_seconds=600)
 
     pending = await db.pending_signups.find_one({"email": clean_email})
     if not pending:
@@ -1176,21 +1182,27 @@ async def verify_otp(data: OTPVerify):
         new_user = {
             "name": pending["name"],
             "email": clean_email,
+            "email_key": clean_email.casefold(),
             "password": pending["password"],
             "role": "user",
             "onboarding_completed": False,
             "created_at": datetime.utcnow()
         }
-        result = await db.users.insert_one(new_user)
+        try:
+            result = await db.users.insert_one(new_user)
+        except DuplicateKeyError as exc:
+            raise HTTPException(status_code=409, detail="This email address has already been registered.") from exc
         await db.pending_signups.delete_one({"email": clean_email})
+        await clear_auth_rate_limit(request, "otp", clean_email)
         return {"status": "Success", "user_id": str(result.inserted_id), "name": new_user["name"], "role": "user", "token": create_access_token(str(result.inserted_id), "user")}
 
     raise HTTPException(status_code=400, detail="The verification code is incorrect.")
 
 
 @app.post("/login")
-async def login(user: UserLogin):
+async def login(user: UserLogin, request: Request):
     clean_email = user.email.lower().strip()
+    await enforce_auth_rate_limit(request, "login", clean_email, max_attempts=8, ip_max_attempts=30, window_seconds=900)
     db_user = await db.users.find_one({"email": clean_email})
 
     if not db_user:
@@ -1210,6 +1222,8 @@ async def login(user: UserLogin):
     if db_user.get("is_archived"):
         raise HTTPException(status_code=403, detail="This account has been archived. Please contact an administrator.")
 
+    await clear_auth_rate_limit(request, "login", clean_email)
+
     # CHANGED: builds the response dict first, then conditionally adds a JWT token
     # (see auth.py) only when the user is an admin. Every field that was here before
     # is still here, unchanged.
@@ -1223,19 +1237,25 @@ async def login(user: UserLogin):
         "has_pin": bool(db_user.get("pin"))
     }
 
-    response_data["token"] = create_access_token(user_id=str(db_user["_id"]), role=db_user.get("role", "user"))
+    response_data["token"] = create_access_token(
+        user_id=str(db_user["_id"]), role=db_user.get("role", "user"),
+        token_version=int(db_user.get("token_version", 0)),
+    )
 
     return response_data
 
 
 @app.post("/verify-pin")
-async def verify_pin(data: PinVerify):
+async def verify_pin(data: PinVerify, request: Request):
     clean_email = data.email.lower().strip()
     input_pin = data.pin.strip()
+    await enforce_auth_rate_limit(request, "pin", clean_email, max_attempts=5, ip_max_attempts=30, window_seconds=900)
 
     user = await db.users.find_one({"email": clean_email})
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
+    if user.get("is_archived") or user.get("role", "user") not in {"user", "admin"}:
+        raise HTTPException(status_code=403, detail="This account cannot start a session. Please contact an administrator.")
 
     stored_pin = str(user.get("pin", ""))
 
@@ -1247,12 +1267,28 @@ async def verify_pin(data: PinVerify):
     # on first successful verification so no user has to re-enter their PIN.
     try:
         if pwd_context.verify(input_pin, stored_pin):
-            return {"status": "Success"}
+            await clear_auth_rate_limit(request, "pin", clean_email)
+            return {
+                "status": "Success",
+                "id": str(user["_id"]),
+                "name": user.get("name", ""),
+                "email": user.get("email", clean_email),
+                "role": user.get("role", "user"),
+                "token": create_access_token(str(user["_id"]), user.get("role", "user"), int(user.get("token_version", 0))),
+            }
     except Exception:
         # stored_pin isn't a valid hash -- almost certainly a legacy plaintext PIN.
         if stored_pin and stored_pin == input_pin:
             await db.users.update_one({"_id": user["_id"]}, {"$set": {"pin": pwd_context.hash(input_pin)}})
-            return {"status": "Success"}
+            await clear_auth_rate_limit(request, "pin", clean_email)
+            return {
+                "status": "Success",
+                "id": str(user["_id"]),
+                "name": user.get("name", ""),
+                "email": user.get("email", clean_email),
+                "role": user.get("role", "user"),
+                "token": create_access_token(str(user["_id"]), user.get("role", "user"), int(user.get("token_version", 0))),
+            }
 
     raise HTTPException(status_code=400, detail="The PIN is incorrect.")
 
@@ -1744,6 +1780,16 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
         raise HTTPException(status_code=409, detail="A linked account is unavailable, so this transaction cannot be changed safely.")
     if action == "restore" and any(account.get("is_archived") for account in (source_account, destination_account) if account):
         raise HTTPException(status_code=409, detail="Restore the linked account first, then restore this transaction.")
+    if action == "restore" and transaction.get("category_id") not in (None, ""):
+        try:
+            category_oid = ObjectId(str(transaction["category_id"]))
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail="The linked category is unavailable, so this transaction cannot be restored safely.") from exc
+        category = await db.categories.find_one({"_id": category_oid})
+        if not category:
+            raise HTTPException(status_code=409, detail="The linked category no longer exists, so this transaction cannot be restored safely.")
+        if category.get("is_archived", False):
+            raise HTTPException(status_code=409, detail="Restore the linked category first, then restore this transaction.")
 
     affected_accounts = {str(source_account["_id"]): source_account}
     if destination_account:
@@ -1816,6 +1862,13 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
             return changed
 
         if action == "restore":
+            if goal_oid and current.get("goal_contribution_reversed"):
+                active_goal = await db.goals.find_one(
+                    {"_id": goal_oid, "user_id": user_id, "is_archived": {"$ne": True}},
+                    session=session,
+                )
+                if not active_goal:
+                    raise HTTPException(status_code=409, detail="Restore the linked savings goal first, then restore this contribution.")
             changed = await db.expenses.update_one(
                 transaction_query, {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}}, session=session
             )

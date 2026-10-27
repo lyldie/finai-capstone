@@ -7,11 +7,11 @@ import {
   StyleSheet, 
   ActivityIndicator, 
   Alert, 
-  SafeAreaView, 
   KeyboardAvoidingView, 
   Platform,
   StatusBar
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -67,12 +67,16 @@ export default function AddCategoryScreen() {
         Alert.alert('Category added', 'The category was added successfully.');
         router.back(); 
       } else if (response.status === 401) {
-        Alert.alert("Session Expired", "Please log in again.");
+        Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
       } else {
-        Alert.alert('Could not save category', 'Please try again.');
+        const data = await response.json().catch(() => ({}));
+        const message = typeof data?.detail === 'string'
+          ? data.detail
+          : 'Review the category name and type, then try again.';
+        Alert.alert('Could not save category', message);
       }
     } catch (error) {
-      Alert.alert("Network Error", "Check your server connection and try again.");
+      Alert.alert('Could not save category', 'We couldn’t reach FinAI. Check your connection and try again.');
     } finally {
       setLoading(false);
     }

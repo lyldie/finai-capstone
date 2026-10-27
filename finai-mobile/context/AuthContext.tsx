@@ -1,5 +1,7 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getSecureItem, removeSecureItem, setSecureItem } from '../utils/secureStorage';
+
 
 interface User {
   id: string;
@@ -29,7 +31,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         const storedName = await AsyncStorage.getItem('user_name');
         const storedEmail = await AsyncStorage.getItem('user_email');
         const storedRole = await AsyncStorage.getItem('user_role');
-        const storedToken = await AsyncStorage.getItem('user_token'); // NEW
+        const storedToken = await getSecureItem('user_token'); // NEW
 
         if (storedId && storedName && storedEmail) {
           setUser({
@@ -59,15 +61,27 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
     // Store the signed session returned by both login and OTP verification.
     if (userData.token) {
-      await AsyncStorage.setItem('user_token', userData.token);
+      await setSecureItem('user_token', userData.token);
     }
   };
 
-  const logoutUser = async () => {
+  const logoutUser = useCallback(async () => {
+    const userId = await AsyncStorage.getItem('user_id');
     setUser(null);
-    const keysToRemove = ['user_id', 'user_name', 'user_email', 'user_role', 'user_pin', 'user_token']; // NEW: user_token added
+    const keysToRemove = ['user_id', 'user_name', 'user_email', 'user_role'];
+    if (userId) {
+      const userCachePrefix = `@offline_${userId}_`;
+      const cachedKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(userCachePrefix));
+      keysToRemove.push(...cachedKeys);
+    }
+    await Promise.allSettled([
+      removeSecureItem('user_pin'),
+      removeSecureItem('user_token'),
+      removeSecureItem('offline_pin_attempts'),
+      removeSecureItem('offline_pin_locked_until'),
+    ]);
     await AsyncStorage.multiRemove(keysToRemove);
-  };
+  }, []);
 
   return (
     <AuthContext.Provider value={{ user, loginUser, logoutUser, isLoading }}>

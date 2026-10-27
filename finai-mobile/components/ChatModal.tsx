@@ -6,6 +6,8 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
+import { getSecureItem } from '../utils/secureStorage';
+
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
@@ -44,7 +46,7 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
     setIsChatLoading(true);
 
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const response = await fetch(`${API_URL}/advisor/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },

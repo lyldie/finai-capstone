@@ -19,7 +19,10 @@ from auth import get_current_user
 from database import db
 from services.budget_service import list_budget_usage, ph_today
 from services.gemini_service import (
+    GEMINI_BACKUP_MODEL,
+    GEMINI_PRIMARY_MODEL,
     InvalidModelOutputError,
+    generate_content_for_model,
     generate_content_with_fallback,
     validate_json_response,
 )
@@ -56,6 +59,8 @@ router = APIRouter(prefix="/advisor", tags=["AI Advisor"])
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_ATTEMPT_TIMEOUT_MS = 10000
 GEMINI_TOTAL_TIMEOUT_SECONDS = 21
+# Each Plan Ahead Gemini attempt has a deadline; Groq sits between the models.
+PLAN_AHEAD_GEMINI_ATTEMPT_TIMEOUT_SECONDS = 10
 ai_client = genai.Client(
     api_key=GEMINI_API_KEY,
     http_options=types.HttpOptions(
@@ -86,6 +91,78 @@ def _validate_planning_response(response) -> None:
     result = validate_json_response(response)
     if not isinstance(result.get("overview"), str) or not isinstance(result.get("recommendations"), list):
         raise InvalidModelOutputError("Gemini planning response did not match the expected shape")
+
+
+def _provider_failure_summary(exc: Exception) -> str:
+    """Return a concise, safe-to-log explanation without provider response bodies."""
+    code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+    try:
+        status = int(code)
+    except (TypeError, ValueError):
+        status = None
+
+    status_reasons = {
+        400: "bad request; check model parameters or request format",
+        401: "authentication failed; check the provider API key",
+        403: "permission denied for this key, project, or model",
+        404: "model or endpoint not found; check the configured model name",
+        408: "provider request timed out",
+        413: "request payload is too large",
+        429: "provider rate limit or quota reached",
+        500: "provider internal error",
+        502: "provider gateway error",
+        503: "provider is temporarily unavailable or overloaded",
+        504: "provider gateway timed out before completing the request",
+    }
+    if status is not None:
+        reason = status_reasons.get(status, "provider returned an HTTP error")
+        return f"HTTP {status}: {reason}"
+
+    error_name = type(exc).__name__
+    detail = str(exc).lower()
+    if error_name == "GroqProviderError" and detail:
+        cause = str(exc)[:80]
+        if "timeout" in detail:
+            return f"network timeout ({cause})"
+        if "connection" in detail:
+            return f"network connection failed ({cause})"
+        return f"request failed ({cause})"
+    if "timeout" in error_name.lower() or "timeout" in detail or "deadline" in detail:
+        return f"request timed out ({error_name})"
+    if "connection" in error_name.lower() or "connection" in detail:
+        return f"network connection failed ({error_name})"
+    return error_name
+
+
+def _compact_planning_evidence(kind: str, evidence: dict) -> dict:
+    """Keep only decision-relevant fields for the smaller Groq fallback prompt."""
+    fields_by_kind = {
+        "budget_risk": (
+            "category", "period", "spent", "limit", "projected_period_end_spend",
+            "forecast_over_limit", "percentage_used", "days_remaining", "confidence",
+        ),
+        "budget_watch": (
+            "category", "period", "spent", "limit", "projected_period_end_spend",
+            "forecast_over_limit", "percentage_used", "days_remaining", "confidence",
+        ),
+        "goal_plan": (
+            "target", "saved", "goal", "remaining", "days_to_target",
+            "suggested_monthly_saving", "target_date_passed", "target_due_today",
+            "required_monthly_saving_exceeds_reported_available_amount",
+        ),
+        "spending_pattern": (
+            "category", "current_period_spending", "comparison_periods",
+            "comparison_month_count", "average_previous_spending", "increase_amount", "change_percent",
+        ),
+        "cash_flow": ("start", "end", "income", "expense", "net"),
+        "long_term_cash_flow": (
+            "available", "observed_completed_months", "average_monthly_recorded_income",
+            "average_monthly_recorded_expenses", "average_monthly_recorded_net_cash_flow",
+            "scenarios", "confidence",
+        ),
+    }
+    allowed_fields = fields_by_kind.get(kind, ())
+    return {key: evidence[key] for key in allowed_fields if key in evidence}
 
 
 def _is_in_advisor_scope(message: str, history: Optional[List[ChatHistoryItem]], topic: str = "general") -> bool:
@@ -1464,6 +1541,7 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
 
     # Aggregate only this authenticated user's active records. The mobile client
     # does not provide a user_id for this route.
+    transaction_aggregation_started_at = time.perf_counter()
     cursor = db.expenses.aggregate([
         {"$match": {
             "user_id": user_id,
@@ -1491,8 +1569,10 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         {"$limit": MAX_DAILY_CATEGORY_BUCKETS},
     ])
     buckets = await cursor.to_list(length=MAX_DAILY_CATEGORY_BUCKETS)
+    transaction_aggregation_ms = round((time.perf_counter() - transaction_aggregation_started_at) * 1000)
     history_truncated = len(buckets) >= MAX_DAILY_CATEGORY_BUCKETS
 
+    history_analysis_started_at = time.perf_counter()
     daily = {}
     for bucket in buckets:
         day_key = str(bucket.get("_id", {}).get("date", ""))[:10]
@@ -1613,6 +1693,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         "method": "Observed monthly recorded net cash-flow percentiles multiplied by 12; this is a scenario range, not an account-balance forecast.",
         "coverage_note": "Months without recorded activity are not treated as zero-income or zero-expense months. Missing records can bias these scenarios.",
     }
+    history_analysis_ms = round((time.perf_counter() - history_analysis_started_at) * 1000)
+
+    profile_budget_started_at = time.perf_counter()
     profile = await db.users.find_one({"_id": ObjectId(user_id)}, {"monthly_income": 1})
     monthly_baseline = float((profile or {}).get("monthly_income", 0) or 0)
 
@@ -1621,6 +1704,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         if item.get("start_date") and item.get("end_date")
         and item["start_date"] <= today_key <= item["end_date"]
     ]
+    profile_budget_ms = round((time.perf_counter() - profile_budget_started_at) * 1000)
+
+    budget_analysis_started_at = time.perf_counter()
     comparison_periods = []
     comparison_month_cursor = month_start
     for _ in range(3):
@@ -1750,6 +1836,8 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 "how_calculated": f"\u20b1{forecast['spent']:,.0f} of \u20b1{forecast['limit']:,.0f} = {forecast['percentage_used']:.0f}%. \u20b1{max(forecast['limit']-forecast['spent'],0):,.0f} left / {forecast['days_remaining']} days",
             })
 
+    budget_analysis_ms = round((time.perf_counter() - budget_analysis_started_at) * 1000)
+
     tracked_budget_forecasts = [
         forecast for forecast in budget_forecasts
         if forecast["spent"] > 0 and forecast["confidence"] in {"medium", "high"}
@@ -1787,6 +1875,7 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "action": "Review the transactions in this category and decide whether any change fits your plans.",
         })
 
+    goal_analysis_started_at = time.perf_counter()
     goals = await db.goals.find({"user_id": user_id, "is_archived": {"$ne": True}}).to_list(length=50)
     goal_plans = [_goal_projection(goal, today, monthly_baseline) for goal in goals]
     for goal in goal_plans:
@@ -1916,6 +2005,8 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             ),
         }
 
+    goal_analysis_ms = round((time.perf_counter() - goal_analysis_started_at) * 1000)
+
     summary = fallback_summary
     analysis_provider = None
     if ai_client or GROQ_API_KEY:
@@ -1937,7 +2028,10 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             f"daily_days={len(daily)}, budgets={len(budget_forecasts)}, goals={len(goal_plans)}, "
             f"category_comparisons={len(category_spending_comparisons)}, evidence_items={len(evidence_catalog)}, "
             f"history_truncated={history_truncated}, "
-            f"aggregation_ms={round((time.perf_counter() - planning_build_started_at) * 1000)}."
+            f"stage_ms={{transactions:{transaction_aggregation_ms}, history_analysis:{history_analysis_ms}, "
+            f"profile_and_budgets:{profile_budget_ms}, budget_analysis:{budget_analysis_ms}, "
+            f"goals_and_recommendations:{goal_analysis_ms}}}, "
+            f"pre_ai_total_ms={round((time.perf_counter() - planning_build_started_at) * 1000)}."
         )
         planning_started_at = time.perf_counter()
         planning_prompt = (
@@ -1968,41 +2062,142 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "JSON data: " + prompt_json
         )
         response = None
+        planning_contents = [types.Content(role="user", parts=[types.Part.from_text(text=planning_prompt)])]
+        planning_config = types.GenerateContentConfig(temperature=0.2, response_mime_type="application/json")
+
+        # Provider order is intentional for Plan Ahead: Gemini primary, Groq,
+        # then Gemini backup. Other advisor features keep their existing order.
         try:
             if not ai_client:
                 raise RuntimeError("Gemini is not configured")
             response, _model = await asyncio.wait_for(asyncio.to_thread(
-                generate_content_with_fallback,
+                generate_content_for_model,
                 ai_client,
-                [types.Content(role="user", parts=[types.Part.from_text(text=planning_prompt)])],
-                types.GenerateContentConfig(temperature=0.2, response_mime_type="application/json"),
+                GEMINI_PRIMARY_MODEL,
+                planning_contents,
+                planning_config,
                 validate=_validate_planning_response,
                 operation=f"plan_ahead:{plan_call_id}",
-            ), timeout=GEMINI_TOTAL_TIMEOUT_SECONDS)
+            ), timeout=PLAN_AHEAD_GEMINI_ATTEMPT_TIMEOUT_SECONDS)
             analysis_provider = "gemini"
         except Exception as gemini_exc:
             print(
-                f"[Gemini][plan_ahead:{plan_call_id}] unavailable "
-                f"({type(gemini_exc).__name__}); trying Groq if configured."
+                f"[Gemini][plan_ahead:{plan_call_id}] primary failed: "
+                f"{_provider_failure_summary(gemini_exc)}; trying Groq if configured."
             )
 
         if response is None and GROQ_API_KEY:
             try:
+                # Give Groq a compact view of all planning areas so it can
+                # select cross-area insights, without sending daily chart
+                # series or duplicating full evidence objects in several places.
+                groq_evidence_catalog = {
+                    evidence_id: {
+                        "kind": item["kind"],
+                        "evidence": _compact_planning_evidence(item["kind"], item["evidence"]),
+                        **({"how_calculated": item["how_calculated"]}
+                           if item.get("how_calculated") else {}),
+                    }
+                    for evidence_id, item in evidence_catalog.items()
+                    if isinstance(item.get("evidence"), dict)
+                }
+                groq_context = {
+                    "as_of_date": today_key,
+                    "current_month_cash_flow": {
+                        key: current_month[key] for key in ("start", "end", "income", "expense", "net")
+                        if key in current_month
+                    },
+                    "recent_cash_flow": metrics.get("last_90_days"),
+                    "month_over_month_expense_change_percent": metrics.get("month_over_month_expense_change_percent"),
+                    "budget_forecasts": [
+                        {key: forecast[key] for key in (
+                            "category", "period", "spent", "limit", "projected_period_end_spend",
+                            "forecast_over_limit", "percentage_used", "days_remaining",
+                            "daily_remaining_allowance", "confidence",
+                        ) if key in forecast}
+                        for forecast in budget_forecasts
+                    ],
+                    "goal_plans": [
+                        {key: goal[key] for key in (
+                            "target", "goal", "saved", "remaining", "target_date",
+                            "days_to_target", "suggested_monthly_saving",
+                            "target_date_passed", "target_due_today",
+                        ) if key in goal}
+                        for goal in goal_plans
+                    ],
+                    "category_spending_comparisons": [
+                        {key: pattern[key] for key in (
+                            "category", "current_period_spending", "comparison_periods",
+                            "average_previous_spending", "increase_amount", "change_percent",
+                        ) if key in pattern}
+                        for pattern in category_spending_comparisons
+                    ],
+                    "long_term_cash_flow_scenarios": {
+                        key: long_term_outlook[key] for key in (
+                            "available", "observed_completed_months", "average_monthly_recorded_income",
+                            "average_monthly_recorded_expenses", "average_monthly_recorded_net_cash_flow",
+                            "scenarios", "confidence",
+                        ) if key in long_term_outlook
+                    },
+                    "evidence_catalog": groq_evidence_catalog,
+                }
+                groq_prompt_data = json.dumps({
+                    "planning_context": groq_context,
+                }, ensure_ascii=False, separators=(",", ":"))
+                groq_planning_prompt = (
+                    "You are FinAI's proactive budget and savings analyst. Review the supplied current "
+                    "cash flow, recent trend, budget forecasts, goal plans, category comparisons, and "
+                    "long-term cash-flow scenarios together. Identify up to five specific, useful "
+                    "insights across budgets, goals, and cash flow; include predictive risks or "
+                    "opportunities only when the supplied forecast evidence supports them. You may "
+                    "recommend only insights backed by an evidence_catalog item, and each recommendation "
+                    "must cite exactly one matching evidence_id. Use only the cited item's facts; do not "
+                    "invent numbers, dates, causes, or calculations, and do not calculate new forecasts. "
+                    "Avoid repeating the same issue. Keep advice practical and nonjudgmental, and mention "
+                    "that recorded data may be incomplete and projections can change. Do not recommend "
+                    "investments, loans, tax actions, or moving money. If no useful action is supported, "
+                    "return an empty recommendations list and say so briefly. Return JSON only: "
+                    "{\"overview\":\"one sentence, max 120 chars\",\"recommendations\":["
+                    "{\"evidence_id\":\"id\",\"priority\":\"high|medium|goal\","
+                    "\"title\":\"max 6 words\",\"message\":\"max 90 chars\","
+                    "\"actions\":[\"max 2 actions, each max 80 chars\"],"
+                    "\"how_calculated\":\"max 120 chars\","
+                    "\"context_question\":\"string or null\"}]}. Data: " + groq_prompt_data
+                )
                 response, _model = await asyncio.wait_for(asyncio.to_thread(
                     generate_groq_response,
-                    [{"role": "user", "content": planning_prompt}],
+                    [{"role": "user", "content": groq_planning_prompt}],
                     model=GROQ_PLANNING_MODEL,
                     temperature=0.2,
                     max_tokens=1800,
                     json_mode=True,
                     validate=_validate_planning_response,
+                    timeout_seconds=min(GROQ_TIMEOUT_SECONDS, 3.0),
                     operation=f"plan_ahead:{plan_call_id}",
-                ), timeout=GROQ_TIMEOUT_SECONDS + 0.5)
+                ), timeout=min(GROQ_TIMEOUT_SECONDS, 3.0) + 0.5)
                 analysis_provider = "groq"
             except Exception as groq_exc:
                 print(
-                    f"[Groq][plan_ahead:{plan_call_id}] unavailable "
-                    f"({type(groq_exc).__name__}); keeping recorded-data guidance."
+                    f"[Groq][plan_ahead:{plan_call_id}] failed: "
+                    f"{_provider_failure_summary(groq_exc)}; trying Gemini backup if configured."
+                )
+
+        if response is None and ai_client and GEMINI_BACKUP_MODEL and GEMINI_BACKUP_MODEL != GEMINI_PRIMARY_MODEL:
+            try:
+                response, _model = await asyncio.wait_for(asyncio.to_thread(
+                    generate_content_for_model,
+                    ai_client,
+                    GEMINI_BACKUP_MODEL,
+                    planning_contents,
+                    planning_config,
+                    validate=_validate_planning_response,
+                    operation=f"plan_ahead:{plan_call_id}:backup",
+                ), timeout=PLAN_AHEAD_GEMINI_ATTEMPT_TIMEOUT_SECONDS)
+                analysis_provider = "gemini"
+            except Exception as backup_exc:
+                print(
+                    f"[Gemini][plan_ahead:{plan_call_id}] backup failed: "
+                    f"{_provider_failure_summary(backup_exc)}; keeping recorded-data guidance."
                 )
 
         if response is not None:

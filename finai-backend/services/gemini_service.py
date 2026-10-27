@@ -30,6 +30,40 @@ def validate_json_response(response) -> dict:
     return parsed
 
 
+def generate_content_for_model(
+    client,
+    model: str,
+    contents,
+    config=None,
+    *,
+    validate: Optional[Callable] = None,
+    operation: str = "unspecified",
+):
+    """Generate once with a specific model so callers can interleave providers."""
+    if client is None:
+        raise RuntimeError("Gemini client is not configured")
+    if not model:
+        raise RuntimeError("No Gemini model is configured")
+
+    started_at = time.perf_counter()
+    print(f"[Gemini][{operation}] attempt started: {model}.")
+    try:
+        response = client.models.generate_content(model=model, contents=contents, config=config)
+        if not (getattr(response, "text", None) or "").strip():
+            raise InvalidModelOutputError("Gemini returned an empty response")
+        if validate:
+            validate(response)
+        print(f"[Gemini][{operation}] succeeded: {model} in {round((time.perf_counter() - started_at) * 1000)}ms.")
+        return response, model
+    except Exception as exc:
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        print(
+            f"[Gemini][{operation}] failed: {model} in {round((time.perf_counter() - started_at) * 1000)}ms "
+            f"(error={type(exc).__name__}, code={code or 'n/a'})."
+        )
+        raise
+
+
 def _retryable_provider_error(exc: Exception) -> bool:
     if isinstance(exc, (TimeoutError, ConnectionError)):
         return True

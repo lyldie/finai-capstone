@@ -1,6 +1,7 @@
 """Small Groq chat-completions client used as a cross-provider advisor fallback."""
 
 import os
+import json
 import time
 from types import SimpleNamespace
 from typing import Callable, Optional
@@ -31,6 +32,7 @@ def generate_groq_response(
     max_tokens: int = 500,
     json_mode: bool = False,
     validate: Optional[Callable] = None,
+    timeout_seconds: Optional[float] = None,
     operation: str = "advisor",
 ):
     """Generate one bounded Groq response and return a Gemini-like text object."""
@@ -46,13 +48,16 @@ def generate_groq_response(
     if json_mode:
         payload["response_format"] = {"type": "json_object"}
 
+    request_bytes = len(json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    print(f"[Groq][{operation}] request prepared: model={model}, payload_bytes={request_bytes}.")
+
     started_at = time.perf_counter()
     try:
         response = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
             headers={"Authorization": f"Bearer {GROQ_API_KEY}"},
             json=payload,
-            timeout=GROQ_TIMEOUT_SECONDS,
+            timeout=min(GROQ_TIMEOUT_SECONDS, timeout_seconds) if timeout_seconds else GROQ_TIMEOUT_SECONDS,
         )
     except requests.RequestException as exc:
         raise GroqProviderError(None, type(exc).__name__) from exc

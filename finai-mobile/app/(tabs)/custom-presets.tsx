@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Modal, TextInput, Alert, ActivityIndicator, FlatList } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Modal, TextInput, Alert, ActivityIndicator, FlatList, Keyboard, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -8,6 +8,8 @@ import { API_URL } from '../../config';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
+import { getSecureItem } from '../../utils/secureStorage';
+
 
 const GREEN = '#144A3D';
 const API_BASE_URL = `${API_URL}/api`;
@@ -64,7 +66,7 @@ export default function CustomPresetsScreen() {
     if (!isSilent) setIsLoading(true); 
     
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const headers = { Authorization: `Bearer ${token || ''}` };
       const catRes = await fetch(`${API_BASE_URL}/categories/?user_id=${encodeURIComponent(user.id)}`, { headers });
       const catData = await readListResponse(catRes, 'Categories');
@@ -113,6 +115,10 @@ export default function CustomPresetsScreen() {
       Alert.alert('Name required', 'Enter a name for this item.');
       return;
     }
+    if (activeTab === 'accounts' && newAccBalance.trim() && (!Number.isFinite(Number(newAccBalance)) || Number(newAccBalance) < 0)) {
+      Alert.alert('Invalid opening balance', 'Enter a valid amount of zero or more. This is the money already in the account when you create it.');
+      return;
+    }
 
     const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
     const method = editingId ? 'PUT' : 'POST'; 
@@ -126,7 +132,7 @@ export default function CustomPresetsScreen() {
       : { name: newItemName, initial_balance: parseFloat(newAccBalance) || 0.0, user_id: user?.id, icon: finalEmoji };
 
     try {
-      const token = await AsyncStorage.getItem('user_token');
+      const token = await getSecureItem('user_token');
       const res = await fetch(url, {
         method,
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` },
@@ -137,10 +143,36 @@ export default function CustomPresetsScreen() {
         setModalVisible(false);
         fetchData(true); 
       } else {
-        Alert.alert('Error', 'Failed to save data. Check backend endpoints.');
+        const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+        let message = `We couldn’t save this ${itemLabel}. Please try again.`;
+
+        if (res.status === 401) {
+          message = 'Your session may have expired. Please sign in again, then retry.';
+        } else if (res.status === 403) {
+          message = `You don’t have permission to change this ${itemLabel}.`;
+        } else if (res.status === 404 && editingId) {
+          message = `This ${itemLabel} could not be found. Refresh the list and try again.`;
+        } else if (res.status === 409) {
+          const responseData = await res.json().catch(() => ({}));
+          message = typeof responseData.detail === 'string'
+            ? responseData.detail
+            : `A ${itemLabel} with this name already exists. Choose a different name.`;
+        } else if (res.status === 422) {
+          message = activeTab === 'categories'
+            ? 'Please check the category name and type, then try again.'
+            : 'Please check the account name and starting balance, then try again.';
+        } else if (res.status >= 500) {
+          message = `FinAI couldn’t save your ${itemLabel} right now. Please try again in a moment.`;
+        }
+
+        Alert.alert(`Couldn’t save ${itemLabel}`, message);
       }
     } catch (error) {
-      Alert.alert('Could not save item', 'Check your connection and try again.');
+      const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+      Alert.alert(
+        `Couldn’t save ${itemLabel}`,
+        'We couldn’t reach FinAI. Check your internet connection and try again.'
+      );
     }
   };
 
@@ -150,16 +182,25 @@ export default function CustomPresetsScreen() {
       { text: "Delete", style: "destructive", onPress: async () => {
           const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
           try {
-            const token = await AsyncStorage.getItem('user_token');
+            const token = await getSecureItem('user_token');
             const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
             if (res.ok) {
               fetchData(true); 
             } else {
               const errorData = await res.json().catch(() => ({}));
-              Alert.alert('Could not delete item', errorData.detail || 'Please try again.');
+              const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+              const message = res.status === 404
+                ? `This ${itemLabel} may already have been removed. Refresh the list and try again.`
+                : res.status === 401
+                  ? 'Your session may have expired. Please sign in again, then retry.'
+                  : typeof errorData.detail === 'string'
+                    ? errorData.detail
+                    : `We couldn’t delete this ${itemLabel}. Please try again.`;
+              Alert.alert(`Couldn’t delete ${itemLabel}`, message);
             }
           } catch (error) {
-            Alert.alert('Error', 'Network connection failed.');
+            const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+            Alert.alert(`Couldn’t delete ${itemLabel}`, 'We couldn’t reach FinAI. Check your internet connection and try again.');
           }
         }
       }
@@ -233,8 +274,20 @@ export default function CustomPresetsScreen() {
         <Ionicons name="add" size={30} color="#FFFFFF" />
       </TouchableOpacity>
 
-      <Modal visible={isModalVisible} transparent animationType="fade">
+      <Modal
+        visible={isModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { Keyboard.dismiss(); setModalVisible(false); }}
+      >
         <View style={styles.modalOverlay}>
+          <KeyboardAvoidingView style={styles.modalKeyboard} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+            <ScrollView
+              style={styles.modalScroll}
+              contentContainerStyle={styles.modalScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>{editingId ? 'Edit' : 'Add Custom'} {activeTab === 'categories' ? 'Category' : 'Account'}</Text>
             
@@ -259,12 +312,16 @@ export default function CustomPresetsScreen() {
               )}
             </View>
 
-            <TextInput 
+            <View style={{ width: '100%', marginBottom: activeTab === 'accounts' ? 12 : 20 }}>
+              <Text style={styles.fieldLabel}>{activeTab === 'categories' ? 'Category name' : 'Account name'}</Text>
+              <TextInput
               style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
-              placeholder={`Enter ${activeTab === 'categories' ? 'Category' : 'Account'} Name`}
+              placeholder={activeTab === 'categories' ? 'e.g. Groceries' : 'e.g. Cash wallet'}
+              placeholderTextColor="#8A9A86"
               value={newItemName}
               onChangeText={setNewItemName}
-            />
+              />
+            </View>
 
             {activeTab === 'categories' ? (
               <View style={styles.radioGroup}>
@@ -276,13 +333,20 @@ export default function CustomPresetsScreen() {
                 </TouchableOpacity>
               </View>
             ) : (
-              <TextInput 
+              <View style={{ width: '100%', marginBottom: 8 }}>
+                <View style={styles.fieldLabelRow}>
+                  <Text style={styles.fieldLabel}>Opening balance</Text>
+                </View>
+                <TextInput
                 style={[styles.inputField, { width: '100%', marginBottom: 20, paddingHorizontal: 15 }]}
-                placeholder="Initial Balance (e.g. 1000)"
+                placeholder="₱0.00"
+                placeholderTextColor="#8A9A86"
                 keyboardType="numeric"
                 value={newAccBalance}
                 onChangeText={setNewAccBalance}
-              />
+                />
+                <Text style={styles.fieldHint}>The amount already in this account. Enter 0 if it starts empty.</Text>
+              </View>
             )}
 
             <View style={styles.modalActions}>
@@ -294,6 +358,8 @@ export default function CustomPresetsScreen() {
               </TouchableOpacity>
             </View>
           </View>
+            </ScrollView>
+          </KeyboardAvoidingView>
         </View>
       </Modal>
 
@@ -322,8 +388,14 @@ const styles = StyleSheet.create({
   actionIcon: { padding: 8, backgroundColor: '#F0F4F2', borderRadius: 8 },
   fab: { position: 'absolute', bottom: 30, right: 20, width: 60, height: 60, borderRadius: 30, backgroundColor: GREEN, justifyContent: 'center', alignItems: 'center', shadowColor: GREEN, shadowOpacity: 0.4, shadowRadius: 10, elevation: 6 },
   modalOverlay: { flex: 1, backgroundColor: 'rgba(20, 45, 42, 0.6)', justifyContent: 'center', alignItems: 'center', padding: 20 },
+  modalKeyboard: { flex: 1, width: '100%', justifyContent: 'center' },
+  modalScroll: { flexGrow: 0, maxHeight: '100%' },
+  modalScrollContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 8 },
   modalContent: { backgroundColor: '#FFFFFF', width: '90%', borderRadius: 24, padding: 24, alignItems: 'center' },
   modalTitle: { fontSize: 20, fontWeight: '800', color: '#142D2A', marginBottom: 20 },
+  fieldLabel: { alignSelf: 'flex-start', fontSize: 13, fontWeight: '700', color: '#58706B', marginBottom: 6 },
+  fieldLabelRow: { width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  fieldHint: { fontSize: 12, lineHeight: 17, color: '#7C9A95', marginTop: -12, marginBottom: 8 },
   previewCircle: { width: 56, height: 56, borderRadius: 16, fontSize: 26, padding: 0, marginBottom: 8 },
   previewHint: { fontSize: 12, color: '#8A9A86', fontWeight: '500' },
   inputField: { height: 50, fontSize: 16, color: '#142D2A', backgroundColor: '#F7F9F8', borderWidth: 1, borderColor: '#E6ECE9', borderRadius: 12 },

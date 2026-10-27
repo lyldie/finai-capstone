@@ -1,8 +1,9 @@
 import React, { useState, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TextInput, Alert, StatusBar, 
-  Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard, Platform
+  Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard, Platform, Modal
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams, Stack } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,6 +18,7 @@ const GOLD = '#edb232';
 export default function OtpVerifyScreen() {
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const [verified, setVerified] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const router = useRouter();
   
@@ -66,9 +68,7 @@ export default function OtpVerifyScreen() {
            await AsyncStorage.setItem('user_email', cleanEmail);
         }
 
-        Alert.alert("Success! ✅", "Your account has been verified.", [
-          { text: "G", onPress: () => router.replace('/setup-pin') }
-        ]);
+        setVerified(true);
       } else {
         Alert.alert('Verification failed', data.detail || 'Check the code in your email and try again.');
       }
@@ -121,6 +121,33 @@ export default function OtpVerifyScreen() {
           <Text style={{color: '#fff', opacity: 0.8}}>Wrong email? <Text style={{fontWeight: 'bold', color: GOLD}}>Back to Signup</Text></Text>
         </TouchableOpacity>
       </KeyboardAvoidingView>
+
+      <Modal
+        visible={verified}
+        transparent
+        animationType="fade"
+        onRequestClose={() => router.replace('/setup-pin')}
+      >
+        <View style={styles.successBackdrop}>
+          <View style={styles.successCard}>
+            <View style={styles.successIcon}>
+              <Ionicons name="checkmark" size={27} color={DEEP_GREEN} />
+            </View>
+            <Text style={styles.successTitle}>Email verified</Text>
+            <Text style={styles.successMessage}>Your email address is confirmed. Continue to set your secure app PIN.</Text>
+            <TouchableOpacity
+              style={styles.successButton}
+              onPress={() => { setVerified(false); router.replace('/setup-pin'); }}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="Continue to set your app PIN"
+            >
+              <Text style={styles.successButtonText}>Continue</Text>
+              <Ionicons name="arrow-forward" size={17} color={DEEP_GREEN} />
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -135,5 +162,12 @@ const styles = StyleSheet.create({
     boxActive: { borderColor: GOLD },
     boxText: { color: '#fff', fontSize: 20, fontWeight: 'bold' },
     btn: { backgroundColor: GOLD, width: '100%', height: 55, borderRadius: 28, justifyContent: 'center', alignItems: 'center', marginTop: 40 },
-    btnText: { color: DEEP_GREEN, fontWeight: 'bold', fontSize: 16 }
+    btnText: { color: DEEP_GREEN, fontWeight: 'bold', fontSize: 16 },
+    successBackdrop: { flex: 1, justifyContent: 'center', alignItems: 'center', padding: 28, backgroundColor: 'rgba(10,25,22,0.62)' },
+    successCard: { width: '100%', maxWidth: 360, alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 24, padding: 25, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.18, shadowRadius: 18, elevation: 8 },
+    successIcon: { width: 56, height: 56, borderRadius: 28, alignItems: 'center', justifyContent: 'center', backgroundColor: '#EAF4EF', marginBottom: 14 },
+    successTitle: { color: DEEP_GREEN, fontSize: 20, fontWeight: '800', textAlign: 'center' },
+    successMessage: { color: '#47645D', fontSize: 14, lineHeight: 21, textAlign: 'center', marginTop: 8 },
+    successButton: { minHeight: 48, width: '100%', flexDirection: 'row', gap: 8, alignItems: 'center', justifyContent: 'center', backgroundColor: GOLD, borderRadius: 15, marginTop: 22, paddingHorizontal: 18 },
+    successButtonText: { color: DEEP_GREEN, fontSize: 15, fontWeight: '800' }
 });

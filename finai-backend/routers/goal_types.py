@@ -3,11 +3,28 @@ from fastapi import APIRouter, HTTPException, Depends
 from bson import ObjectId
 from database import db
 from schemas.goal_type import GoalTypeCreate, GoalTypeResponse
+import re
+from typing import Optional
 
 from auth import get_current_admin
 from .logs import log_action
 
 router = APIRouter(prefix="/api/goal-types", tags=["Goal Types"])
+
+
+async def _normalize_and_check_name(name: str, exclude_id: Optional[ObjectId] = None) -> str:
+    normalized = name.strip()
+    if not normalized:
+        raise HTTPException(status_code=422, detail="Goal type name is required.")
+    query = {
+        "name": {"$regex": f"^{re.escape(normalized)}$", "$options": "i"},
+        "is_archived": {"$ne": True},
+    }
+    if exclude_id is not None:
+        query["_id"] = {"$ne": exclude_id}
+    if await db.goal_types.find_one(query):
+        raise HTTPException(status_code=409, detail="An active goal type with this name already exists.")
+    return normalized
 
 @router.get("/", response_model=list[GoalTypeResponse])
 async def get_goal_types(archived: bool = False):
@@ -26,6 +43,7 @@ async def get_goal_types(archived: bool = False):
 async def create_goal_type(goal: GoalTypeCreate, admin: dict = Depends(get_current_admin)):
     """(unchanged) Admin-only -- no regular-user goal-type creation flow exists."""
     gt_data = goal.model_dump()
+    gt_data["name"] = await _normalize_and_check_name(gt_data["name"])
     gt_data["is_archived"] = False
     new_gt = await db.goal_types.insert_one(gt_data)
     created = await db.goal_types.find_one({"_id": new_gt.inserted_id})
@@ -45,11 +63,15 @@ async def update_goal_type(gt_id: str, goal: GoalTypeCreate, admin: dict = Depen
     existing = await db.goal_types.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Goal type not found")
+    if existing.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Restore this goal type before editing it.")
 
+    goal_data = goal.model_dump()
+    goal_data["name"] = await _normalize_and_check_name(goal_data["name"], exclude_id=oid)
     old_name = existing.get("name")
 
     updated = await db.goal_types.find_one_and_update(
-        {"_id": oid}, {"$set": goal.model_dump()}, return_document=True
+        {"_id": oid, "is_archived": {"$ne": True}}, {"$set": goal_data}, return_document=True
     )
     if not updated:
         raise HTTPException(status_code=404, detail="Goal type not found")
@@ -73,6 +95,8 @@ async def archive_goal_type(gt_id: str, admin: dict = Depends(get_current_admin)
     existing = await db.goal_types.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Goal type not found")
+    if existing.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="This goal type is already archived.")
 
     updated = await db.goal_types.find_one_and_update({"_id": oid}, {"$set": {"is_archived": True}}, return_document=True)
     await log_action(admin["name"], f"Archived goal type '{existing.get('name')}'")
@@ -90,6 +114,9 @@ async def restore_goal_type(gt_id: str, admin: dict = Depends(get_current_admin)
     existing = await db.goal_types.find_one({"_id": oid})
     if not existing:
         raise HTTPException(status_code=404, detail="Goal type not found")
+    if not existing.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="This goal type is already active.")
+    await _normalize_and_check_name(existing.get("name", ""), exclude_id=oid)
 
     updated = await db.goal_types.find_one_and_update({"_id": oid}, {"$set": {"is_archived": False}}, return_document=True)
     await log_action(admin["name"], f"Restored goal type '{existing.get('name')}'")
@@ -113,9 +140,24 @@ async def permanent_delete_goal_type(gt_id: str, admin: dict = Depends(get_curre
         raise HTTPException(status_code=400, detail="Archive the goal type before permanently deleting it.")
 
     goal_type_name = existing.get("name")
-
-    # I-check kung may active user goals pang nakatali sa goal type na ito (pwede ring gamitin ang gt_id o name depende sa schema ninyo)
-    linked_goal = await db.goals.find_one({"$or": [{"goal_type_id": gt_id}, {"goal_type": goal_type_name}]})
+    goal_type_ref = str(oid)
+    linked_goal = await db.goals.find_one({
+        "$or": [
+            {"goal_type_id": {"$in": [goal_type_ref, oid]}},
+            {"preset_id": {"$in": [goal_type_ref, oid]}},
+            {"goal_type": {"$in": [goal_type_ref, oid]}},
+            {"$and": [
+                {"goal_type_id": {"$in": [None, ""]}},
+                {"preset_id": {"$in": [None, ""]}},
+                {"$or": [
+                    {"goal_type": {"$regex": f"^{re.escape(str(goal_type_name))}$", "$options": "i"}},
+                    {"goal_type_name": {"$regex": f"^{re.escape(str(goal_type_name))}$", "$options": "i"}},
+                    {"preset_name": {"$regex": f"^{re.escape(str(goal_type_name))}$", "$options": "i"}},
+                    {"type_name": {"$regex": f"^{re.escape(str(goal_type_name))}$", "$options": "i"}},
+                ]},
+            ]},
+        ]
+    })
     if linked_goal:
         raise HTTPException(
             status_code=400, 

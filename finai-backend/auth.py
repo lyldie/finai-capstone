@@ -58,12 +58,12 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 12  # 12 hours -- long enough for a work sess
 bearer_scheme = HTTPBearer(auto_error=False)
 
 
-def create_access_token(user_id: str, role: str) -> str:
+def create_access_token(user_id: str, role: str, token_version: int = 0) -> str:
     """Build a signed token carrying just enough to identify + authorize the caller.
     Kept minimal on purpose -- no name/email inside, so the token itself leaks
     nothing extra if it's ever logged or intercepted."""
     expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    payload = {"sub": user_id, "role": role, "exp": expire}
+    payload = {"sub": user_id, "role": role, "ver": int(token_version), "exp": expire}
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
 
 
@@ -102,6 +102,8 @@ async def _validate_admin_token(credentials: Optional[HTTPAuthorizationCredentia
     admin_user = await db.users.find_one({"_id": oid})
     if not admin_user or admin_user.get("role") != "admin" or admin_user.get("is_archived"):
         raise HTTPException(status_code=401, detail="Admin access revoked. Please log in again.")
+    if int(payload.get("ver", 0)) != int(admin_user.get("token_version", 0)):
+        raise HTTPException(status_code=401, detail="Your session was revoked. Please log in again.")
 
     return {"id": user_id, "name": admin_user.get("name", "Admin"), "email": admin_user.get("email", "")}
 
@@ -129,7 +131,8 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     try:
         payload = jwt.decode(credentials.credentials, SECRET_KEY, algorithms=[ALGORITHM])
         user_id = payload.get("sub")
-        if not user_id or payload.get("role") not in {"user", "admin"}:
+        token_role = payload.get("role")
+        if not user_id or token_role not in {"user", "admin"}:
             raise JWTError("Token missing required claims")
         oid = ObjectId(user_id)
     except Exception:
@@ -137,7 +140,12 @@ async def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] =
     user = await db.users.find_one({"_id": oid})
     if not user or user.get("is_archived"):
         raise HTTPException(status_code=401, detail="Session is no longer valid. Please log in again.")
-    return {"id": user_id, "name": user.get("name", ""), "email": user.get("email", ""), "role": user.get("role", "user")}
+    current_role = user.get("role", "user")
+    if token_role != current_role:
+        raise HTTPException(status_code=401, detail="Your account access changed. Please log in again.")
+    if int(payload.get("ver", 0)) != int(user.get("token_version", 0)):
+        raise HTTPException(status_code=401, detail="Your session was revoked. Please log in again.")
+    return {"id": user_id, "name": user.get("name", ""), "email": user.get("email", ""), "role": current_role}
 
 
 async def verify_admin_credentials(credentials: Optional[HTTPAuthorizationCredentials]) -> dict:
