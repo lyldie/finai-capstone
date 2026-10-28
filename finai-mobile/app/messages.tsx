@@ -1,17 +1,23 @@
 import React, { useCallback, useState } from 'react';
-import { ActivityIndicator, FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useFocusEffect, useRouter } from 'expo-router';
+import { useFocusEffect, usePathname, useRouter } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 import { API_URL } from '../config';
+import FinnPortrait from '../components/FinnPortrait';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
 const GOLD = '#edb232';
 const SAGE = '#7C9A95';
 const CREAM = '#FAF7F2';
+const formatFinnPreview = (text: string) => text
+  .replace(/\*\*/g, '')
+  .replace(/^#{1,6}\s+/gm, '')
+  .replace(/^\s*[-*]\s+/gm, '• ')
+  .trim();
 
 type Conversation = {
   id: string;
@@ -23,6 +29,7 @@ type Conversation = {
 
 export default function MessagesScreen() {
   const router = useRouter();
+  const isAiTab = usePathname().endsWith('/ai');
   const { user } = useAuth();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -62,7 +69,7 @@ export default function MessagesScreen() {
             <Text style={styles.threadTitle}>{item.title}</Text>
             <Text style={styles.threadDate}>{item.updated_at ? new Date(item.updated_at).toLocaleDateString() : ''}</Text>
           </View>
-          <Text style={styles.threadPreview} numberOfLines={2}>{item.last_message || 'Open to continue this conversation.'}</Text>
+          <Text style={styles.threadPreview} numberOfLines={2}>{formatFinnPreview(item.last_message || 'Open to continue this conversation.')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={SAGE} />
       </TouchableOpacity>
@@ -79,21 +86,25 @@ export default function MessagesScreen() {
           <View pointerEvents="none" style={styles.heroOrbLarge} />
           <View pointerEvents="none" style={styles.heroOrbSmall} />
           <View style={styles.header}>
-            <TouchableOpacity onPress={() => router.back()} style={styles.iconButton} accessibilityLabel="Go back">
-              <Ionicons name="arrow-back" size={21} color="#FFFFFF" />
-            </TouchableOpacity>
+            {isAiTab ? (
+              <View style={styles.iconButton}><Ionicons name="sparkles" size={20} color="#F5D27C" /></View>
+            ) : (
+              <TouchableOpacity onPress={() => router.back()} style={styles.iconButton} accessibilityLabel="Go back">
+                <Ionicons name="arrow-back" size={21} color="#FFFFFF" />
+              </TouchableOpacity>
+            )}
             <View style={styles.headerCopy}>
               <Text style={styles.eyebrow}>YOUR FINAI SPACE</Text>
-              <Text style={styles.title}>Messages</Text>
+              <Text style={styles.title}>{isAiTab ? 'Finn' : 'Messages'}</Text>
             </View>
-            <View style={styles.onlineBadge}><Ionicons name="sparkles" size={13} color="#F5D27C" /><Text style={styles.onlineText}>YOUR ADVISOR</Text></View>
+            <View style={{ width: 2 }} />
           </View>
           <View style={styles.heroMessage}>
+            <FinnPortrait size={88} />
             <View style={styles.heroCopy}>
-              <Text style={styles.heroTitle}>Your money conversations, all in one place.</Text>
-              <Text style={styles.heroSubtitle}>Pick up where you left off or start with a question.</Text>
+              <Text style={styles.heroTitle}>Hello! I’m Finn, your personal budget advisor.</Text>
+              <Text style={styles.heroSubtitle}>What would you like help with today?</Text>
             </View>
-            <Image source={require('../assets/images/finn-wave.gif')} style={styles.heroFinn} resizeMode="contain" accessibilityLabel="Finn waving hello" />
           </View>
         </LinearGradient>
 
@@ -163,10 +174,9 @@ const styles = StyleSheet.create({
   onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: 'rgba(255,255,255,0.12)', borderRadius: 14, paddingHorizontal: 10, paddingVertical: 7 },
   onlineText: { color: '#E5F1EB', fontSize: 9, fontWeight: '800', letterSpacing: 0.6 },
   heroMessage: { flexDirection: 'row', alignItems: 'center', minHeight: 116, marginTop: 7 },
-  heroCopy: { flex: 1, paddingRight: 2 },
-  heroTitle: { color: '#FFFFFF', fontSize: 22, lineHeight: 28, fontWeight: '900', letterSpacing: -0.5 },
+  heroCopy: { flex: 1, paddingLeft: 12, paddingRight: 2 },
+  heroTitle: { color: '#FFFFFF', fontSize: 19, lineHeight: 25, fontWeight: '900', letterSpacing: -0.4 },
   heroSubtitle: { color: '#D1E3DC', fontSize: 12, lineHeight: 18, fontWeight: '500', marginTop: 7, maxWidth: 250 },
-  heroFinn: { width: 106, height: 112, marginLeft: 2 },
   startSection: { marginHorizontal: 16, marginTop: -20, padding: 16, backgroundColor: '#FFFFFF', borderRadius: 23, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.1, shadowRadius: 16, elevation: 5 },
   startHeadingRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   headingIcon: { width: 34, height: 34, borderRadius: 12, backgroundColor: 'rgba(237,178,50,0.16)', alignItems: 'center', justifyContent: 'center' },

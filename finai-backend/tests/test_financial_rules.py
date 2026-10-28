@@ -21,8 +21,6 @@ from pydantic import ValidationError
 os.environ["MONGO_URL"] = "mongodb://127.0.0.1:27017/finai_test"
 os.environ["GEMINI_API_KEY"] = ""
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-sys.modules.setdefault("easyocr", types.SimpleNamespace(Reader=lambda *args, **kwargs: None))
-
 import main
 from main import TransactionSchema, validate_transaction_for_storage
 from routers import accounts as accounts_router

@@ -8,10 +8,11 @@ load_dotenv(Path(__file__).with_name(".env"))
 MONGO_URL = os.getenv("MONGO_URL")
 if not MONGO_URL:
     raise RuntimeError("MONGO_URL must be set in the environment before starting the backend.")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "FinAI_DB").strip() or "FinAI_DB"
 
 # I-initialize ang client at db
 client = AsyncIOMotorClient(MONGO_URL)
-db = client.FinAI_DB
+db = client[MONGO_DB_NAME]
 
 
 async def _backfill_unique_keys(collection, key_field: str, key_builder) -> None:

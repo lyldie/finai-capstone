@@ -1,6 +1,5 @@
 import os
 import sys
-import types
 import unittest
 
 # Importing backend modules creates a lazy Mongo client. Point it at a local,
@@ -9,10 +8,6 @@ os.environ["MONGO_URL"] = "mongodb://127.0.0.1:27017/finai_test"
 os.environ["GEMINI_API_KEY"] = ""
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-
-# Stub heavy optional dependencies so the OCR helpers can be imported in a lightweight test.
-easyocr_stub = types.SimpleNamespace(Reader=lambda *args, **kwargs: None)
-sys.modules.setdefault("easyocr", easyocr_stub)
 
 from main import extract_total_amount, pick_merchant_line, reconcile_receipt_fields, select_best_receipt_result
 

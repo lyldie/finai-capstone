@@ -289,21 +289,13 @@ export default function InsightsScreen() {
     const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
-    const netBalance = transactions.reduce((acc, t) => {
-      if (!isInSelectedWindow(t.date)) return acc;
-      const amount = Number(t.amount) || 0;
-      if (t.type === 'Income') return acc + amount;
-      if (t.type === 'Expense' && !t.goal_id) return acc - amount;
-      return acc;
-    }, 0);
-
     const safeGoals = goals || [];
     const totalTarget = safeGoals.reduce((acc, g) => acc + (Number(g.target_amount) || 0), 0);
     const totalSavings = safeGoals.reduce((acc, g) => acc + (Number(g.current_savings) || 0), 0);
     const overallGoalProgress = totalTarget > 0 ? (totalSavings / totalTarget) * 100 : 0;
 
-    return { totalBudget, totalSpent, usage, netBalance, totalTarget, totalSavings, overallGoalProgress };
-  }, [activeBudgets, selectedPeriodType, transactions, goals, timeframe]);
+    return { totalBudget, totalSpent, usage, totalTarget, totalSavings, overallGoalProgress };
+  }, [activeBudgets, selectedPeriodType, goals]);
 
   const chartData = useMemo(() => {
     const data: any[] = [];
@@ -422,7 +414,15 @@ export default function InsightsScreen() {
     : stats.usage >= 100 ? 'Limit reached'
     : stats.usage >= 70 ? 'Watch spending'
     : 'On track';
-  const netPositive = stats.netBalance >= 0;
+  const remainingBudget = stats.totalBudget - stats.totalSpent;
+  const remainingBudgetTone: Tone = !hasBudgetForPeriod ? 'neutral' : remainingBudget < 0 ? 'danger' : 'success';
+  const remainingBudgetBadge = !hasBudgetForPeriod
+    ? 'No limits'
+    : remainingBudget < 0
+      ? 'Over budget'
+      : remainingBudget === 0
+        ? 'Limit reached'
+        : 'Available';
   const heroAccent = budgetPool.usage >= 70 ? getBudgetStatusColor(budgetPool.usage) : '#5FE3B3';
   const budgetPeriodNoun = budgetTimeframe === 'Week' ? 'week' : budgetTimeframe === 'Month' ? 'month' : 'year';
   const budgetPeriodAdj = budgetTimeframe === 'Week' ? 'Weekly' : budgetTimeframe === 'Month' ? 'Monthly' : 'Annual';
@@ -533,15 +533,17 @@ export default function InsightsScreen() {
 
               <View style={styles.summaryCol}>
                 <View style={styles.rowCenter}>
-                  <Ionicons name={netPositive ? 'trending-up' : 'trending-down'} size={15} color={SAGE} />
-                  <Text style={styles.summaryLabel}>Money left</Text>
+                  <Ionicons name="wallet-outline" size={15} color={SAGE} />
+                  <Text style={styles.summaryLabel}>Remaining budget</Text>
                 </View>
-                <Text style={[styles.summaryValue, { color: netPositive ? DEEP_GREEN : TONES.danger.fg }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                  {netPositive ? '+' : '−'}{formatCurrency(Math.abs(stats.netBalance))}
+                <Text style={[styles.summaryValue, { color: TONES[remainingBudgetTone].fg }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {hasBudgetForPeriod ? `${remainingBudget < 0 ? '−' : ''}${formatCurrency(Math.abs(remainingBudget))}` : '—'}
                 </Text>
-                <Text style={styles.caption} numberOfLines={2}>Income minus spending</Text>
+                <Text style={styles.caption} numberOfLines={2}>
+                  {hasBudgetForPeriod ? 'Active limits minus spending' : 'Set a limit to see what remains'}
+                </Text>
                 <View style={styles.summaryBadge}>
-                  <Badge label={netPositive ? 'Saving' : 'Overspent'} tone={netPositive ? 'success' : 'danger'} dot />
+                  <Badge label={remainingBudgetBadge} tone={remainingBudgetTone} dot />
                 </View>
               </View>
             </View>

@@ -6,6 +6,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 
@@ -67,12 +68,14 @@ export default function TransactionsScreen() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
+  const [datePickerTarget, setDatePickerTarget] = useState<'start' | 'end' | null>(null);
 
   const phTodayParts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
   }).formatToParts(new Date());
   const phTodayPart = (type: string) => phTodayParts.find((item) => item.type === type)?.value || '';
   const today = new Date(Number(phTodayPart('year')), Number(phTodayPart('month')) - 1, Number(phTodayPart('day')));
+  const todayDateKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
   const [selectedYear, setSelectedYear] = useState(today.getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(today.getMonth());
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<number | null>(today.getDate());
@@ -222,7 +225,9 @@ export default function TransactionsScreen() {
       const transDate = transactionDate(t.date);
       if (startDate && t.date < startDate) return false;
       if (endDate && t.date > endDate) return false;
-      if (!startDate && !endDate && (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear)) return false;
+      // "All" means every transaction date. Type-specific filters remain scoped
+      // to the visible month unless the user chooses a custom range.
+      if (selectedFilter !== 'All' && !startDate && !endDate && (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear)) return false;
       const matchesType = selectedFilter === 'All'
         || (selectedFilter === 'Expense' && t.type === 'Expense' && !t.goal_id)
         || (selectedFilter === 'Contribution' && (t.type === 'Contribution' || Boolean(t.goal_id)))
@@ -251,6 +256,7 @@ export default function TransactionsScreen() {
     const blanks = Array.from({ length: firstDayIndex }).map(() => null);
     const days = Array.from({ length: daysInMonth }).map((_, i) => i + 1);
     const totalSlots = [...blanks, ...days];
+    while (totalSlots.length % 7 !== 0) totalSlots.push(null);
 
     const monthTrans = transactions.filter(t => {
       const d = transactionDate(t.date);
@@ -316,7 +322,7 @@ export default function TransactionsScreen() {
     return { months, maxBar, best, low };
   }, [transactions, selectedYear]);
 
-  const clearAdvancedFilters = () => { setSelectedCategory('All'); setSelectedAccount('All'); setStartDate(''); setEndDate(''); };
+  const clearAdvancedFilters = () => { setSelectedCategory('All'); setSelectedAccount('All'); setStartDate(''); setEndDate(''); setDatePickerTarget(null); };
   const applyAdvancedFilters = () => {
     if ((startDate && !isValidDateOnly(startDate)) || (endDate && !isValidDateOnly(endDate))) {
       Alert.alert('Invalid date', 'Use a real date in YYYY-MM-DD format.');
@@ -326,13 +332,15 @@ export default function TransactionsScreen() {
       Alert.alert('Invalid date range', 'The start date must be before or equal to the end date.');
       return;
     }
+    setDatePickerTarget(null);
     setIsFilterModalVisible(false);
   };
   const hasAdvancedFilters = selectedCategory !== 'All' || selectedAccount !== 'All' || !!startDate || !!endDate;
 
   // ---- derived display values (presentation only) ----
   const rangeActive = !!startDate || !!endDate;
-  const navDisabled = activeTab === 'Daily' && rangeActive; // month arrows do nothing while a custom range is active
+  const allDatesMode = activeTab === 'Daily' && selectedFilter === 'All' && !rangeActive;
+  const navDisabled = activeTab === 'Daily' && (rangeActive || allDatesMode); // date arrows do nothing outside a selected month
   const activeFilterCount = (selectedCategory !== 'All' ? 1 : 0) + (selectedAccount !== 'All' ? 1 : 0) + (rangeActive ? 1 : 0);
   const anyListFilterActive = hasAdvancedFilters || selectedFilter !== 'All' || searchQuery.trim() !== '';
   const resetEverything = () => { setSelectedFilter('All'); setSearchQuery(''); clearAdvancedFilters(); };
@@ -383,7 +391,7 @@ export default function TransactionsScreen() {
             <Ionicons name="chevron-back" size={18} color="#FFFFFF" />
           </TouchableOpacity>
           <Text style={styles.dateNavDisplay}>
-            {navDisabled ? 'Custom date range' : activeTab === 'Yearly' ? selectedYear : `${fullMonthsNames[selectedMonth]} ${selectedYear}`}
+            {allDatesMode ? 'All dates' : rangeActive && activeTab === 'Daily' ? 'Custom date range' : activeTab === 'Yearly' ? selectedYear : `${fullMonthsNames[selectedMonth]} ${selectedYear}`}
           </Text>
           <TouchableOpacity onPress={handleNextPeriod} disabled={navDisabled} style={[styles.dateNavButton, navDisabled && styles.dateNavButtonDisabled]} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
             <Ionicons name="chevron-forward" size={18} color="#FFFFFF" />
@@ -459,7 +467,7 @@ export default function TransactionsScreen() {
                 <Ionicons name="receipt-outline" size={36} color={GOLD} />
               </View>
               <Text style={styles.emptyTitle}>Nothing here yet</Text>
-              <Text style={styles.comingSoonText}>No records found for this period.</Text>
+              <Text style={styles.comingSoonText}>{allDatesMode ? 'No transactions match your search or filters.' : 'No records found for this period.'}</Text>
               {anyListFilterActive && (
                 <TouchableOpacity onPress={resetEverything} style={styles.emptyResetButton} activeOpacity={0.85}>
                   <Text style={styles.emptyResetText}>Clear filters</Text>
@@ -694,25 +702,33 @@ export default function TransactionsScreen() {
             </View>
             <Text style={styles.filterLabel}>Date range (optional)</Text>
             <View style={{ flexDirection: 'row', gap: 10, marginBottom: 14 }}>
-              <TextInput
-                value={startDate}
-                onChangeText={setStartDate}
-                placeholder="From YYYY-MM-DD"
-                placeholderTextColor={SAGE}
-                autoCapitalize="none"
-                keyboardType="numbers-and-punctuation"
-                style={[styles.searchInput, { backgroundColor: CREAM, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 }]}
-              />
-              <TextInput
-                value={endDate}
-                onChangeText={setEndDate}
-                placeholder="To YYYY-MM-DD"
-                placeholderTextColor={SAGE}
-                autoCapitalize="none"
-                keyboardType="numbers-and-punctuation"
-                style={[styles.searchInput, { backgroundColor: CREAM, borderRadius: 12, paddingHorizontal: 12, minHeight: 44 }]}
-              />
+              <TouchableOpacity style={styles.datePickerButton} onPress={() => setDatePickerTarget('start')}>
+                <Ionicons name="calendar-outline" size={16} color={TEAL} />
+                <Text style={styles.datePickerText}>{startDate || 'Start date'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.datePickerButton} onPress={() => setDatePickerTarget('end')}>
+                <Ionicons name="calendar-outline" size={16} color={TEAL} />
+                <Text style={styles.datePickerText}>{endDate || 'End date'}</Text>
+              </TouchableOpacity>
             </View>
+            {datePickerTarget && Platform.OS === 'ios' && (
+              <View style={styles.datePickerPanel}>
+                <DateTimePicker
+                  value={transactionDate(datePickerTarget === 'start' ? startDate || todayDateKey : endDate || todayDateKey)}
+                  mode="date"
+                  display="spinner"
+                  maximumDate={new Date(2100, 11, 31)}
+                  onChange={(_event: DateTimePickerEvent, value?: Date) => {
+                    if (!value) return;
+                    const key = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+                    datePickerTarget === 'start' ? setStartDate(key) : setEndDate(key);
+                  }}
+                />
+                <TouchableOpacity onPress={() => setDatePickerTarget(null)} style={styles.datePickerDone}>
+                  <Text style={styles.datePickerDoneText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            )}
             <Text style={styles.filterLabel}>Category</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
               {['All', ...categories.map((c) => c.name)].map((name) => (
@@ -742,6 +758,20 @@ export default function TransactionsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      {datePickerTarget && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={transactionDate(datePickerTarget === 'start' ? startDate || todayDateKey : endDate || todayDateKey)}
+          mode="date"
+          display="default"
+          onChange={(event: DateTimePickerEvent, value?: Date) => {
+            if (event.type === 'set' && value) {
+              const key = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`;
+              datePickerTarget === 'start' ? setStartDate(key) : setEndDate(key);
+            }
+            setDatePickerTarget(null);
+          }}
+        />
+      )}
     </View>
   );
 }
@@ -844,9 +874,9 @@ const styles = StyleSheet.create({
   todayPillText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '800' },
 
   calendarWeekRow: { flexDirection: 'row', marginBottom: 6 },
-  calendarWeekText: { color: SAGE, fontSize: 11, fontWeight: '800', width: `${100 / 7}%`, textAlign: 'center' },
+  calendarWeekText: { color: SAGE, fontSize: 11, fontWeight: '800', flex: 1, textAlign: 'center' },
   calendarGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  calendarCell: { width: `${100 / 7}%`, height: 46, padding: 2 },
+  calendarCell: { width: '14.2857%', height: 46, padding: 1 },
   calendarCellInner: { flex: 1, borderRadius: 12, justifyContent: 'center', alignItems: 'center' },
   calendarCellToday: { borderWidth: 1.5, borderColor: GOLD },
   calendarDayText: { fontSize: 14, fontWeight: '700', color: DEEP_GREEN, marginBottom: 2 },
@@ -920,6 +950,11 @@ const styles = StyleSheet.create({
   filterModalHandle: { width: 40, height: 4, borderRadius: 2, backgroundColor: TRACK, alignSelf: 'center', marginBottom: 16 },
   filterModalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 },
   filterModalTitle: { color: DEEP_GREEN, fontSize: 20, fontWeight: '800' },
+  datePickerButton: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 46, paddingHorizontal: 10, borderRadius: 12, borderWidth: 1, borderColor: TRACK, backgroundColor: CREAM },
+  datePickerText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  datePickerPanel: { backgroundColor: CREAM, borderRadius: 14, overflow: 'hidden', marginBottom: 12 },
+  datePickerDone: { alignSelf: 'flex-end', margin: 10, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: DEEP_GREEN },
+  datePickerDoneText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   closeBtnCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: CREAM, justifyContent: 'center', alignItems: 'center' },
   filterLabel: { color: SAGE, fontSize: 12, fontWeight: '700', textTransform: 'uppercase', marginTop: 16, marginBottom: 10, letterSpacing: 0.5 },
   modalChipRow: { gap: 10, paddingRight: 20, paddingBottom: 5 },

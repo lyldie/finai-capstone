@@ -60,6 +60,7 @@ type TransactionContextType = {
   getAccountBalance: (name: string) => number;
   totalIncome: number;
   totalExpense: number;
+  totalSavings: number;
   balance: number;
   fetchTransactions: (showLoading?: boolean) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
@@ -592,6 +593,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const totalIncome = useMemo(() => visibleTransactions.filter(t => t.type === 'Income').reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [visibleTransactions]);
   const totalExpense = useMemo(() => visibleTransactions.filter(t => t.type === 'Expense' && !t.goal_id).reduce((sum, t) => sum + (parseFloat(t.amount) || 0), 0), [visibleTransactions]);
 
+  const totalSavings = useMemo(() => {
+    if (!hasCurrentUserData) return 0;
+    return visibleGoals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0) + archivedGoalSavings;
+  }, [visibleGoals, archivedGoalSavings, hasCurrentUserData]);
+
   const balance = useMemo(() => {
     if (!hasCurrentUserData) return 0;
     const accountNames = [...new Set(visibleAccounts.map((account) => account.name))];
@@ -600,13 +606,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
       : totalIncome - totalExpense - visibleTransactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
-    const totalGoalSavings = visibleGoals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
-
-    return totalFromAccounts + archivedAccountBalance + totalGoalSavings + archivedGoalSavings;
-  }, [visibleAccounts, getAccountBalance, totalExpense, totalIncome, visibleTransactions, visibleGoals, hasCurrentUserData, archivedAccountBalance, archivedGoalSavings]);
+    return totalFromAccounts + archivedAccountBalance;
+  }, [visibleAccounts, getAccountBalance, totalExpense, totalIncome, visibleTransactions, hasCurrentUserData, archivedAccountBalance]);
 
   return (
-    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>
+    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, totalSavings, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>
       {children}
     </TransactionContext.Provider>
   );

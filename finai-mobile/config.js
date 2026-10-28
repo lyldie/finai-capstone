@@ -1,1 +1,1 @@
-export const API_URL = "http://192.168.1.67:8000";
+export const API_URL = "https://finai-backend-196957689812.asia-southeast1.run.app";

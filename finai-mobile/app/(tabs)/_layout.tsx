@@ -72,6 +72,28 @@ export default function TabLayout() {
             ), 
           }} 
         />
+
+        <Tabs.Screen
+          name="ai"
+          options={{
+            title: 'AI',
+            tabBarIcon: ({ focused }) => (
+              <TabBarIcon name={focused ? 'chatbubbles' : 'chatbubbles-outline'} color={focused ? GOLD : '#FFFFFF'} />
+            ),
+          }}
+        />
+
+        <Tabs.Screen
+          name="profile"
+          options={{
+            title: 'Profile',
+            tabBarActiveTintColor: '#FFFFFF',
+            tabBarInactiveTintColor: '#FFFFFF',
+            tabBarIcon: ({ focused }) => (
+              <TabBarIcon name={focused ? 'person-circle' : 'person-circle-outline'} color="#FFFFFF" />
+            ),
+          }}
+        />
         
         {/* ITATAGO NATIN SI TWO SA BOTTOM BAR */}
         <Tabs.Screen 

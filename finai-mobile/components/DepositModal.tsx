@@ -71,7 +71,7 @@ export default function DepositModal({
       <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setIsDropdownOpen(false); }}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Deposit sa {selectedGoal?.target_name || 'Goal'}</Text>
+            <Text style={styles.modalTitle}>Add to {selectedGoal?.target_name || 'goal'}</Text>
             
             <TextInput
               style={[styles.modalInput, exceedsBalance && styles.modalInputWarning]}
@@ -95,7 +95,7 @@ export default function DepositModal({
               }}
             >
               <Text style={selectedAccount ? styles.dropdownSelectedText : styles.dropdownPlaceholderText}>
-                {selectedAccount || "Mamili ng Account..."}
+                {selectedAccount || "Choose an account..."}
               </Text>
               <Ionicons 
                 name={isDropdownOpen ? "chevron-up" : "chevron-down"} 
@@ -150,7 +150,7 @@ export default function DepositModal({
               onPress={handleConfirm} 
               disabled={isSubmitting || !selectedAccount || !depositAmount}
             >
-              {isSubmitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>I-hulog</Text>}
+              {isSubmitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>Add contribution</Text>}
             </TouchableOpacity>
             
             <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>

@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 import { getSecureItem } from '../utils/secureStorage';
+import QuickAddCategoryModal from './QuickAddCategoryModal';
 
 
 LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Invalid receipt']);
@@ -16,11 +17,12 @@ interface ReceiptScannerModalProps {
   onScanComplete: (data: { amount: string; category: string; date: string; note: string }) => void;
   categories: any[];
   userId?: string;
+  onCategoryCreated?: () => void;
 }
 
 const MAX_MULTI_PHOTOS = 4;
-// The backend may try both configured Gemini models, with up to 20 seconds per attempt.
-const RECEIPT_SCAN_TIMEOUT_MS = 45_000;
+// The backend can try both Gemini models and then Groq if Gemini is unavailable.
+const RECEIPT_SCAN_TIMEOUT_MS = 65_000;
 
 function receiptScanErrorMessage(error: unknown): string {
   const candidate = error as { name?: string; message?: string } | null;
@@ -45,7 +47,8 @@ export default function ReceiptScannerModal({
   onClose, 
   onScanComplete, 
   categories,
-  userId 
+  userId,
+  onCategoryCreated,
 }: ReceiptScannerModalProps) {
   const [permission, requestPermission] = useCameraPermissions();
   
@@ -57,6 +60,8 @@ export default function ReceiptScannerModal({
   const [progressTrackWidth, setProgressTrackWidth] = useState(0);
   const [isFlashing, setIsFlashing] = useState(false);
   const [reviewData, setReviewData] = useState<ReviewData | null>(null);
+  const [isAddCategoryVisible, setIsAddCategoryVisible] = useState(false);
+  const [createdCategory, setCreatedCategory] = useState<{ id: string; name: string; type: string } | null>(null);
   const cameraRef = useRef<any>(null);
   const progressTranslateX = useRef(new Animated.Value(0)).current;
 
@@ -99,6 +104,8 @@ export default function ReceiptScannerModal({
     setIsProcessing(false);
     setProcessingMessage('Preparing receipt images...');
     setReviewData(null);
+    setIsAddCategoryVisible(false);
+    setCreatedCategory(null);
   };
 
   const handleRetakeLast = () => {
@@ -164,7 +171,7 @@ export default function ReceiptScannerModal({
       const requestTimeout = setTimeout(() => controller.abort(), RECEIPT_SCAN_TIMEOUT_MS);
       let response: Response;
       try {
-        setProcessingMessage('Gemini is analyzing your receipt...');
+        setProcessingMessage('AI is analyzing your receipt...');
         response = await fetch(`${API_URL}/ocr-scan`, {
           method: 'POST',
           headers: { Authorization: `Bearer ${token || ''}` },
@@ -189,7 +196,7 @@ export default function ReceiptScannerModal({
       const payload = result?.data || {};
       const extractedAmount = payload.amount || "";
       const extractedMerchant = payload.merchant || "";
-      const backendCategory = payload.category || "General";
+      const backendCategory = payload.category || "";
       const extractedDate = payload.date || "";
 
       let matchedCategory = backendCategory;
@@ -202,7 +209,10 @@ export default function ReceiptScannerModal({
       if (foundCat) {
         matchedCategory = foundCat.name;
       } else {
-        matchedCategory = 'General';
+        const othersCategory = categories.find((c) =>
+          c?.type?.toLowerCase() === 'expense' && c?.name?.trim().toLowerCase() === 'others'
+        );
+        matchedCategory = othersCategory?.name || '';
       }
 
       setReviewData({
@@ -282,7 +292,7 @@ export default function ReceiptScannerModal({
       Alert.alert('Amount required', 'Please enter a valid total amount before saving.');
       return;
     }
-    const selectedCategory = categories.find(
+    const selectedCategory = (createdCategory?.name.toLowerCase() === reviewData.values.category.trim().toLowerCase() ? createdCategory : null) || categories.find(
       (category) => category.type?.toLowerCase() === 'expense' && category.name?.toLowerCase() === reviewData.values.category.trim().toLowerCase()
     );
     if (!selectedCategory) {
@@ -304,10 +314,11 @@ export default function ReceiptScannerModal({
       { key: 'merchant', label: 'Merchant', placeholder: 'Enter merchant name' },
       { key: 'date', label: 'Receipt date', placeholder: 'YYYY-MM-DD' },
       { key: 'amount', label: 'Total amount', placeholder: '0.00', keyboardType: 'decimal-pad' },
-      { key: 'category', label: 'Category', placeholder: 'General' },
+      { key: 'category', label: 'Category', placeholder: 'Choose expense category' },
     ];
 
     return (
+      <>
       <Modal visible={visible} animationType="slide" transparent={false}>
         <View style={styles.reviewContainer}>
           <View style={styles.reviewHeader}>
@@ -318,7 +329,7 @@ export default function ReceiptScannerModal({
             <View style={{ width: 42 }} />
           </View>
           <Text style={styles.reviewSubtitle}>
-            Gemini extracted these details. Check the highlighted fields before saving; you can edit every field.
+            AI extracted these details. Check the highlighted fields before saving; you can edit every field.
           </Text>
           <ScrollView contentContainerStyle={styles.reviewForm} keyboardShouldPersistTaps="handled">
             {reviewFields.map(({ key, label, placeholder, keyboardType }) => {
@@ -341,20 +352,26 @@ export default function ReceiptScannerModal({
                     style={styles.reviewInput}
                   />
                   {key === 'category' && (
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
-                      {categories.filter((category) => category.type?.toLowerCase() === 'expense').map((category) => {
-                        const selected = category.name?.toLowerCase() === reviewData.values.category.trim().toLowerCase();
-                        return (
-                          <TouchableOpacity
-                            key={category.id || category.name}
-                            onPress={() => updateReviewValue('category', category.name)}
-                            style={{ paddingHorizontal: 10, paddingVertical: 7, borderRadius: 16, backgroundColor: selected ? '#144A3D' : '#E8EFEC' }}
-                          >
-                            <Text style={{ color: selected ? '#FFFFFF' : '#144A3D', fontSize: 12, fontWeight: '700' }}>{category.name}</Text>
-                          </TouchableOpacity>
-                        );
-                      })}
-                    </View>
+                    <>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>
+                        {categories.filter((category) => category.type?.toLowerCase() === 'expense').map((category) => {
+                          const selected = category.name?.toLowerCase() === reviewData.values.category.trim().toLowerCase();
+                          return (
+                            <TouchableOpacity
+                              key={category.id || category.name}
+                              onPress={() => updateReviewValue('category', category.name)}
+                              style={{ paddingHorizontal: 10, paddingVertical: 7, borderRadius: 16, backgroundColor: selected ? '#144A3D' : '#E8EFEC' }}
+                            >
+                              <Text style={{ color: selected ? '#FFFFFF' : '#144A3D', fontSize: 12, fontWeight: '700' }}>{category.name}</Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                      <TouchableOpacity onPress={() => setIsAddCategoryVisible(true)} style={styles.addCategoryButton} activeOpacity={0.8}>
+                        <Ionicons name="add-circle-outline" size={17} color="#144A3D" />
+                        <Text style={styles.addCategoryText}>Add a new expense category</Text>
+                      </TouchableOpacity>
+                    </>
                   )}
                 </View>
               );
@@ -366,6 +383,18 @@ export default function ReceiptScannerModal({
           </TouchableOpacity>
         </View>
       </Modal>
+      <QuickAddCategoryModal
+        visible={isAddCategoryVisible}
+        type="expense"
+        onClose={() => setIsAddCategoryVisible(false)}
+        onCreated={(category) => {
+          setCreatedCategory(category);
+          updateReviewValue('category', category.name);
+          setIsAddCategoryVisible(false);
+          onCategoryCreated?.();
+        }}
+      />
+      </>
     );
   }
 
@@ -529,6 +558,8 @@ const styles = StyleSheet.create({
   reviewTitle: { color: '#142D2A', fontSize: 19, fontWeight: '700' },
   reviewSubtitle: { color: '#58706B', fontSize: 14, lineHeight: 20, marginTop: 18, marginBottom: 14 },
   reviewForm: { paddingBottom: 18 },
+  addCategoryButton: { flexDirection: 'row', alignItems: 'center', gap: 7, alignSelf: 'flex-start', marginTop: 12, paddingHorizontal: 11, paddingVertical: 9, borderRadius: 12, backgroundColor: '#E8EFEC' },
+  addCategoryText: { color: '#144A3D', fontSize: 12, fontWeight: '800' },
   reviewField: { backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: '#E2EAF4', padding: 14, marginBottom: 12 },
   reviewFieldNeedsReview: { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' },
   reviewLabelRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },

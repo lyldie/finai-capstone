@@ -19,6 +19,7 @@ import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "../context/AuthContext";
 import { API_URL } from "../config";
+import FinnPortrait from "../components/FinnPortrait";
 
 // ---- FINAI BRAND TOKENS (shared with transactions.tsx / index.tsx / two.tsx / insights.tsx) ----
 const DEEP_GREEN = "#1c3c36";
@@ -36,6 +37,12 @@ interface ChatMessage {
   source?: "gemini" | "groq" | "rule_based" | "user";
   message_type?: "planning_insight";
 }
+
+const formatFinnMessage = (text: string) => text
+  .replace(/\*\*/g, '')
+  .replace(/^#{1,6}\s+/gm, '')
+  .replace(/^\s*[-*]\s+/gm, '• ')
+  .trim();
 
 export default function ChatScreen() {
   const { user } = useAuth();
@@ -218,7 +225,7 @@ export default function ChatScreen() {
       >
         {!isUser && (
           <View style={styles.aiAvatarSmall}>
-            <Image source={require("../assets/images/finn-mascot.png")} style={styles.finnSmallImage} resizeMode="contain" />
+            <FinnPortrait size={32} />
           </View>
         )}
         {isUser ? (
@@ -244,7 +251,7 @@ export default function ChatScreen() {
                 <Text style={styles.proactiveBadge}>FINN CHECK-IN</Text>
               </View>
             )}
-            <Text style={[styles.messageText, styles.textAI]}>{item.text}</Text>
+            <Text style={[styles.messageText, styles.textAI]}>{formatFinnMessage(item.text)}</Text>
             {(item.message_type === "planning_insight" || item.source === "rule_based") && (
               <Text style={styles.sourceLabel}>
                 {item.message_type === "planning_insight"
@@ -273,7 +280,7 @@ export default function ChatScreen() {
         />
         <Text style={styles.heroTitle}>Hi, {user?.name?.trim().split(/\s+/)[0] || 'there'}!</Text>
         <Text style={styles.heroSubtitle}>
-          I’m Finn, your AI Budget Advisor. How can I help today?
+          Hello! I’m Finn, your personal budget advisor.
         </Text>
         <Text style={styles.heroDesc}>
           Ask me about your spending trends, budget limits, or savings targets anytime.
@@ -363,7 +370,7 @@ export default function ChatScreen() {
           </TouchableOpacity>
           <View style={styles.headerTitleContainer}>
             <View style={styles.aiAvatarHeader}>
-              <Image source={require("../assets/images/finn-mascot.png")} style={styles.finnHeaderImage} resizeMode="contain" />
+              <FinnPortrait size={40} />
             </View>
             <View style={styles.headerText}>
               <Text style={styles.headerTitle} numberOfLines={1}>Chat with Finn</Text>
@@ -507,15 +514,14 @@ const styles = StyleSheet.create({
   },
   headerText: { flex: 1, minWidth: 0 },
   aiAvatarHeader: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: "rgba(237, 178, 50, 0.16)",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 8,
   },
-  finnHeaderImage: { width: 26, height: 26 },
   headerTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: "800" },
   headerSubtitle: { color: SAGE, fontSize: 10, fontWeight: "600", marginTop: 1 },
   headerRight: { flexDirection: "row", alignItems: "center", gap: 6 },
@@ -600,16 +606,15 @@ const styles = StyleSheet.create({
   messageBubbleUser: { justifyContent: "flex-end" },
   messageBubbleAI: { justifyContent: "flex-start" },
   aiAvatarSmall: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: "rgba(237, 178, 50, 0.16)",
     justifyContent: "center",
     alignItems: "center",
     marginRight: 8,
     marginBottom: 4,
   },
-  finnSmallImage: { width: 28, height: 28 },
   messageBubble: { maxWidth: "78%", padding: 14, borderRadius: 20 },
   bubbleUser: {
     borderBottomRightRadius: 4,

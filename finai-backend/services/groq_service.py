@@ -12,6 +12,7 @@ import requests
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
 GROQ_CHAT_MODEL = os.getenv("GROQ_CHAT_MODEL", "openai/gpt-oss-20b").strip()
 GROQ_PLANNING_MODEL = os.getenv("GROQ_PLANNING_MODEL", "qwen/qwen3.8-27b").strip()
+GROQ_OCR_MODEL = os.getenv("GROQ_OCR_MODEL", "qwen/qwen3.8-27b").strip()
 try:
     GROQ_TIMEOUT_SECONDS = max(2.0, min(8.0, float(os.getenv("GROQ_TIMEOUT_SECONDS", "4"))))
 except (TypeError, ValueError):

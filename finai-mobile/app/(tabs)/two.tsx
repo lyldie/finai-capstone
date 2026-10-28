@@ -9,10 +9,12 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import ReceiptScannerModal from '../../components/ReceiptScannerModal';
 import QuickAddCategoryModal from '../../components/QuickAddCategoryModal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { API_URL } from '../../config';
+import { getSecureItem } from '../../utils/secureStorage';
 
 // Emoji helpers
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
-import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 
 // ---- FINAI BRAND TOKENS ----
@@ -135,6 +137,10 @@ export default function TabTwoScreen() {
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
   const [isQuickAddCategoryVisible, setIsQuickAddCategoryVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
+  const [isQuickAddAccountVisible, setIsQuickAddAccountVisible] = useState(false);
+  const [quickAccountName, setQuickAccountName] = useState('');
+  const [quickAccountBalance, setQuickAccountBalance] = useState('0');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [isScannerVisible, setIsScannerVisible] = useState(false);
   const [selectingTarget, setSelectingTarget] = useState<'from' | 'to'>('from');
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -356,6 +362,59 @@ export default function TabTwoScreen() {
     setIsQuickAddCategoryVisible(false);
     setIsCatModalVisible(false);
     void fetchTransactions(false);
+  };
+
+  const openQuickAddAccount = () => {
+    setQuickAccountName('');
+    setQuickAccountBalance('0');
+    setIsAccModalVisible(false);
+    setIsQuickAddAccountVisible(true);
+  };
+
+  const createQuickAccount = async () => {
+    const name = quickAccountName.trim();
+    const initialBalance = Number(quickAccountBalance.replace(/,/g, ''));
+    if (!name) {
+      Alert.alert('Account name required', 'Enter a name for your account.');
+      return;
+    }
+    if (!Number.isFinite(initialBalance) || initialBalance < 0) {
+      Alert.alert('Invalid opening balance', 'Enter zero or a positive amount.');
+      return;
+    }
+    if (accounts.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
+      Alert.alert('Name already in use', 'You already have an account with this name.');
+      return;
+    }
+
+    setIsCreatingAccount(true);
+    try {
+      const userId = await AsyncStorage.getItem('user_id');
+      const token = await getSecureItem('user_token');
+      if (!userId || !token) throw new Error('Your session has expired. Please log in again.');
+
+      const response = await fetch(`${API_URL}/api/accounts/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          name,
+          initial_balance: initialBalance,
+          icon: getAccountEmoji(name),
+          user_id: userId,
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.detail || 'Unable to create account.');
+
+      await fetchTransactions(false);
+      if (selectingTarget === 'from') setAccount(result.name || name);
+      else setToAccount(result.name || name);
+      setIsQuickAddAccountVisible(false);
+    } catch (error: any) {
+      Alert.alert('Unable to create account', error?.message || 'Please try again.');
+    } finally {
+      setIsCreatingAccount(false);
+    }
   };
 
   // ---- derived display values (presentation only) ----
@@ -616,6 +675,10 @@ export default function TabTwoScreen() {
           <View style={styles.sheet}>
             <View style={styles.sheetHandle} />
             <Text style={[styles.sheetTitle, { marginBottom: 12 }]}>{type === 'Transfer' ? (selectingTarget === 'from' ? 'Transfer from' : 'Transfer to') : 'Select account'}</Text>
+            <TouchableOpacity onPress={openQuickAddAccount} style={styles.quickAddAccountButton} activeOpacity={0.8}>
+              <Ionicons name="add-circle-outline" size={19} color="#FFFFFF" />
+              <Text style={styles.quickAddAccountButtonText}>Add account</Text>
+            </TouchableOpacity>
             <ScrollView style={{ flexGrow: 0 }} showsVerticalScrollIndicator={false}>
               {accountOptionsFor(selectingTarget).map((acc) => {
                 const selected = acc.name === activeAccountName;
@@ -643,14 +706,50 @@ export default function TabTwoScreen() {
         </View>
       </Modal>
 
+      <Modal visible={isQuickAddAccountVisible} animationType="slide" transparent onRequestClose={() => setIsQuickAddAccountVisible(false)}>
+        <View style={styles.sheetOverlay}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setIsQuickAddAccountVisible(false)} />
+          <View style={styles.sheet}>
+            <View style={styles.sheetHandle} />
+            <Text style={[styles.sheetTitle, { marginBottom: 16 }]}>Add account</Text>
+            <Text style={styles.quickAccountLabel}>Account name</Text>
+            <TextInput
+              value={quickAccountName}
+              onChangeText={setQuickAccountName}
+              placeholder="e.g. Cash, GCash, or Bank"
+              placeholderTextColor={SAGE}
+              autoCapitalize="words"
+              maxLength={60}
+              style={styles.quickAccountInput}
+            />
+            <Text style={styles.quickAccountLabel}>Starting balance</Text>
+            <TextInput
+              value={quickAccountBalance}
+              onChangeText={(value) => setQuickAccountBalance(value.replace(/[^0-9.]/g, ''))}
+              placeholder="0"
+              placeholderTextColor={SAGE}
+              keyboardType="decimal-pad"
+              style={styles.quickAccountInput}
+            />
+            <TouchableOpacity onPress={() => void createQuickAccount()} disabled={isCreatingAccount} style={[styles.quickAccountSaveButton, isCreatingAccount && { opacity: 0.7 }]}>
+              {isCreatingAccount ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.quickAccountSaveText}>Create and select</Text>}
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setIsQuickAddAccountVisible(false)} disabled={isCreatingAccount} style={styles.closeModalButton}>
+              <Text style={styles.closeModalText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
       <ReceiptScannerModal
         visible={isScannerVisible}
         onClose={() => setIsScannerVisible(false)}
         categories={categories}
         userId={scannerUserId}
+        onCategoryCreated={() => { void fetchTransactions(false); }}
         onScanComplete={(data) => {
           setAmount(data.amount);
-          setCategory(categories.some((item: any) => item.name === data.category && item.type === 'expense') ? data.category : 'Select Category');
+          setCategory(data.category);
           setDate(/^\d{4}-\d{2}-\d{2}$/.test(data.date) ? data.date : formatLocalDate(new Date()));
           setNote(data.note);
           setType('Expense');
@@ -731,8 +830,14 @@ const styles = StyleSheet.create({
   accOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, borderBottomWidth: 0.5, borderBottomColor: TRACK },
   accIconChip: { width: 40, height: 40, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
   accOptionText: { flex: 1, color: DEEP_GREEN, fontSize: 15, fontWeight: '800' },
+  quickAddAccountButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: DEEP_GREEN, borderRadius: 14, paddingVertical: 12, marginBottom: 10 },
+  quickAddAccountButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(237, 178, 50, 0.16)' },
   manageAccountsText: { color: DEEP_GREEN, fontWeight: '800' },
+  quickAccountLabel: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800', marginTop: 10, marginBottom: 6 },
+  quickAccountInput: { backgroundColor: CREAM, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, color: DEEP_GREEN, fontSize: 15, borderWidth: 1, borderColor: TRACK },
+  quickAccountSaveButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: DEEP_GREEN, borderRadius: 16, paddingVertical: 14, marginTop: 20 },
+  quickAccountSaveText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 
   pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.35)', justifyContent: 'flex-end' },
   pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },

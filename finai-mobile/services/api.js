@@ -2,7 +2,7 @@
 import axios from 'axios';
 
 // Gamitin ang IP address na 192.168.1.67
-const API_BASE_URL = 'http://192.168.1.74:8000/api'; 
+const API_BASE_URL = 'https://finai-backend-196957689812.asia-southeast1.run.app/api';
 
 const api = axios.create({
   baseURL: API_BASE_URL,

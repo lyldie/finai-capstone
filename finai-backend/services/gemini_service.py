@@ -24,9 +24,9 @@ def validate_json_response(response) -> dict:
     try:
         parsed = json.loads(candidate)
     except (TypeError, ValueError) as exc:
-        raise InvalidModelOutputError("Gemini returned invalid JSON") from exc
+        raise InvalidModelOutputError("AI provider returned invalid JSON") from exc
     if not isinstance(parsed, dict):
-        raise InvalidModelOutputError("Gemini JSON output was not an object")
+        raise InvalidModelOutputError("AI provider JSON output was not an object")
     return parsed
 
 

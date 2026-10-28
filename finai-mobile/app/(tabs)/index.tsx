@@ -29,6 +29,7 @@ export default function HomeDashboard() {
     balance,
     totalIncome,
     totalExpense,
+    totalSavings,
     fetchTransactions,
     accounts,
     categories,
@@ -122,8 +123,8 @@ export default function HomeDashboard() {
           <Text style={styles.userName}>{user?.name?.trim().split(/\s+/)[0] || 'User'}!</Text>
         </View>
         <View style={styles.headerRightActions}>
-          <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/messages' as never)} activeOpacity={0.8}>
-            <Text style={{ fontSize: 18 }}>🥜</Text>
+          <TouchableOpacity style={styles.peanutButton} onPress={() => router.push('/ai' as never)} activeOpacity={0.8} accessibilityLabel="Open Finn AI advisor">
+            <Ionicons name="chatbubbles" size={19} color={DEEP_GREEN} />
           </TouchableOpacity>
           <TouchableOpacity style={styles.notificationButton} onPress={() => router.push('/notifications' as never)}>
             <Ionicons name="notifications-outline" size={20} color={DEEP_GREEN} />
@@ -171,7 +172,7 @@ export default function HomeDashboard() {
 
         {/* Hero balance card */}
         <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Total Balance</Text>
+          <Text style={styles.balanceLabel}>Total wallet balance</Text>
           <Text style={styles.balanceValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
             ₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </Text>
@@ -217,6 +218,19 @@ export default function HomeDashboard() {
             accessible={false}
           />
         </View>
+        </View>
+
+        <View style={styles.savingsSummaryCard}>
+          <View style={styles.savingsSummaryIcon}>
+            <Ionicons name="flag-outline" size={20} color={TEAL} />
+          </View>
+          <View style={styles.savingsSummaryCopy}>
+            <Text style={styles.savingsSummaryTitle}>Goal savings</Text>
+            <Text style={styles.savingsSummaryCaption}>Tracked separately from your wallets</Text>
+          </View>
+          <Text style={styles.savingsSummaryAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+            ₱{totalSavings.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          </Text>
         </View>
 
         {/* Wallets */}
@@ -385,12 +399,18 @@ const styles = StyleSheet.create({
   finnTipImageContent: { width: '100%', height: '100%' },
 
   balanceCard: {
-    borderRadius: 24, padding: 22, marginBottom: 24,
+    borderRadius: 24, padding: 22, marginBottom: 12,
     shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 8
   },
   balanceLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: '600', letterSpacing: 0.4 },
   balanceValue: { color: '#FFFFFF', fontSize: 38, fontWeight: '900', marginVertical: 8, letterSpacing: -0.5 },
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' },
+  savingsSummaryCard: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: '#FFFFFF', borderRadius: 18, padding: 15, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(28,60,54,0.06)' },
+  savingsSummaryIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: 'rgba(61,125,108,0.12)', alignItems: 'center', justifyContent: 'center' },
+  savingsSummaryCopy: { flex: 1 },
+  savingsSummaryTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
+  savingsSummaryCaption: { color: SAGE, fontSize: 10, fontWeight: '600', marginTop: 3 },
+  savingsSummaryAmount: { color: TEAL, fontSize: 16, fontWeight: '900', maxWidth: '42%' },
   statItem: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   miniIconContainer: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   statLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },

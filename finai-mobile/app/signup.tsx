@@ -231,7 +231,7 @@ export default function SignupScreen() {
         <View style={styles.privacySummaryCard}>
           <Ionicons name="shield-checkmark-outline" size={19} color={TEAL} />
           <Text style={styles.privacySummaryText}>
-            Receipt images are sent to Google Gemini for scanning. The AI Budget Advisor may send an aggregated summary of your financial activity to Google Gemini or Groq to prepare recommendations.
+            Receipt images are sent to Google Gemini for scanning and may be sent to Groq if Gemini is unavailable. The AI Budget Advisor may send an aggregated summary of your financial activity to Google Gemini or Groq to prepare recommendations.
           </Text>
         </View>
 
@@ -284,7 +284,7 @@ export default function SignupScreen() {
                   <Text style={styles.documentSectionTitle}>Why it is used</Text>
                   <Text style={styles.documentBody}>Your information is used to operate your account, record and display your finances, calculate budgets and insights, scan receipts, and prepare advisor recommendations.</Text>
                   <Text style={styles.documentSectionTitle}>AI services</Text>
-                  <Text style={styles.documentBody}>Receipt images are sent to Google Gemini to extract visible receipt details. For AI Budget Advisor recommendations, an aggregated summary of active transactions, budgets, and goals may be sent to Google Gemini or Groq. The advisor summary excludes transaction notes and descriptions. AI results can be incomplete or incorrect, so review receipt details and recommendations.</Text>
+                  <Text style={styles.documentBody}>Receipt images are sent to Google Gemini to extract visible receipt details and may be sent to Groq if Gemini is unavailable. For AI Budget Advisor recommendations, an aggregated summary of active transactions, budgets, and goals may be sent to Google Gemini or Groq. The advisor summary excludes transaction notes and descriptions. AI results can be incomplete or incorrect, so review receipt details and recommendations.</Text>
                   <Text style={styles.documentSectionTitle}>Storage and choices</Text>
                   <Text style={styles.documentBody}>FinAI stores account and financial records in its backend database. You can review or edit information through available app features. This signup screen does not specify a data-retention period or provide a self-service account-deletion process. For questions or requests about your information, contact the FinAI project team through the contact channel provided with the study.</Text>
                   <Text style={styles.documentFootnote}>This notice describes the current capstone build. The project team should confirm its retention period, privacy contact, and study data-handling process before distributing the app to survey participants.</Text>

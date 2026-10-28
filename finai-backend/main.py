@@ -12,10 +12,10 @@ from fastapi.responses import JSONResponse
 import secrets
 import string
 import os
+import base64
 import cv2
 import numpy as np
 import re
-import easyocr
 import json
 import asyncio
 from google import genai
@@ -43,6 +43,12 @@ from services.gemini_service import (
     InvalidModelOutputError,
     generate_content_with_fallback,
     validate_json_response,
+)
+from services.groq_service import (
+    GROQ_API_KEY,
+    GROQ_OCR_MODEL,
+    GROQ_TIMEOUT_SECONDS,
+    generate_groq_response,
 )
 
 app = FastAPI(title="FinAi Backend", version="1.0")
@@ -122,12 +128,6 @@ ai_client = genai.Client(
 ) if GEMINI_API_KEY else None
 
 
-# --- 4. EASYOCR INITIALIZATION ---
-# EasyOCR remains available as an optional local utility, but the scan flow
-# uses Gemini as its primary extractor and does not silently substitute OCR.
-reader = None
-
-
 # --- 5. EXPANDED LOCAL MERCHANT & ITEM MATCHING DICTIONARY ---
 MERCHANT_CATEGORY_MAP = {
     "Food & Dining": [
@@ -195,17 +195,6 @@ def resize_image_if_needed(img_np: np.ndarray, max_dim: int = 1024) -> np.ndarra
         new_w, new_h = int(w * scale), int(h * scale)
         return cv2.resize(img_np, (new_w, new_h), interpolation=cv2.INTER_AREA)
     return img_np
-
-
-def enhance_image_for_ocr(img_np: np.ndarray) -> np.ndarray:
-    """Contrast + sharpening pass para tumaas ang detection rate ng EasyOCR,
-    lalo na sa maliliit na font tulad ng TOTAL line sa mahabang resibo."""
-    gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    contrasted = clahe.apply(gray)
-    sharpen_kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    sharpened = cv2.filter2D(contrasted, -1, sharpen_kernel)
-    return cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
 
 
 def _order_receipt_corners(points: np.ndarray) -> np.ndarray:
@@ -609,7 +598,7 @@ def _score_receipt_candidate(result: dict, raw_text: str) -> int:
 
 
 def select_best_receipt_result(local_result: Optional[dict], gemini_result: Optional[dict], raw_text: str):
-    """Prefer EasyOCR by default, but use Gemini as a fallback when the local OCR result is weak or fallback-like."""
+    """Choose the more complete result when a future OCR provider is compared with Gemini."""
     local_amount = normalize_amount_value(local_result.get("amount")) if local_result else None
     gemini_amount = normalize_amount_value(gemini_result.get("amount")) if gemini_result else None
 
@@ -634,7 +623,7 @@ def select_best_receipt_result(local_result: Optional[dict], gemini_result: Opti
 
     candidates = []
     if local_result:
-        candidates.append(("EasyOCR", local_result, _score_receipt_candidate(local_result, raw_text)))
+        candidates.append(("OCR", local_result, _score_receipt_candidate(local_result, raw_text)))
     if gemini_result:
         candidates.append(("Gemini", gemini_result, _score_receipt_candidate(gemini_result, raw_text)))
 
@@ -661,18 +650,19 @@ def _same_merchant(left: Optional[str], right: Optional[str]) -> bool:
     return left_clean == right_clean or left_clean in right_clean or right_clean in left_clean
 
 
-def resolve_supported_category(candidate: Optional[str], available_categories: Optional[List[str]]) -> str:
-    """Return the stored category spelling, or General when no allowed match exists."""
+def resolve_supported_category(candidate: Optional[str], available_categories: Optional[List[str]]) -> Optional[str]:
+    """Return an active expense category, falling back to Others when available."""
     candidate = _known_text(candidate)
-    if not candidate:
-        return "General"
     if not available_categories:
-        return candidate
-    candidate_lower = candidate.lower()
-    for category in available_categories:
-        if category.lower() == candidate_lower:
-            return category
-    normalized_candidate = re.sub(r"[^a-z]", "", candidate_lower)
+        return None
+    if candidate:
+        candidate_lower = candidate.lower()
+        for category in available_categories:
+            if category.lower() == candidate_lower:
+                return category
+        normalized_candidate = re.sub(r"[^a-z]", "", candidate_lower)
+    else:
+        normalized_candidate = ""
     category_aliases = {
         "foodanddining": ("food", "dining", "restaurant"), "groceries": ("grocery", "groceries"),
         "shoppingandpersonalcare": ("shopping", "personalcare"), "utilitiesandbills": ("utilities", "bills"),
@@ -683,61 +673,69 @@ def resolve_supported_category(candidate: Optional[str], available_categories: O
         normalized_category = re.sub(r"[^a-z]", "", category.lower())
         if normalized_category in aliases or any(alias in normalized_category for alias in aliases):
             return category
-    return "General"
+    return next((category for category in available_categories if category.strip().casefold() == "others"), None)
 
 
-def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Optional[dict], available_categories: Optional[List[str]] = None) -> dict:
+def reconcile_receipt_fields(
+    local_result: Optional[dict],
+    model_result: Optional[dict],
+    available_categories: Optional[List[str]] = None,
+    ai_provider: str = "Gemini",
+) -> dict:
     """Reconcile each field independently; disagreement is a review state, never a silent guess."""
-    local_result, gemini_result = local_result or {}, gemini_result or {}
+    local_result, model_result = local_result or {}, model_result or {}
     fields = {}
 
     local_amount = normalize_amount_value(local_result.get("amount"))
-    gemini_amount = normalize_amount_value(gemini_result.get("amount"))
-    if local_amount is not None and gemini_amount is not None and abs(local_amount - gemini_amount) < 0.01:
-        fields["amount"] = {"value": f"{gemini_amount:.2f}", "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
-    elif gemini_amount is not None and local_amount is not None:
-        # Gemini interprets receipt semantics (for example, "Total Amt Due"),
-        # while EasyOCR can mistake an item price for the total. Keep Gemini's
+    model_amount = normalize_amount_value(model_result.get("amount"))
+    if local_amount is not None and model_amount is not None and abs(local_amount - model_amount) < 0.01:
+        fields["amount"] = {"value": f"{model_amount:.2f}", "status": "confirmed", "engines": ["OCR", ai_provider]}
+    elif model_amount is not None and local_amount is not None:
+        # The vision model interprets receipt semantics (for example, "Total Amt Due"),
+        # while text OCR can mistake an item price for the total. Keep the vision model's
         # value visible, but require the user to confirm the disagreement.
-        print(f"[Reconcile] Amount conflict: EasyOCR={local_amount:.2f}, Gemini={gemini_amount:.2f}. Suggesting Gemini value for review.")
+        print(f"[Reconcile] Amount conflict: OCR={local_amount:.2f}, {ai_provider}={model_amount:.2f}. Suggesting the vision model value for review.")
         fields["amount"] = {
-            "value": f"{gemini_amount:.2f}",
+            "value": f"{model_amount:.2f}",
             "status": "needs_review",
-            "engines": ["EasyOCR", "Gemini"],
-            "reason": "EasyOCR and Gemini found different amounts; Gemini's receipt-total interpretation is suggested."
+            "engines": ["OCR", ai_provider],
+            "reason": f"OCR and {ai_provider} found different amounts; the vision model's receipt-total interpretation is suggested."
         }
-    elif gemini_amount is not None and local_amount is None:
-        fields["amount"] = {"value": f"{gemini_amount:.2f}", "status": "needs_review", "engines": ["Gemini"]}
-    elif local_amount is not None and gemini_amount is None:
-        fields["amount"] = {"value": f"{local_amount:.2f}", "status": "needs_review", "engines": ["EasyOCR"]}
+    elif model_amount is not None and local_amount is None:
+        fields["amount"] = {"value": f"{model_amount:.2f}", "status": "needs_review", "engines": [ai_provider]}
+    elif local_amount is not None and model_amount is None:
+        fields["amount"] = {"value": f"{local_amount:.2f}", "status": "needs_review", "engines": ["OCR"]}
     else:
         fields["amount"] = {"value": None, "status": "needs_review", "engines": []}
 
     local_merchant = _known_text(local_result.get("merchant"))
-    gemini_merchant = _known_text(gemini_result.get("merchant"))
-    if _same_merchant(local_merchant, gemini_merchant):
-        fields["merchant"] = {"value": gemini_merchant, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
-    elif gemini_merchant and not local_merchant:
-        fields["merchant"] = {"value": gemini_merchant, "status": "needs_review", "engines": ["Gemini"]}
-    elif local_merchant and not gemini_merchant:
-        fields["merchant"] = {"value": local_merchant, "status": "needs_review", "engines": ["EasyOCR"]}
+    model_merchant = _known_text(model_result.get("merchant"))
+    if _same_merchant(local_merchant, model_merchant):
+        fields["merchant"] = {"value": model_merchant, "status": "confirmed", "engines": ["OCR", ai_provider]}
+    elif model_merchant and not local_merchant:
+        fields["merchant"] = {"value": model_merchant, "status": "needs_review", "engines": [ai_provider]}
+    elif local_merchant and not model_merchant:
+        fields["merchant"] = {"value": local_merchant, "status": "needs_review", "engines": ["OCR"]}
     else:
         fields["merchant"] = {"value": None, "status": "needs_review", "engines": []}
 
     local_date = local_result.get("date")
-    gemini_date = gemini_result.get("date")
-    if local_date and gemini_date and local_date == gemini_date:
-        fields["date"] = {"value": gemini_date, "status": "confirmed", "engines": ["EasyOCR", "Gemini"]}
-    elif gemini_date and not local_date:
-        fields["date"] = {"value": gemini_date, "status": "needs_review", "engines": ["Gemini"]}
-    elif local_date and not gemini_date:
-        fields["date"] = {"value": local_date, "status": "needs_review", "engines": ["EasyOCR"]}
+    model_date = model_result.get("date")
+    if local_date and model_date and local_date == model_date:
+        fields["date"] = {"value": model_date, "status": "confirmed", "engines": ["OCR", ai_provider]}
+    elif model_date and not local_date:
+        fields["date"] = {"value": model_date, "status": "needs_review", "engines": [ai_provider]}
+    elif local_date and not model_date:
+        fields["date"] = {"value": local_date, "status": "needs_review", "engines": ["OCR"]}
     else:
         fields["date"] = {"value": None, "status": "needs_review", "engines": []}
 
-    category = resolve_supported_category(gemini_result.get("category") or local_result.get("category"), available_categories)
-    fields["category"] = {"value": category,
-                          "status": "suggested", "engines": ["Gemini"] if gemini_result else ["EasyOCR"]}
+    category = resolve_supported_category(model_result.get("category") or local_result.get("category"), available_categories)
+    fields["category"] = {
+        "value": category,
+        "status": "suggested" if category else "needs_review",
+        "engines": [ai_provider] if model_result else ["OCR"],
+    }
 
     needs_review = [name for name, field in fields.items() if field["status"] == "needs_review"]
     return {
@@ -748,7 +746,11 @@ def reconcile_receipt_fields(local_result: Optional[dict], gemini_result: Option
         "category": fields["category"]["value"],
         "fields": fields,
         "needs_review": needs_review,
-        "engine_summary": {"easyocr": bool(local_result), "gemini": bool(gemini_result)}
+        "engine_summary": {
+            "ocr": bool(local_result),
+            "gemini": bool(model_result and ai_provider == "Gemini"),
+            "groq": bool(model_result and ai_provider == "Groq"),
+        }
     }
 
 
@@ -804,113 +806,58 @@ def match_merchant_and_category(full_text: str, candidate_lines: List[str], avai
 
                 return matched_store, final_category, False
 
-    fallback_cat = "General"
+    fallback_cat = resolve_supported_category(None, available_categories)
     fallback_merchant, is_fallback = pick_merchant_line(candidate_lines)
     return fallback_merchant, fallback_cat, is_fallback
-
-
-def _sort_easyocr_results_into_lines(results) -> List[str]:
-    """Keep OCR reading order. EasyOCR's return order is not reliable enough for receipts."""
-    positioned = []
-    for box, text, confidence in results:
-        if not text or confidence < 0.20:
-            continue
-        top = min(point[1] for point in box)
-        left = min(point[0] for point in box)
-        height = max(point[1] for point in box) - top
-        positioned.append((top, left, max(height, 12), text.strip()))
-
-    positioned.sort(key=lambda item: (item[0], item[1]))
-    lines = []
-    for top, left, height, text in positioned:
-        if lines and abs(top - lines[-1]["top"]) <= max(height, lines[-1]["height"]) * 0.65:
-            lines[-1]["parts"].append((left, text))
-        else:
-            lines.append({"top": top, "height": height, "parts": [(left, text)]})
-    return [" ".join(text for _, text in sorted(line["parts"])) for line in lines]
-
-
-def process_multi_photo_easyocr(images_bytes_list: List[bytes], user_categories: List[str]):
-    """Run EasyOCR as a layout-aware verifier, not an unstructured text source."""
-    global reader
-    if reader is None:
-        reader = easyocr.Reader(["en"], gpu=False)
-    all_extracted_texts = []
-
-    for img_bytes in images_bytes_list:
-        try:
-            nparr = np.frombuffer(img_bytes, np.uint8)
-            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-
-            if img is None:
-                continue
-
-            resized = resize_image_if_needed(img, max_dim=1400)
-
-            if reader is None:
-                continue
-
-            # Use one coherent reading order. The enhanced pass is only used
-            # when the original image has too little readable text, preventing
-            # duplicate tokens from corrupting total/date parsing.
-            results = reader.readtext(resized)
-            texts = _sort_easyocr_results_into_lines(results)
-            if len(" ".join(texts)) < 20:
-                results = reader.readtext(enhance_image_for_ocr(resized))
-                texts = _sort_easyocr_results_into_lines(results)
-            all_extracted_texts.extend(texts)
-        except Exception as e:
-            print(f"EasyOCR image failed: {e}")
-
-    if not all_extracted_texts:
-        return {
-            "amount": None,
-            "merchant": None,
-            "category": "General",
-            "date": None,
-            "raw_text": "",
-            "amount_is_fallback": True,
-            "merchant_is_fallback": True,
-            "date_is_fallback": True,
-            "is_handwritten_likely": False
-        }
-
-    full_text_block = " ".join(all_extracted_texts).lower()
-
-    # Code rejection guardrail
-    is_code = any(pattern in full_text_block for pattern in CODE_REJECTION_PATTERNS)
-    if is_code:
-        raise HTTPException(status_code=400, detail="This receipt is not valid. A barcode or QR code was detected instead of receipt details.")
-
-    total_amount_value = extract_total_amount(all_extracted_texts)
-    detected_amount = f"{total_amount_value:.2f}" if total_amount_value is not None else None
-
-    detected_merchant, matched_category, merchant_is_fallback = match_merchant_and_category(
-        full_text_block, all_extracted_texts, user_categories
-    )
-
-    raw_date_found = sanitize_and_parse_date(all_extracted_texts)
-    detected_date = raw_date_found
-    date_is_fallback = raw_date_found is None
-
-    return {
-        "amount": detected_amount,
-        "merchant": detected_merchant,
-        "category": matched_category,
-        "date": detected_date,
-        "raw_text": full_text_block,
-        "amount_is_fallback": total_amount_value is None or total_amount_value <= 0.0,
-        "merchant_is_fallback": merchant_is_fallback,
-        "date_is_fallback": date_is_fallback,
-        "is_handwritten_likely": False
-    }
 
 
 def _validate_receipt_response(response) -> None:
     receipt = validate_json_response(response)
     expected_fields = {"amount", "merchant", "date", "category"}
     if not expected_fields.issubset(receipt):
-        raise InvalidModelOutputError("Gemini receipt response omitted expected fields")
+        raise InvalidModelOutputError("Receipt response omitted expected fields")
+
+
+def _receipt_extraction_prompt(available_categories: List[str]) -> str:
+    allowed_categories = list(dict.fromkeys(available_categories or []))
+    categories_str = ", ".join(allowed_categories)
+    category_fallback = 'Use "Others" if it appears in the allowed list; otherwise return null.'
+    return f"""
+    You are a careful financial receipt scanner for Philippine receipts, including printed and legible handwritten receipts.
+    Read the image(s) and return only the transaction fields requested below.
+    Rules:
+    1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, item prices, and cash tendered/change.
+    2. "merchant": Return the business/store name only when visibly readable; otherwise null.
+    3. "date": Return YYYY-MM-DD only when visibly readable. Do not use today's date and do not invent a year; otherwise null.
+    4. "category": Choose EXACTLY one category from this allowed expense list: {categories_str}. {category_fallback}
+    5. Never guess a value. Use null for an unreadable amount, merchant, or date.
+    6. If several images are provided, treat them as views of the same receipt and combine only details supported by the images.
+
+    Output ONLY a valid JSON object with this shape:
+    {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "category": null}}
+    """
+
+
+def _normalize_receipt_model_result(response, model_used: str, provider: str, image_count: int, categories: List[str]) -> dict:
+    data = validate_json_response(response)
+    raw_date = str(data.get("date") or "").strip()
+    sanitized_date = sanitize_and_parse_date([raw_date]) if raw_date else None
+
+    amount_value = normalize_amount_value(data.get("amount"))
+    formatted_amount = f"{amount_value:.2f}" if amount_value is not None else None
+    merchant_value = str(data.get("merchant") or "").strip() or None
+    category_value = resolve_supported_category(str(data.get("category") or ""), categories)
+
+    return {
+        "amount": formatted_amount,
+        "merchant": merchant_value,
+        "category": category_value,
+        "date": sanitized_date,
+        "raw_text": f"Parsed via {provider} {model_used} ({image_count} image frame(s))",
+        "amount_is_fallback": amount_value is None,
+        "merchant_is_fallback": merchant_value is None,
+        "date_is_fallback": sanitized_date is None,
+    }
 
 
 def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
@@ -918,24 +865,9 @@ def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories:
     print(f"[OCR] Running Gemini primary model {GEMINI_PRIMARY_MODEL}; backup is {GEMINI_BACKUP_MODEL}.")
 
     if not ai_client:
-        raise Exception("Gemini Client is not configured. Check GEMINI_API_KEY environment variable.")
+        raise RuntimeError("Gemini client is not configured")
 
-    allowed_categories = list(dict.fromkeys((available_categories or []) + ["General"]))
-    categories_str = ", ".join(allowed_categories)
-
-    prompt = f"""
-    You are an expert financial receipt scanner for Philippine receipts, including handwritten ones.
-    Read the image(s) carefully and extract the most likely transaction fields.
-    Rules:
-    1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, unit prices, and change.
-    2. "merchant": Return the business/store name only when visibly readable; otherwise null.
-    3. "date": Return YYYY-MM-DD only when visibly readable. Do not use today's date and do not invent a year; otherwise null.
-    4. "category": Choose EXACTLY one category from this allowed list: {categories_str}. If no listed category is supported, return "General".
-    5. Never guess a value. Return null for an unreadable amount, merchant, or date.
-
-    Output ONLY a valid JSON object with this shape:
-    {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "category": "Supplies"}}
-    """
+    prompt = _receipt_extraction_prompt(available_categories)
 
     contents_payload = [prompt]
     for img_bytes in images_bytes_list:
@@ -950,36 +882,58 @@ def gemini_extract_receipt(images_bytes_list: List[bytes], available_categories:
     )
     print(f"[OCR] Receipt fields generated with {model_used}.")
 
-    raw_response = response.text.strip()
-    raw_response = re.sub(r"```json\s*|\s*```", "", raw_response)
-    try:
-        match = re.search(r"\{.*\}", raw_response, re.S)
-        if match:
-            raw_response = match.group(0)
-        data = json.loads(raw_response)
-    except Exception as parse_error:
-        print(f"[Gemini] Response JSON was invalid: {parse_error}")
-        data = {}
+    return _normalize_receipt_model_result(response, model_used, "Gemini", len(images_bytes_list), available_categories)
 
-    raw_date = str(data.get("date") or "")
-    sanitized_date = sanitize_and_parse_date([raw_date]) if raw_date else None
 
-    amount_value = normalize_amount_value(data.get("amount"))
-    formatted_amount = f"{amount_value:.2f}" if amount_value is not None else None
+def groq_extract_receipt(images_bytes_list: List[bytes], available_categories: List[str]) -> dict:
+    """Use Groq's vision model only after Gemini's configured models fail."""
+    if not GROQ_API_KEY:
+        raise RuntimeError("Groq receipt fallback is not configured")
 
-    merchant_value = str(data.get("merchant") or "").strip() or None
-    category_value = str(data.get("category", "General")).strip() or "General"
+    prompt = _receipt_extraction_prompt(available_categories)
+    results = []
+    for offset in range(0, len(images_bytes_list), 3):
+        image_batch = images_bytes_list[offset:offset + 3]
+        content = [{"type": "text", "text": prompt}]
+        for image_bytes in image_batch:
+            encoded_image = base64.b64encode(image_bytes).decode("ascii")
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{encoded_image}"},
+            })
 
-    return {
-        "amount": formatted_amount,
-        "merchant": merchant_value,
-        "category": category_value,
-        "date": sanitized_date,
-        "raw_text": f"Parsed via Gemini 3.6 Flash ({len(images_bytes_list)} image frame(s))",
-        "amount_is_fallback": amount_value is None,
-        "merchant_is_fallback": merchant_value is None,
-        "date_is_fallback": sanitized_date is None
-    }
+        response, model_used = generate_groq_response(
+            [{"role": "user", "content": content}],
+            model=GROQ_OCR_MODEL,
+            temperature=0.1,
+            max_tokens=300,
+            json_mode=True,
+            validate=_validate_receipt_response,
+            operation="receipt_ocr",
+        )
+        results.append(_normalize_receipt_model_result(response, model_used, "Groq", len(image_batch), available_categories))
+
+    if len(results) == 1:
+        return results[0]
+
+    # Groq accepts at most three images per request. Merge results from multiple
+    # batches only when they agree; disagreements are left blank for user review.
+    merged = {"amount": None, "merchant": None, "date": None, "category": "General"}
+    for field in ("amount", "merchant", "date"):
+        values = [result.get(field) for result in results if result.get(field)]
+        if values and all(str(value).strip().lower() == str(values[0]).strip().lower() for value in values):
+            merged[field] = values[0]
+    categories = [result.get("category") for result in results if result.get("category")]
+    if categories and all(category.lower() == categories[0].lower() for category in categories):
+        merged["category"] = categories[0]
+
+    amount_value = normalize_amount_value(merged["amount"])
+    merged["amount"] = f"{amount_value:.2f}" if amount_value is not None else None
+    merged["raw_text"] = f"Parsed via Groq {GROQ_OCR_MODEL} ({len(images_bytes_list)} image frame(s))"
+    merged["amount_is_fallback"] = merged["amount"] is None
+    merged["merchant_is_fallback"] = merged["merchant"] is None
+    merged["date_is_fallback"] = merged["date"] is None
+    return merged
 
 
 # --- 6. MODELS ---
@@ -1352,48 +1306,74 @@ async def ocr_scan(
             except Exception as e:
                 print(f"Could not fetch user categories: {e}")
 
-        if not ai_client:
+        if not ai_client and not GROQ_API_KEY:
             raise HTTPException(
                 status_code=503,
-                detail="Receipt scanning is temporarily unavailable. You can retry or enter the details manually.",
+                detail="Receipt scanning is not configured right now. Please enter the details manually.",
             )
 
-        print(f"[OCR] Sending {len(processed_images_bytes)} receipt image(s) to Gemini.")
-        try:
-            gemini_result = await asyncio.wait_for(
-                asyncio.to_thread(gemini_extract_receipt, processed_images_bytes, user_categories),
-                timeout=(GEMINI_OCR_TIMEOUT_SECONDS * 2) + 0.5,
-            )
-        except asyncio.TimeoutError:
-            print(f"[OCR] Primary and backup model attempts exceeded the {(GEMINI_OCR_TIMEOUT_SECONDS * 2) + 0.5:g}s deadline.")
-            raise HTTPException(
-                status_code=504,
-                detail="Receipt scanning took too long. Please retry or enter the details manually.",
-            )
-        except Exception as gemini_err:
-            # Preserve the provider's actionable status while stripping any
-            # accidental credential echo from SDK exception text.
-            safe_error = str(gemini_err).replace(GEMINI_API_KEY, "[REDACTED]").replace("\r", " ").replace("\n", " ")
-            safe_error = safe_error[:500]
-            error_code = getattr(gemini_err, "code", None)
-            print(
-                f"[OCR] Gemini request failed ({type(gemini_err).__name__}; "
-                f"code={error_code}; detail={safe_error})."
-            )
+        extraction_result = None
+        provider = None
+        timed_out = False
+
+        if ai_client:
+            gemini_deadline = (GEMINI_OCR_TIMEOUT_SECONDS * 2) + 0.5
+            print(f"[OCR] Sending {len(processed_images_bytes)} receipt image(s) to Gemini.")
+            try:
+                extraction_result = await asyncio.wait_for(
+                    asyncio.to_thread(gemini_extract_receipt, processed_images_bytes, user_categories),
+                    timeout=gemini_deadline,
+                )
+                provider = "Gemini"
+                if not any(extraction_result.get(field) for field in ("amount", "merchant", "date")):
+                    print("[OCR] Gemini returned no usable receipt fields; trying Groq if configured.")
+                    extraction_result = None
+                    provider = None
+            except asyncio.TimeoutError:
+                timed_out = True
+                print(f"[OCR] Gemini primary and backup attempts exceeded {gemini_deadline:g}s; trying Groq if configured.")
+            except Exception as gemini_err:
+                safe_error = str(gemini_err).replace(GEMINI_API_KEY, "[REDACTED]").replace("\r", " ").replace("\n", " ")[:300]
+                error_code = getattr(gemini_err, "code", None) or getattr(gemini_err, "status_code", None)
+                print(f"[OCR] Gemini unavailable ({type(gemini_err).__name__}; code={error_code}; detail={safe_error}); trying Groq if configured.")
+
+        if extraction_result is None and GROQ_API_KEY:
+            groq_deadline = (GROQ_TIMEOUT_SECONDS * ((len(processed_images_bytes) + 2) // 3)) + 1
+            print(f"[OCR] Trying Groq vision fallback with {len(processed_images_bytes)} receipt image(s).")
+            try:
+                extraction_result = await asyncio.wait_for(
+                    asyncio.to_thread(groq_extract_receipt, processed_images_bytes, user_categories),
+                    timeout=groq_deadline,
+                )
+                provider = "Groq"
+                print("[OCR] Groq receipt extraction succeeded.")
+            except asyncio.TimeoutError:
+                timed_out = True
+                print(f"[OCR] Groq receipt fallback exceeded its {groq_deadline:g}s deadline.")
+            except Exception as groq_err:
+                error_code = getattr(groq_err, "status_code", None)
+                print(f"[OCR] Groq receipt fallback failed ({type(groq_err).__name__}; code={error_code}).")
+
+        if extraction_result is None:
+            if timed_out:
+                raise HTTPException(
+                    status_code=504,
+                    detail="Receipt scanning took too long. Please retry or enter the details manually.",
+                )
             raise HTTPException(
                 status_code=503,
                 detail="Receipt scanning is temporarily unavailable. Please retry or enter the details manually.",
             )
 
-        extracted_fields = [field for field in ("merchant", "date", "amount") if gemini_result.get(field) is not None]
-        print(f"[OCR] Gemini extraction completed. Read fields: {', '.join(extracted_fields) or 'none'}.")
-        final_result = reconcile_receipt_fields(None, gemini_result, user_categories)
+        extracted_fields = [field for field in ("merchant", "date", "amount", "category") if extraction_result.get(field) is not None]
+        print(f"[OCR] {provider} extraction completed. Read fields: {', '.join(extracted_fields) or 'none'}.")
+        final_result = reconcile_receipt_fields(None, extraction_result, user_categories, ai_provider=provider)
         final_result["raw_text"] = ""
         final_result["amount_is_fallback"] = final_result["amount"] is None
         final_result["merchant_is_fallback"] = final_result["merchant"] is None
         final_result["date_is_fallback"] = final_result["date"] is None
 
-        return {"status": "Success", "engine": "Gemini", "data": final_result}
+        return {"status": "Success", "engine": provider, "data": final_result}
 
     except HTTPException as http_ex:
         raise http_ex
@@ -2029,13 +2009,8 @@ async def check_system_health():
     except Exception:
         health_status["database"] = "error"
 
-    # 2. Check OCR Scanner (EasyOCR)
-    try:
-        import easyocr
-        # Kung nag-i-import nang maayos at walang library missing, goods ito.
-        health_status["ocr"] = "ok"
-    except ImportError:
-        health_status["ocr"] = "error"
+    # Receipt fields use Gemini first and Groq vision as a configured fallback.
+    health_status["ocr"] = "ok" if (ai_client or GROQ_API_KEY) else "missing_key"
 
     # 3. The advisor can use Gemini or Groq as its configured AI providers.
     ai_key = os.getenv("GEMINI_API_KEY") or os.getenv("GROQ_API_KEY") or os.getenv("OPENAI_API_KEY")

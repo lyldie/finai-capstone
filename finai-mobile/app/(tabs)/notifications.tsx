@@ -10,6 +10,10 @@ const GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
 const SAGE = '#7C9A95';
 const CREAM = '#FAF7F2';
+const formatPercentage = (value: number) => Number(value).toLocaleString('en-US', {
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+});
 const WHITE = '#FFFFFF';
 
 export default function NotificationsScreen() {
@@ -40,7 +44,7 @@ export default function NotificationsScreen() {
 
   const renderItem = ({ item }: { item: AppNotification }) => {
     const actualPercent = Number(item.percentage_used ?? item.threshold);
-    const displayPercent = Math.round(actualPercent);
+    const displayPercent = formatPercentage(actualPercent);
     const isOverBudget = actualPercent > 100 || item.level === 'over_budget';
     // Notification colors reflect the threshold event saved at that time;
     // the Insights bars use the live spending percentage.
@@ -50,7 +54,7 @@ export default function NotificationsScreen() {
     const levelTitle = isOverBudget
       ? `OVER BUDGET · ${displayPercent}%`
       : actualPercent >= 100
-      ? 'BUDGET LIMIT REACHED'
+      ? `BUDGET LIMIT REACHED · ${displayPercent}%`
       : actualPercent >= 90
       ? `HIGH BUDGET USE · ${displayPercent}%`
       : `BUDGET WARNING · ${displayPercent}%`;

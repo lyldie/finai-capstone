@@ -335,8 +335,8 @@ export default function ProfileScreen() {
   // Reusable Menu Button Component
   const MenuOption = ({ icon, title, subtitle, onPress, color = DEEP_GREEN }: any) => (
     <TouchableOpacity style={styles.menuItem} onPress={onPress} activeOpacity={0.7}>
-      <View style={[styles.menuIconBox, { backgroundColor: `${color}15` }]}>
-        <Ionicons name={icon} size={22} color={color} />
+      <View style={[styles.menuIconBox, { backgroundColor: color === GOLD ? DEEP_GREEN : color }]}>
+        <Ionicons name={icon} size={22} color="#FFFFFF" />
       </View>
       <View style={styles.menuTextContainer}>
         <Text style={styles.menuTitle} numberOfLines={2}>{title}</Text>

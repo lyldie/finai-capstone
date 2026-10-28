@@ -1,12 +1,13 @@
 import React, { useState, useRef } from 'react';
 import { 
-  StyleSheet, Text, View, TouchableOpacity, Modal, 
+  StyleSheet, Text, View, TouchableOpacity, Modal,
   TextInput, FlatList, KeyboardAvoidingView, Platform, ActivityIndicator 
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { getSecureItem } from '../utils/secureStorage';
+import FinnPortrait from './FinnPortrait';
 
 
 const FINAI_DEEP_GREEN = '#144A3D';
@@ -25,6 +26,12 @@ interface ChatModalProps {
   userId: string;
 }
 
+const formatFinnMessage = (text: string) => text
+  .replace(/\*\*/g, '')
+  .replace(/^#{1,6}\s+/gm, '')
+  .replace(/^\s*[-*]\s+/gm, '• ')
+  .trim();
+
 export default function ChatModal({ visible, onClose, userId }: ChatModalProps) {
   const [inputText, setInputText] = useState('');
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -32,7 +39,7 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
-      text: 'Hello! I’m your FinAI advisor. I can help with your budget, goals, and spending habits. What would you like to know?',
+      text: 'Hello! I’m Finn, your personal budget advisor. What would you like help with today?',
       sender: 'ai',
     },
   ]);
@@ -75,11 +82,11 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
       <View style={[styles.messageBubbleWrapper, isUser ? styles.messageBubbleUser : styles.messageBubbleAI]}>
         {!isUser && (
           <View style={styles.aiAvatar}>
-            <Ionicons name="sparkles" size={14} color="#FFF" />
+            <FinnPortrait size={32} />
           </View>
         )}
         <View style={[styles.messageBubble, isUser ? styles.bubbleUser : styles.bubbleAI]}>
-          <Text style={[styles.messageText, isUser ? styles.textUser : styles.textAI]}>{item.text}</Text>
+          <Text style={[styles.messageText, isUser ? styles.textUser : styles.textAI]}>{isUser ? item.text : formatFinnMessage(item.text)}</Text>
         </View>
       </View>
     );
@@ -95,11 +102,11 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
           <View style={styles.chatHeader}>
             <View style={styles.chatHeaderLeft}>
               <View style={styles.chatHeaderIcon}>
-                <Ionicons name="sparkles" size={16} color="#FFF" />
+                <FinnPortrait size={42} />
               </View>
               <View>
-                <Text style={styles.chatHeaderTitle}>FinAi Advisor</Text>
-                <Text style={styles.chatHeaderSubtitle}>AI Assistant</Text>
+                <Text style={styles.chatHeaderTitle}>Finn</Text>
+                <Text style={styles.chatHeaderSubtitle}>Your budget advisor</Text>
               </View>
             </View>
             <TouchableOpacity onPress={onClose}>
@@ -145,14 +152,14 @@ const styles = StyleSheet.create({
   chatSheetContainer: { backgroundColor: FINAI_LIGHT_BG, borderTopLeftRadius: 24, borderTopRightRadius: 24, height: '80%', overflow: 'hidden' },
   chatHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', padding: 20, backgroundColor: '#FFF', borderBottomWidth: 1, borderBottomColor: '#E2E8F0' },
   chatHeaderLeft: { flexDirection: 'row', alignItems: 'center' },
-  chatHeaderIcon: { width: 36, height: 36, borderRadius: 18, backgroundColor: FINAI_DEEP_GREEN, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
+  chatHeaderIcon: { width: 42, height: 42, borderRadius: 21, backgroundColor: '#EAF2EE', justifyContent: 'center', alignItems: 'center', marginRight: 12, overflow: 'hidden' },
   chatHeaderTitle: { fontSize: 18, fontWeight: '800', color: FINAI_DEEP_GREEN },
   chatHeaderSubtitle: { fontSize: 12, color: FINAI_SAGE },
   chatContentContainer: { padding: 16, flexGrow: 1 },
   messageBubbleWrapper: { flexDirection: 'row', alignItems: 'flex-end', marginBottom: 16 },
   messageBubbleUser: { justifyContent: 'flex-end' },
   messageBubbleAI: { justifyContent: 'flex-start' },
-  aiAvatar: { width: 28, height: 28, borderRadius: 14, backgroundColor: FINAI_DEEP_GREEN, justifyContent: 'center', alignItems: 'center', marginRight: 8, marginBottom: 4 },
+  aiAvatar: { width: 32, height: 32, borderRadius: 16, backgroundColor: '#EAF2EE', justifyContent: 'center', alignItems: 'center', marginRight: 8, marginBottom: 4, overflow: 'hidden' },
   messageBubble: { maxWidth: '80%', padding: 14, borderRadius: 20 },
   bubbleUser: { backgroundColor: FINAI_DEEP_GREEN, borderBottomRightRadius: 4 },
   bubbleAI: { backgroundColor: '#FFFFFF', borderWidth: 1, borderColor: '#EBF0EE', borderBottomLeftRadius: 4, elevation: 1, shadowColor: '#000', shadowOpacity: 0.02, shadowRadius: 4 },
