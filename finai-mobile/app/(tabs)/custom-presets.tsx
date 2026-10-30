@@ -6,31 +6,26 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
-import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 import { getSecureItem } from '../../utils/secureStorage';
 
 
 const GREEN = '#144A3D';
 const API_BASE_URL = `${API_URL}/api`;
-const ACCOUNT_TINT = '#fff3da';
 
 // 🛠️ MGA SAFE AT LITERAL NA EMOJI HELPERS PARA SIGURADONG EMOJI ANG LALABAS
 export default function CustomPresetsScreen() {
   const router = useRouter();
   const { user } = useAuth();
   
-  const [activeTab, setActiveTab] = useState('categories'); 
   const [isLoading, setIsLoading] = useState(true);
   
   const [categories, setCategories] = useState<any[]>([]);
-  const [accounts, setAccounts] = useState<any[]>([]);
 
   const [isModalVisible, setModalVisible] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null); 
   const [newItemName, setNewItemName] = useState('');
   const [newCatType, setNewCatType] = useState('expense'); 
-  const [newAccBalance, setNewAccBalance] = useState('');
   const [newEmoji, setNewEmoji] = useState('🍔');            
   const [emojiTouched, setEmojiTouched] = useState(false); 
 
@@ -48,18 +43,13 @@ export default function CustomPresetsScreen() {
 
   useEffect(() => {
     if (!emojiTouched) {
-      if (activeTab === 'categories') {
-        setNewEmoji(getCategoryEmoji(newItemName || 'category', newCatType));
-      } else {
-        setNewEmoji(getAccountEmoji(newItemName || 'account'));
-      }
+      setNewEmoji(getCategoryEmoji(newItemName || 'category', newCatType));
     }
-  }, [newItemName, newCatType, emojiTouched, activeTab]);
+  }, [newItemName, newCatType, emojiTouched]);
 
   const fetchData = async (isSilent = false) => {
     if (!user?.id) {
       setCategories([]);
-      setAccounts([]);
       setIsLoading(false);
       return;
     }
@@ -73,10 +63,6 @@ export default function CustomPresetsScreen() {
       const userCategories = catData.filter((item: any) => item.category_role === 'user' && item.user_id === user.id);
       setCategories(userCategories);
 
-      const accRes = await fetch(`${API_BASE_URL}/accounts/?user_id=${encodeURIComponent(user.id)}`, { headers });
-      const accData = await readListResponse(accRes, 'Accounts');
-      const userAccounts = accData.filter((item: any) => item.account_role === 'user' && item.user_id === user.id);
-      setAccounts(userAccounts);
     } catch (error) {
       console.error(error);
       Alert.alert('Could not load custom presets', 'Please check your connection and try again.');
@@ -91,20 +77,14 @@ export default function CustomPresetsScreen() {
     if (item) {
       setEditingId(item.id);
       setNewItemName(item.name);
-      if (activeTab === 'categories') {
-        setNewCatType(item.type);
-        setNewEmoji(getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type)));
-      } else {
-        setNewAccBalance(item.initial_balance.toString());
-        setNewEmoji(getAccountDisplayEmoji(item.icon, item.name));
-      }
+      setNewCatType(item.type);
+      setNewEmoji(getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type)));
       setEmojiTouched(true); 
     } else {
       setEditingId(null);
       setNewItemName('');
-      setNewAccBalance('');
       setNewCatType('expense');
-      setNewEmoji(activeTab === 'categories' ? '🍔' : '💳');
+      setNewEmoji('🍔');
       setEmojiTouched(false); 
     }
     setModalVisible(true);
@@ -115,21 +95,14 @@ export default function CustomPresetsScreen() {
       Alert.alert('Name required', 'Enter a name for this item.');
       return;
     }
-    if (activeTab === 'accounts' && newAccBalance.trim() && (!Number.isFinite(Number(newAccBalance)) || Number(newAccBalance) < 0)) {
-      Alert.alert('Invalid opening balance', 'Enter a valid amount of zero or more. This is the money already in the account when you create it.');
-      return;
-    }
-
-    const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
+    const endpoint = 'categories';
     const method = editingId ? 'PUT' : 'POST'; 
     const url = editingId ? `${API_BASE_URL}/${endpoint}/${editingId}` : `${API_BASE_URL}/${endpoint}/`;
 
-    const fallbackEmoji = activeTab === 'categories' ? getCategoryEmoji(newItemName, newCatType) : getAccountEmoji(newItemName);
+    const fallbackEmoji = getCategoryEmoji(newItemName, newCatType);
     const finalEmoji = getDisplayEmoji(newEmoji, fallbackEmoji);
 
-    const payload = activeTab === 'categories' 
-      ? { name: newItemName, type: newCatType, user_id: user?.id, icon: finalEmoji } 
-      : { name: newItemName, initial_balance: parseFloat(newAccBalance) || 0.0, user_id: user?.id, icon: finalEmoji };
+    const payload = { name: newItemName, type: newCatType, user_id: user?.id, icon: finalEmoji };
 
     try {
       const token = await getSecureItem('user_token');
@@ -143,7 +116,7 @@ export default function CustomPresetsScreen() {
         setModalVisible(false);
         fetchData(true); 
       } else {
-        const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+        const itemLabel = 'category';
         let message = `We couldn’t save this ${itemLabel}. Please try again.`;
 
         if (res.status === 401) {
@@ -158,9 +131,7 @@ export default function CustomPresetsScreen() {
             ? responseData.detail
             : `A ${itemLabel} with this name already exists. Choose a different name.`;
         } else if (res.status === 422) {
-          message = activeTab === 'categories'
-            ? 'Please check the category name and type, then try again.'
-            : 'Please check the account name and starting balance, then try again.';
+          message = 'Please check the category name and type, then try again.';
         } else if (res.status >= 500) {
           message = `FinAI couldn’t save your ${itemLabel} right now. Please try again in a moment.`;
         }
@@ -168,7 +139,7 @@ export default function CustomPresetsScreen() {
         Alert.alert(`Couldn’t save ${itemLabel}`, message);
       }
     } catch (error) {
-      const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+      const itemLabel = 'category';
       Alert.alert(
         `Couldn’t save ${itemLabel}`,
         'We couldn’t reach FinAI. Check your internet connection and try again.'
@@ -180,7 +151,7 @@ export default function CustomPresetsScreen() {
     Alert.alert('Delete item', 'Are you sure? This action cannot be undone.', [
       { text: "Cancel", style: "cancel" },
       { text: "Delete", style: "destructive", onPress: async () => {
-          const endpoint = activeTab === 'categories' ? 'categories' : 'accounts';
+          const endpoint = 'categories';
           try {
             const token = await getSecureItem('user_token');
             const res = await fetch(`${API_BASE_URL}/${endpoint}/${id}?user_id=${user?.id}`, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
@@ -188,7 +159,7 @@ export default function CustomPresetsScreen() {
               fetchData(true); 
             } else {
               const errorData = await res.json().catch(() => ({}));
-              const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+          const itemLabel = 'category';
               const message = res.status === 404
                 ? `This ${itemLabel} may already have been removed. Refresh the list and try again.`
                 : res.status === 401
@@ -199,7 +170,7 @@ export default function CustomPresetsScreen() {
               Alert.alert(`Couldn’t delete ${itemLabel}`, message);
             }
           } catch (error) {
-            const itemLabel = activeTab === 'categories' ? 'category' : 'account';
+            const itemLabel = 'category';
             Alert.alert(`Couldn’t delete ${itemLabel}`, 'We couldn’t reach FinAI. Check your internet connection and try again.');
           }
         }
@@ -208,19 +179,17 @@ export default function CustomPresetsScreen() {
   };
 
   const renderItem = ({ item }: { item: any }) => {
-    const displayEmoji = activeTab === 'categories'
-      ? getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type))
-      : getAccountDisplayEmoji(item.icon, item.name);
+    const displayEmoji = getDisplayEmoji(item.icon, getCategoryEmoji(item.name, item.type));
 
     return (
       <View style={styles.listItem}>
-        <View style={[styles.iconBox, { backgroundColor: activeTab === 'categories' ? (item.type === 'income' ? '#e8f5e9' : '#ffebee') : ACCOUNT_TINT }]}>
+        <View style={[styles.iconBox, { backgroundColor: item.type === 'income' ? '#e8f5e9' : '#ffebee' }]}>
           <Text style={styles.emoji}>{displayEmoji}</Text>
         </View>
         <View style={{ flex: 1 }}>
           <Text style={styles.itemName}>{item.name}</Text>
           <Text style={styles.itemSub}>
-            {activeTab === 'categories' ? `Type: ${item.type.toUpperCase()}` : `Balance: ₱${item.initial_balance}`}
+            {`Type: ${item.type.toUpperCase()}`}
           </Text>
         </View>
         <View style={styles.actionButtons}>
@@ -243,29 +212,22 @@ export default function CustomPresetsScreen() {
         <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#142D2A" />
         </TouchableOpacity>
-        <Text style={styles.headerTitle}>Custom Presets</Text>
+        <Text style={styles.headerTitle}>Custom Categories</Text>
         <View style={{ width: 24 }} /> 
       </View>
 
-      <View style={styles.tabContainer}>
-        <TouchableOpacity style={[styles.tabButton, activeTab === 'categories' && styles.activeTab]} onPress={() => setActiveTab('categories')}>
-          <Text style={[styles.tabText, activeTab === 'categories' && styles.activeTabText]}>Categories</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[styles.tabButton, activeTab === 'accounts' && styles.activeTab]} onPress={() => setActiveTab('accounts')}>
-          <Text style={[styles.tabText, activeTab === 'accounts' && styles.activeTabText]}>Accounts</Text>
-        </TouchableOpacity>
-      </View>
+      <Text style={[styles.sectionDesc, { marginTop: 16, marginBottom: 12 }]}>Manage your personal income and expense categories.</Text>
 
       {isLoading ? (
         <ActivityIndicator size="large" color={GREEN} style={{ marginTop: 50 }} />
       ) : (
         <FlatList
-          data={activeTab === 'categories' ? categories : accounts}
+          data={categories}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.scrollContent}
           renderItem={renderItem}
           ListEmptyComponent={
-            <Text style={styles.sectionDesc}>You have not created any custom {activeTab} yet. Select '+' to add one.</Text>
+            <Text style={styles.sectionDesc}>You have not created any custom categories yet. Select '+' to add one.</Text>
           }
         />
       )}
@@ -289,41 +251,40 @@ export default function CustomPresetsScreen() {
               showsVerticalScrollIndicator={false}
             >
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{editingId ? 'Edit' : 'Add Custom'} {activeTab === 'categories' ? 'Category' : 'Account'}</Text>
+            <Text style={styles.modalTitle}>{editingId ? 'Edit' : 'Add'} Category</Text>
             
             <View style={{ alignItems: 'center', marginBottom: 16 }}>
               <EmojiPicker
                 value={newEmoji}
                 onChange={(value) => { setEmojiTouched(true); setNewEmoji(value); }}
-                fallback={activeTab === 'categories' ? getCategoryEmoji(newItemName, newCatType) : getAccountEmoji(newItemName)}
-                context={activeTab === 'accounts' ? 'account' : newCatType === 'income' ? 'income' : 'expense'}
-                tint={activeTab === 'categories' ? (newCatType === 'income' ? '#e8f5e9' : '#ffebee') : ACCOUNT_TINT}
-                accessibilityLabel={activeTab === 'categories' ? 'Choose category emoji' : 'Choose account emoji'}
+                fallback={getCategoryEmoji(newItemName, newCatType)}
+                context={newCatType === 'income' ? 'income' : 'expense'}
+                tint={newCatType === 'income' ? '#e8f5e9' : '#ffebee'}
+                accessibilityLabel="Choose category emoji"
               />
               <Text style={styles.previewHint}>Choose a recognizable icon</Text>
               {emojiTouched && (
                 <TouchableOpacity onPress={() => {
                   setEmojiTouched(false);
-                  if (activeTab === 'categories') setNewEmoji(getCategoryEmoji(newItemName, newCatType));
-                  else setNewEmoji(getAccountEmoji(newItemName));
+                  setNewEmoji(getCategoryEmoji(newItemName, newCatType));
                 }}>
                   <Text style={[styles.previewHint, { color: GREEN, marginTop: 4, fontWeight: '700' }]}>Reset icon</Text>
                 </TouchableOpacity>
               )}
             </View>
 
-            <View style={{ width: '100%', marginBottom: activeTab === 'accounts' ? 12 : 20 }}>
-              <Text style={styles.fieldLabel}>{activeTab === 'categories' ? 'Category name' : 'Account name'}</Text>
+            <View style={{ width: '100%', marginBottom: 20 }}>
+              <Text style={styles.fieldLabel}>Category name</Text>
               <TextInput
               style={[styles.inputField, { width: '100%', marginBottom: 12, paddingHorizontal: 15 }]}
-              placeholder={activeTab === 'categories' ? 'e.g. Groceries' : 'e.g. Cash wallet'}
+              placeholder="e.g. Groceries"
               placeholderTextColor="#8A9A86"
               value={newItemName}
               onChangeText={setNewItemName}
               />
             </View>
 
-            {activeTab === 'categories' ? (
+            <>
               <View style={styles.radioGroup}>
                 <TouchableOpacity style={[styles.radioBtn, newCatType === 'expense' && styles.radioBtnActive]} onPress={() => setNewCatType('expense')}>
                   <Text style={[styles.radioText, newCatType === 'expense' && styles.radioTextActive]}>Expense</Text>
@@ -332,22 +293,7 @@ export default function CustomPresetsScreen() {
                   <Text style={[styles.radioText, newCatType === 'income' && styles.radioTextActive]}>Income</Text>
                 </TouchableOpacity>
               </View>
-            ) : (
-              <View style={{ width: '100%', marginBottom: 8 }}>
-                <View style={styles.fieldLabelRow}>
-                  <Text style={styles.fieldLabel}>Opening balance</Text>
-                </View>
-                <TextInput
-                style={[styles.inputField, { width: '100%', marginBottom: 20, paddingHorizontal: 15 }]}
-                placeholder="₱0.00"
-                placeholderTextColor="#8A9A86"
-                keyboardType="numeric"
-                value={newAccBalance}
-                onChangeText={setNewAccBalance}
-                />
-                <Text style={styles.fieldHint}>The amount already in this account. Enter 0 if it starts empty.</Text>
-              </View>
-            )}
+            </>
 
             <View style={styles.modalActions}>
               <TouchableOpacity style={styles.cancelBtn} onPress={() => setModalVisible(false)}>

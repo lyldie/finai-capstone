@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, useWindowDimensions } from 'react-native';
+import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, useWindowDimensions, Modal, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import { useRouter } from 'expo-router';
 import { useTransactions } from '../../context/TransactionContext';
 import DepositModal from '../../components/DepositModal';
 import { BarChart, PieChart } from 'react-native-gifted-charts';
+import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getGoalEmoji } from '../../utils/goalEmoji';
@@ -52,7 +53,7 @@ const VISIBLE_CATEGORIES = 5;
 type IconName = React.ComponentProps<typeof Ionicons>['name'];
 
 const formatCurrency = (amount: number) =>
-  '₱' + Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  String.fromCharCode(0x20b1) + Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
 const formatCompact = (value: number) => {
   const n = Number(value) || 0;
@@ -220,6 +221,12 @@ export default function InsightsScreen() {
   const [showAllCategories, setShowAllCategories] = useState(false);
   const [isDepositModalVisible, setIsDepositModalVisible] = useState(false);
   const [selectedGoal, setSelectedGoal] = useState<any>(null);
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [draftDate, setDraftDate] = useState(new Date());
+  const [datePickerTarget, setDatePickerTarget] = useState<'start' | 'end' | null>(null);
+  const [selectedBudgetIds, setSelectedBudgetIds] = useState<string[]>([]);
+  const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
 
   const transactionContext = useTransactions();
   const {
@@ -241,6 +248,7 @@ export default function InsightsScreen() {
   const today = parseTransactionDate(todayKey);
   const headerSubtitle = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
   const periodLower = timeframe.toLowerCase();
+  const hasCustomRange = Boolean(customStart && customEnd);
 
   const activeBudgets = useMemo(() => budgets.filter((budget) =>
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
@@ -270,6 +278,7 @@ export default function InsightsScreen() {
 
   // Shared time-window predicate so stats, bar chart and category chart agree.
   const isInSelectedWindow = (dateString: string) => {
+    if (hasCustomRange) return dateString >= customStart && dateString <= customEnd;
     const d = parseTransactionDate(dateString);
     const currentYear = today.getFullYear();
     const currentMonth = today.getMonth();
@@ -305,7 +314,24 @@ export default function InsightsScreen() {
     const gradientTop = subTab === 'Income' ? '#9AD3C4' : '#FFB8B2';
     const labelStyle = (width: number) => ({ color: SAGE, fontSize: TYPE.micro, textAlign: 'center', width });
 
-    if (timeframe === 'Year') {
+    if (hasCustomRange) {
+      const start = parseTransactionDate(customStart);
+      const end = parseTransactionDate(customEnd);
+      const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      const bucketDays = days <= 14 ? 1 : 7;
+      const bucketCount = Math.ceil(days / bucketDays);
+      const totals = new Array(bucketCount).fill(0);
+      transactions.forEach((t) => {
+        if (t.type !== subTab || (subTab === 'Expense' && Boolean(t.goal_id)) || !isInSelectedWindow(t.date)) return;
+        const offset = Math.floor((parseTransactionDate(t.date).getTime() - start.getTime()) / 86400000);
+        totals[Math.min(Math.floor(offset / bucketDays), bucketCount - 1)] += Number(t.amount) || 0;
+      });
+      totals.forEach((value, index) => {
+        const bucketStart = new Date(start);
+        bucketStart.setDate(start.getDate() + index * bucketDays);
+        data.push({ value, label: bucketDays === 1 ? `${bucketStart.getDate()}` : `${bucketStart.getDate()}/${bucketStart.getMonth() + 1}`, frontColor: barColor, gradientColor: gradientTop, labelTextStyle: labelStyle(30) });
+      });
+    } else if (timeframe === 'Year') {
       const months = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
       const monthlyTotals = new Array(12).fill(0);
       transactions.forEach(t => {
@@ -351,7 +377,7 @@ export default function InsightsScreen() {
       });
     }
     return data;
-  }, [transactions, timeframe, subTab]);
+  }, [transactions, timeframe, subTab, hasCustomRange, customStart, customEnd]);
 
   const chartMaxValue = getNiceChartMax(Math.max(...chartData.map((item) => Number(item.value) || 0), 0));
   const chartStepValue = chartMaxValue / 4;
@@ -360,7 +386,7 @@ export default function InsightsScreen() {
   // screen padding (20*2) + card padding (20*2) + y-axis labels
   const Y_LABEL_WIDTH = 44;
   const chartInnerWidth = screenWidth - SCREEN_PAD * 2 - 40 - Y_LABEL_WIDTH;
-  const barWidth = timeframe === 'Year' ? 12 : timeframe === 'Week' ? 22 : 28;
+  const barWidth = chartData.length > 14 ? 12 : chartData.length > 8 ? 16 : timeframe === 'Year' ? 12 : timeframe === 'Week' ? 22 : 28;
   const barSpacing = Math.max(4, Math.floor((chartInnerWidth - 16 - chartData.length * barWidth) / Math.max(chartData.length, 1)));
 
   const categoryChartData = useMemo(() => {
@@ -385,7 +411,24 @@ export default function InsightsScreen() {
       percentage: total > 0 ? (value / total) * 100 : 0,
       color: CATEGORY_PALETTE[index % CATEGORY_PALETTE.length],
     }));
-  }, [transactions, timeframe, subTab, categories]);
+  }, [transactions, timeframe, subTab, categories, hasCustomRange, customStart, customEnd]);
+
+  const merchantBreakdown = useMemo(() => {
+    if (subTab !== 'Expense') return [];
+    const totals = new Map<string, { name: string; value: number }>();
+    transactions.forEach((t: any) => {
+      if (t.type !== 'Expense' || t.goal_id || !isInSelectedWindow(t.date)) return;
+      const note = String(t.note || t.title || t.item_name || '');
+      const receiptMerchant = note.match(/^Scanned from\s+(.+?)[.!]?$/i)?.[1]?.trim();
+      const merchant = String(t.merchant || t.merchant_name || receiptMerchant || '').trim();
+      if (!merchant) return;
+      const key = merchant.toLocaleLowerCase();
+      const current = totals.get(key);
+      if (current === undefined) totals.set(key, { name: merchant, value: Number(t.amount) || 0 });
+      else current.value += Number(t.amount) || 0;
+    });
+    return Array.from(totals.values()).sort((a, b) => b.value - a.value).slice(0, 8);
+  }, [transactions, subTab, hasCustomRange, customStart, customEnd, timeframe]);
 
   const categoryChartTotal = useMemo(() => categoryChartData.reduce((sum, d) => sum + d.value, 0), [categoryChartData]);
   const visibleCategories = showAllCategories ? categoryChartData : categoryChartData.slice(0, VISIBLE_CATEGORIES);
@@ -428,6 +471,23 @@ export default function InsightsScreen() {
   const budgetPeriodAdj = budgetTimeframe === 'Week' ? 'Weekly' : budgetTimeframe === 'Month' ? 'Monthly' : 'Annual';
   const typeAccent = subTab === 'Income' ? TEAL : CRITICAL_RED;
   const heroUsedIcon: IconName = budgetPool.usage >= 100 ? 'alert-circle' : budgetPool.usage >= 70 ? 'warning' : 'checkmark-circle';
+
+  const openDatePicker = (target: 'start' | 'end') => {
+    const selected = target === 'start' ? customStart : customEnd;
+    setDraftDate(selected ? parseTransactionDate(selected) : today);
+    setDatePickerTarget(target);
+  };
+  const applyDate = (target: 'start' | 'end', value: Date) => {
+    const key = localDateKey(value);
+    if (target === 'start') {
+      setCustomStart(key);
+      if (customEnd && key > customEnd) setCustomEnd(key);
+    } else {
+      setCustomEnd(key);
+      if (customStart && key < customStart) setCustomStart(key);
+    }
+    setDatePickerTarget(null);
+  };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -487,7 +547,7 @@ export default function InsightsScreen() {
             </View>
 
             {/* ---------------- Period controls ---------------- */}
-            <SectionHeader title={`This ${periodLower}`} subtitle="Everything below follows the period you pick." />
+            <SectionHeader title={hasCustomRange ? 'Custom date range' : `This ${periodLower}`} subtitle="Charts and breakdowns follow your selected dates." />
             <View style={styles.controlStack}>
               <Segmented
                 variant="subtle"
@@ -510,6 +570,38 @@ export default function InsightsScreen() {
                 ]}
               />
             </View>
+
+            <View style={styles.dateRangeCard}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.dateRangeTitle}>Custom date range</Text>
+                <Text style={styles.dateRangeSubtitle}>{hasCustomRange ? `${customStart} to ${customEnd}` : 'Optional · filter the charts and breakdowns'}</Text>
+              </View>
+              <TouchableOpacity style={styles.dateRangeButton} onPress={() => openDatePicker('start')} accessibilityRole="button" accessibilityLabel="Choose start date">
+                <Ionicons name="calendar-outline" size={16} color={DEEP_GREEN} />
+                <Text style={styles.dateRangeButtonText}>{customStart || 'Start'}</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dateRangeButton} onPress={() => openDatePicker('end')} accessibilityRole="button" accessibilityLabel="Choose end date">
+                <Ionicons name="calendar-outline" size={16} color={DEEP_GREEN} />
+                <Text style={styles.dateRangeButtonText}>{customEnd || 'End'}</Text>
+              </TouchableOpacity>
+              {hasCustomRange ? <TouchableOpacity onPress={() => { setCustomStart(''); setCustomEnd(''); }} accessibilityRole="button" accessibilityLabel="Clear custom dates"><Ionicons name="close-circle" size={20} color={SAGE} /></TouchableOpacity> : null}
+            </View>
+            {datePickerTarget && Platform.OS === 'ios' ? (
+              <Modal transparent animationType="fade" visible onRequestClose={() => setDatePickerTarget(null)}>
+                <View style={styles.datePickerOverlay}>
+                  <View style={styles.datePickerCard}>
+                    <View style={styles.datePickerHeader}>
+                      <TouchableOpacity onPress={() => setDatePickerTarget(null)}><Text style={styles.datePickerAction}>Cancel</Text></TouchableOpacity>
+                      <Text style={styles.datePickerTitle}>Choose {datePickerTarget} date</Text>
+                      <TouchableOpacity onPress={() => applyDate(datePickerTarget, draftDate)}><Text style={styles.datePickerAction}>Done</Text></TouchableOpacity>
+                    </View>
+                    <DateTimePicker value={draftDate} mode="date" display="spinner" themeVariant="light" maximumDate={today} onChange={(_event: DateTimePickerEvent, value?: Date) => { if (value) setDraftDate(value); }} />
+                  </View>
+                </View>
+              </Modal>
+            ) : datePickerTarget ? (
+              <DateTimePicker value={draftDate} mode="date" display="default" maximumDate={today} onChange={(event: DateTimePickerEvent, value?: Date) => { if (event.type === 'set' && value) applyDate(datePickerTarget, value); else setDatePickerTarget(null); }} />
+            ) : null}
 
             {/* ---------------- Summary: one card, two columns ---------------- */}
             <View style={[styles.card, styles.summaryCard]}>
@@ -553,7 +645,7 @@ export default function InsightsScreen() {
               <View style={styles.rowBetween}>
                 <View style={{ flex: 1, marginRight: 12 }}>
                   <Text style={styles.cardTitle}>{subTab === 'Income' ? 'Income' : 'Spending'} trend</Text>
-                  <Text style={styles.caption}>By {timeframe === 'Year' ? 'month' : timeframe === 'Month' ? 'week' : 'day'}</Text>
+                  <Text style={styles.caption}>{hasCustomRange ? 'Within selected dates' : `By ${timeframe === 'Year' ? 'month' : timeframe === 'Month' ? 'week' : 'day'}`}</Text>
                 </View>
                 <View style={styles.totalWrap}>
                   <Text style={styles.caption}>Total</Text>
@@ -599,12 +691,33 @@ export default function InsightsScreen() {
               )}
             </View>
 
+            {subTab === 'Expense' ? (
+              <View style={styles.card}>
+                <View style={styles.rowBetween}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.cardTitle}>Spending by merchant</Text>
+                    <Text style={styles.caption}>Receipt merchants in this period</Text>
+                  </View>
+                  <Ionicons name="storefront-outline" size={18} color={TEAL} />
+                </View>
+                {merchantBreakdown.length ? merchantBreakdown.map((item, index) => (
+                  <View key={item.name.toLocaleLowerCase()}>
+                    {index > 0 ? <View style={styles.divider} /> : null}
+                    <View style={styles.rowBetween}>
+                      <Text style={[styles.rowTitle, { flex: 1, marginRight: 12 }]} numberOfLines={1}>{item.name}</Text>
+                      <Text style={styles.rowAmount}>{formatCurrency(item.value)}</Text>
+                    </View>
+                  </View>
+                )) : <Text style={[styles.emptyHint, { textAlign: 'left', paddingHorizontal: 0 }]}>No merchant names found in receipts for this period.</Text>}
+              </View>
+            ) : null}
+
             {/* ---------------- Category breakdown ---------------- */}
             <View style={styles.card}>
               <View style={styles.rowBetween}>
                 <View style={{ flex: 1, marginRight: 12 }}>
                   <Text style={styles.cardTitle}>{subTab === 'Income' ? 'Income' : 'Spending'} by category</Text>
-                  <Text style={styles.caption}>Where it came from this {periodLower}</Text>
+                  <Text style={styles.caption}>Where it came from {hasCustomRange ? 'in this date range' : `this ${periodLower}`}</Text>
                 </View>
                 <View style={[styles.iconTile, styles.iconTileSm, { backgroundColor: 'rgba(237, 178, 50, 0.16)' }]}>
                   <Ionicons name="pie-chart" size={15} color={GOLD} />
@@ -732,12 +845,12 @@ export default function InsightsScreen() {
             </View>
 
             {/* ---------------- Category limits: ONE card, divided rows ---------------- */}
-            <SectionHeader
-              title={`${budgetPeriodAdj} limits`}
-              subtitle="Tap to edit · Hold to delete"
-              actionLabel="Set limit"
-              onAction={() => router.push('/setbudget')}
-            />
+            <View style={styles.bulkHeadingRow}>
+              <View style={{ flex: 1 }}><Text style={styles.sectionHeading}>{`${budgetPeriodAdj} limits`}</Text><Text style={styles.caption}>Tap to edit · Hold to select several</Text></View>
+              <TouchableOpacity style={styles.headingAction} onPress={() => router.push('/setbudget')}><Ionicons name="add" size={16} color={DEEP_GREEN} /><Text style={styles.headingActionText}>Set limit</Text></TouchableOpacity>
+            </View>
+            <TouchableOpacity style={styles.bulkBudgetsLink} onPress={() => router.push('/bulk-setbudget' as never)} accessibilityRole="button"><Ionicons name="layers-outline" size={16} color={DEEP_GREEN} /><Text style={styles.headingActionText}>Set different limits for multiple categories</Text></TouchableOpacity>
+            {selectedBudgetIds.length > 0 ? <View style={styles.multiActionBar}><Text style={styles.multiActionLabel}>{selectedBudgetIds.length} selected</Text><TouchableOpacity onPress={() => setSelectedBudgetIds([])}><Text style={styles.multiActionCancel}>Cancel</Text></TouchableOpacity><TouchableOpacity style={styles.multiActionDelete} onPress={() => Alert.alert('Delete selected limits?', `${selectedBudgetIds.length} budget limits will be removed.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => { const ids = [...selectedBudgetIds]; for (const id of ids) await deleteBudget(id); setSelectedBudgetIds([]); } }])}><Ionicons name="trash-outline" size={15} color="#FFFFFF" /><Text style={styles.multiActionDeleteText}>Delete</Text></TouchableOpacity></View> : null}
 
             {isLoading ? (
               <ActivityIndicator size="small" color={DEEP_GREEN} style={{ marginVertical: 20 }} />
@@ -770,19 +883,18 @@ export default function InsightsScreen() {
                     <View key={item.id || index}>
                       {index > 0 ? <View style={[styles.divider, { marginHorizontal: 18 }]} /> : null}
                       <TouchableOpacity
-                        style={styles.limitRow}
+                        style={[styles.limitRow, selectedBudgetIds.length > 0 && { paddingLeft: 48 }]}
                         activeOpacity={0.8}
-                        onPress={() => router.push({
+                        onPress={() => {
+                          if (selectedBudgetIds.length > 0) { setSelectedBudgetIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id]); return; }
+                          router.push({
                           pathname: '/setbudget',
                           params: { id: item.id, category_id: item.category_id, amount: item.amount, period_type: item.period_type },
-                        })}
-                        onLongPress={() => {
-                          Alert.alert('Delete limit?', `Delete the limit for ${categoryName}?`, [
-                            { text: 'Cancel', style: 'cancel' },
-                            { text: 'Delete', style: 'destructive', onPress: () => deleteBudget(item.id) },
-                          ]);
+                          });
                         }}
+                        onLongPress={() => setSelectedBudgetIds((current) => current.includes(item.id) ? current : [...current, item.id])}
                       >
+                        {selectedBudgetIds.length > 0 ? <TouchableOpacity style={styles.multiCheck} onPress={() => setSelectedBudgetIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id])}><Ionicons name={selectedBudgetIds.includes(item.id) ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selectedBudgetIds.includes(item.id) ? DEEP_GREEN : SAGE} /></TouchableOpacity> : null}
                         <View style={styles.rowBetween}>
                           <View style={[styles.rowCenter, { flex: 1, minWidth: 0, marginRight: 10 }]}>
                             <View style={styles.emojiTile}>
@@ -829,9 +941,11 @@ export default function InsightsScreen() {
             <View style={{ height: GAP - 8 }} />
             <SectionHeader
               title="Financial goals"
+              subtitle="Tap to add savings · Hold to select several"
               actionLabel="New goal"
               onAction={() => router.push('/create-goal')}
             />
+            {selectedGoalIds.length > 0 ? <View style={styles.multiActionBar}><Text style={styles.multiActionLabel}>{selectedGoalIds.length} selected</Text><TouchableOpacity onPress={() => setSelectedGoalIds([])}><Text style={styles.multiActionCancel}>Cancel</Text></TouchableOpacity><TouchableOpacity style={styles.multiActionDelete} onPress={() => Alert.alert('Archive selected goals?', `${selectedGoalIds.length} goals will move to the archive.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Archive', onPress: async () => { for (const id of [...selectedGoalIds]) await archiveGoal?.(id); setSelectedGoalIds([]); } }])}><Ionicons name="archive-outline" size={15} color="#FFFFFF" /><Text style={styles.multiActionDeleteText}>Archive</Text></TouchableOpacity></View> : null}
 
             {(!goals || goals.length === 0) ? (
               <View style={[styles.card, styles.emptyState]}>
@@ -852,13 +966,16 @@ export default function InsightsScreen() {
                 return (
                   <TouchableOpacity
                     key={goal.id || index}
-                    style={[styles.card, styles.goalCard]}
+                    style={[styles.card, styles.goalCard, selectedGoalIds.length > 0 && { paddingLeft: 48 }]}
                     activeOpacity={0.85}
+                    onLongPress={() => setSelectedGoalIds((current) => current.includes(goal.id) ? current : [...current, goal.id])}
                     onPress={() => {
+                      if (selectedGoalIds.length > 0) { setSelectedGoalIds((current) => current.includes(goal.id) ? current.filter((id) => id !== goal.id) : [...current, goal.id]); return; }
                       setSelectedGoal(goal);
                       setIsDepositModalVisible(true);
                     }}
                   >
+                    {selectedGoalIds.length > 0 ? <TouchableOpacity style={styles.goalMultiCheck} onPress={() => setSelectedGoalIds((current) => current.includes(goal.id) ? current.filter((id) => id !== goal.id) : [...current, goal.id])}><Ionicons name={selectedGoalIds.includes(goal.id) ? 'checkmark-circle' : 'ellipse-outline'} size={22} color={selectedGoalIds.includes(goal.id) ? DEEP_GREEN : SAGE} /></TouchableOpacity> : null}
                     <View style={styles.rowBetween}>
                       <View style={[styles.rowCenter, { flex: 1, minWidth: 0, marginRight: 8 }]}>
                         <View style={[styles.emojiTile, { backgroundColor: 'rgba(237, 178, 50, 0.16)' }]}>
@@ -872,7 +989,7 @@ export default function InsightsScreen() {
                         </View>
                       </View>
 
-                      <View style={styles.rowCenter}>
+                      {selectedGoalIds.length === 0 ? <View style={styles.rowCenter}>
                         <TouchableOpacity
                           style={styles.actionBtn}
                           hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
@@ -908,7 +1025,7 @@ export default function InsightsScreen() {
                         >
                           <Ionicons name="archive-outline" size={14} color={CRITICAL_RED} />
                         </TouchableOpacity>
-                      </View>
+                      </View> : null}
                     </View>
 
                     <View style={[styles.rowBetween, { marginTop: 16 }]}>
@@ -993,6 +1110,28 @@ const styles = StyleSheet.create({
   scrollContent: { paddingBottom: BOTTOM_NAV_CLEARANCE },
   viewContainer: { paddingHorizontal: SCREEN_PAD, paddingTop: GAP },
   controlStack: { gap: 10, marginBottom: 16 },
+  bulkHeadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 4 },
+  sectionHeading: { color: DEEP_GREEN, fontSize: TYPE.section, fontWeight: '800' },
+  headingAction: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 12, borderRadius: 20, backgroundColor: 'rgba(28, 60, 54, 0.07)' },
+  headingActionText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
+  bulkBudgetsLink: { flexDirection: 'row', gap: 7, alignItems: 'center', minHeight: 36, alignSelf: 'flex-start', paddingHorizontal: 11, borderRadius: 12, backgroundColor: 'rgba(61, 125, 108, 0.10)', marginBottom: 10 },
+  multiActionBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, backgroundColor: '#FFFFFF', borderRadius: 14, marginBottom: 10 },
+  multiActionLabel: { flex: 1, color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  multiActionCancel: { color: SAGE, fontSize: 12, fontWeight: '700' },
+  multiActionDelete: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 11, height: 34, borderRadius: 10, backgroundColor: '#A33B34' },
+  multiActionDeleteText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  multiCheck: { position: 'absolute', left: 15, top: 0, bottom: 0, justifyContent: 'center', zIndex: 2 },
+  goalMultiCheck: { position: 'absolute', left: 14, top: 0, bottom: 0, justifyContent: 'center', zIndex: 3 },
+  dateRangeCard: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.08)' },
+  datePickerOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(10, 25, 22, 0.38)' },
+  datePickerCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
+  datePickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 40 },
+  datePickerTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
+  datePickerAction: { color: TEAL, fontSize: 14, fontWeight: '800', paddingHorizontal: 4 },
+  dateRangeTitle: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  dateRangeSubtitle: { color: '#60756F', fontSize: 10, marginTop: 3 },
+  dateRangeButton: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 7, borderRadius: 10, backgroundColor: CREAM },
+  dateRangeButtonText: { color: DEEP_GREEN, fontWeight: '700', fontSize: 11 },
 
   // Base card: one radius, one shadow, one border for everything
   card: { backgroundColor: CARD_BG, borderRadius: RADIUS, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.05)', ...CARD_SHADOW },

@@ -11,10 +11,10 @@ export type TransactionType = 'Income' | 'Expense' | 'Transfer' | 'Contribution'
 export type Transaction = { id: string; amount: string; category: string; category_id?: string; note: string; type: TransactionType; account: string; account_id?: string; to_account?: string; to_account_id?: string; date: string; goal_id?: string; };
 export type Category = { id: string; name: string; type: string; icon: string; };
 export type GoalTypePreset = { id: string; name: string; icon?: string };
-export type Account = { id: string; name: string; initial_balance: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
-export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
-export type AppNotification = { id: string; budget_id: string; category_id: string; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; advisor_conversation_id?: string };
-export type TransactionToastNotice = { id: string; kind: 'success' | 'budget'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string; advisorConversationId?: string };
+export type Account = { id: string; name: string; initial_balance: number; current_balance?: number; icon: string; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
+export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; budget_kind?: 'fixed' | 'variable'; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
+export type AppNotification = { id: string; budget_id?: string | null; category_id?: string | null; category_name?: string; event_type?: 'budget_threshold' | 'spending_spike' | string; title?: string; current_amount?: number; baseline_amount?: number; change_amount?: number; change_percent?: number; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; advisor_conversation_id?: string };
+export type TransactionToastNotice = { id: string; kind: 'success' | 'budget' | 'spending_spike'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string; advisorConversationId?: string };
 
 const transactionRequestError = async (response: Response, fallback: string) => {
   const body = await response.json().catch(() => ({}));
@@ -50,7 +50,7 @@ type TransactionContextType = {
   addTransaction: (amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
   updateTransaction: (id: string, amount: string, category: string, note: string, type: TransactionType, account: string, toAccount?: string, date?: string) => Promise<AppNotification[]>;
   archiveTransaction: (id: string) => Promise<void>;
-  updateBudget: (id: string, amount: number, rollover_enabled?: boolean) => Promise<void>;
+  updateBudget: (id: string, amount: number, rollover_enabled?: boolean, budget_kind?: 'fixed' | 'variable') => Promise<void>;
   deleteBudget: (id: string) => Promise<void>;
   addGoal: (name: string, target_amount: number, target_date: string, goal_type_id: string) => Promise<void>;
   updateGoal: (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings?: number) => Promise<void>;
@@ -89,7 +89,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   const [transactionToast, setTransactionToast] = useState<TransactionToastNotice | null>(null);
   const [goals, setGoals] = useState<Goal[]>([]);
   const [archivedGoalSavings, setArchivedGoalSavings] = useState(0);
-  const [archivedAccountBalance, setArchivedAccountBalance] = useState(0);
   const [goalTypes, setGoalTypes] = useState<GoalTypePreset[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -124,7 +123,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setNotifications([]);
         setGoals([]);
         setArchivedGoalSavings(0);
-        setArchivedAccountBalance(0);
         setGoalTypes([]);
         if (showLoading && requestId === fetchRequestId.current) {
           setIsLoading(false);
@@ -142,7 +140,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         setNotifications([]);
         setGoals([]);
         setArchivedGoalSavings(0);
-        setArchivedAccountBalance(0);
       }
       const token = user?.token;
       const authHeaders = { Authorization: `Bearer ${token || ''}` };
@@ -190,11 +187,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
           offset += page.data.length;
         }
       };
-      const [transRes, catRes, accRes, archivedAccountsRes, budRes, goalsRes, archivedGoalsRes, notificationRes, goalTypesRes] = await Promise.all([
+      const [transRes, catRes, accRes, budRes, goalsRes, archivedGoalsRes, notificationRes, goalTypesRes] = await Promise.all([
         fetchAllTransactions(),
         fetch(`${API_URL}/api/categories/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/accounts/user/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
-        fetch(`${API_URL}/api/accounts/user/${userId}?archived=true`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/budgets/get-all/${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/goals/?user_id=${userId}`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
         fetch(`${API_URL}/api/goals/?user_id=${userId}&archived=true`, { headers: authHeaders }).then(res => res.ok ? res.json() : []).catch(() => []),
@@ -208,9 +204,6 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       const formattedAccounts = parsedAccounts.map((a: any) => ({ ...a, id: a._id || a.id }));
       setAccounts(formattedAccounts);
       await AsyncStorage.setItem(accountCacheKey, JSON.stringify(formattedAccounts)); // Cache
-
-      const parsedArchivedAccounts = Array.isArray(archivedAccountsRes) ? archivedAccountsRes : (archivedAccountsRes.data || []);
-      setArchivedAccountBalance(parsedArchivedAccounts.reduce((sum: number, account: any) => sum + (Number(account.current_balance) || 0), 0));
 
       if (transRes.status === "Success" && Array.isArray(transRes.data)) {
         const formattedTrans = transRes.data.map((i: any) => ({
@@ -415,11 +408,11 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     }
   };
 
-  const updateBudget = async (id: string, amount: number, rollover_enabled?: boolean) => {
+  const updateBudget = async (id: string, amount: number, rollover_enabled?: boolean, budget_kind?: 'fixed' | 'variable') => {
     const userId = await AsyncStorage.getItem('user_id');
     if (!userId) throw new Error('Your session has expired. Please log in again.');
     const token = await getSecureItem('user_token');
-    const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, user_id: userId }) });
+    const res = await fetch(`${API_URL}/api/budgets/update/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token || ''}` }, body: JSON.stringify({ amount, rollover_enabled, budget_kind, user_id: userId }) });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       throw new Error(typeof body.detail === 'string' ? body.detail : 'Failed to update budget. Please try again.');
@@ -602,12 +595,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!hasCurrentUserData) return 0;
     const accountNames = [...new Set(visibleAccounts.map((account) => account.name))];
 
-    const totalFromAccounts = accountNames.length
-      ? accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0)
-      : totalIncome - totalExpense - visibleTransactions.filter(t => t.type === 'Contribution' || (t.type === 'Expense' && t.goal_id)).reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
-
-    return totalFromAccounts + archivedAccountBalance;
-  }, [visibleAccounts, getAccountBalance, totalExpense, totalIncome, visibleTransactions, hasCurrentUserData, archivedAccountBalance]);
+    // Archived accounts remain in transaction history, but they are not active
+    // tracked wallets and therefore do not contribute to the dashboard balance.
+    return accountNames.reduce((total, accountName) => total + getAccountBalance(accountName), 0);
+  }, [visibleAccounts, getAccountBalance, hasCurrentUserData]);
 
   return (
     <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, addTransaction, updateTransaction, archiveTransaction, updateBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, getAccountBalance, totalIncome, totalExpense, totalSavings, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>

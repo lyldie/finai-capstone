@@ -82,7 +82,7 @@ export default function AddAccountScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
           </TouchableOpacity>
-          <Text style={styles.title}>New Account</Text>
+          <Text style={styles.title}>New Account Type</Text>
           <View style={{ width: 38 }} />
         </View>
       </LinearGradient>
@@ -104,14 +104,15 @@ export default function AddAccountScreen() {
             </View>
           </View>
 
-          <Text style={styles.label}>Account Name</Text>
+          <Text style={styles.label}>Account Type</Text>
           <TextInput
             style={styles.input}
-            placeholder="e.g., BPI, GCash, Maya"
+            placeholder="e.g., Cash, E-wallet, Bank, Savings"
             placeholderTextColor={SAGE}
             value={name}
             onChangeText={setName}
           />
+          <Text style={styles.helperText}>Users choose this type, then name their own account (for example, GCash or BPI).</Text>
 
           <TouchableOpacity
             style={[styles.saveBtn, loading && {opacity: 0.7}]}
@@ -166,6 +167,7 @@ const styles = StyleSheet.create({
   resetLink: { fontSize: 11, color: TEAL, fontWeight: '800', marginTop: 4 },
 
   label: { fontSize: 13, fontWeight: '800', color: DEEP_GREEN, marginBottom: 8, letterSpacing: 0.5 },
+  helperText: { color: SAGE, fontSize: 12, lineHeight: 18, marginTop: -2, marginBottom: 14 },
   input: {
     backgroundColor: '#F9FAFB',
     padding: 16,

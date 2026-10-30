@@ -97,7 +97,9 @@ export default function MessagesScreen() {
               <Text style={styles.eyebrow}>YOUR FINAI SPACE</Text>
               <Text style={styles.title}>{isAiTab ? 'Finn' : 'Messages'}</Text>
             </View>
-            <View style={{ width: 2 }} />
+            <TouchableOpacity onPress={() => router.push('/plan-ahead' as never)} style={styles.iconButton} accessibilityRole="button" accessibilityLabel="Open Plan Ahead">
+              <Ionicons name="analytics-outline" size={20} color="#F5D27C" />
+            </TouchableOpacity>
           </View>
           <View style={styles.heroMessage}>
             <FinnPortrait size={88} />

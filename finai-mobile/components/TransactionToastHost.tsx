@@ -20,11 +20,12 @@ export default function TransactionToastHost() {
   const translateY = useRef(new Animated.Value(-220)).current;
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isBudgetAlert = transactionToast?.kind === 'budget';
+  const isSpendingSpike = transactionToast?.kind === 'spending_spike';
   const threshold = transactionToast?.threshold || 0;
   const displayPercentage = transactionToast?.percentage_used ?? threshold;
   const overBudget = transactionToast?.level === 'over_budget' || threshold > 100;
-  const accent = isBudgetAlert ? getBudgetStatusColor(threshold) : '#16845B';
-  const tint = isBudgetAlert ? getBudgetStatusTint(threshold) : '#ECFDF3';
+  const accent = isBudgetAlert ? getBudgetStatusColor(threshold) : isSpendingSpike ? '#B77912' : '#16845B';
+  const tint = isBudgetAlert ? getBudgetStatusTint(threshold) : isSpendingSpike ? '#FFF4D8' : '#ECFDF3';
   const severity = overBudget ? 'Over budget' : threshold >= 100 ? 'Budget limit reached' : threshold >= 90 ? 'High budget use' : 'Budget warning';
 
   const dismiss = useCallback(() => {
@@ -65,7 +66,7 @@ export default function TransactionToastHost() {
       <View style={[styles.card, { backgroundColor: tint, borderLeftColor: accent }]}>
         <View style={styles.header}>
           <View style={styles.heading}>
-            <Ionicons name={isBudgetAlert ? 'warning-outline' : 'checkmark-circle-outline'} size={20} color={accent} />
+            <Ionicons name={isBudgetAlert || isSpendingSpike ? 'warning-outline' : 'checkmark-circle-outline'} size={20} color={accent} />
             <View style={styles.titles}>
               <Text style={styles.title}>{transactionToast.title}</Text>
               {isBudgetAlert && <Text style={[styles.severity, { color: accent }]}>{severity}</Text>}
@@ -94,6 +95,12 @@ export default function TransactionToastHost() {
             accessibilityLabel="View Finn's budget insight"
           >
             <Text style={styles.advisorLinkText}>View Finn’s insight</Text>
+            <Ionicons name="arrow-forward" size={15} color={DEEP_GREEN} />
+          </TouchableOpacity>
+        )}
+        {isSpendingSpike && (
+          <TouchableOpacity style={styles.advisorLink} onPress={() => { dismiss(); router.push('/notifications' as never); }} accessibilityRole="button" accessibilityLabel="View spending alert in notifications">
+            <Text style={styles.advisorLinkText}>View notification</Text>
             <Ionicons name="arrow-forward" size={15} color={DEEP_GREEN} />
           </TouchableOpacity>
         )}

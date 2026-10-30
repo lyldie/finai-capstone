@@ -16,6 +16,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useTransactions } from '../../context/TransactionContext';
 import { API_URL } from '../../config';
 import { setSecureItem } from '../../utils/secureStorage';
+import { hasSubCentPrecision } from '../../utils/money';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -97,6 +98,10 @@ export default function ProfileScreen() {
       return;
     }
     const parsedIncome = Number(newIncome);
+    if (hasSubCentPrecision(newIncome)) {
+      Alert.alert('Too many decimal places', 'Monthly income can be entered to the nearest centavo (up to 2 decimal places).');
+      return;
+    }
     if (!Number.isFinite(parsedIncome) || parsedIncome < 0) {
       Alert.alert('Oops!', 'Enter a valid amount of zero or more.');
       return;
@@ -382,8 +387,8 @@ export default function ProfileScreen() {
           <View style={styles.divider} />
           <MenuOption 
             icon="grid-outline" 
-            title="Custom Categories & Accounts" 
-            subtitle="Manage your personal presets"
+            title="Custom Categories"
+            subtitle="Manage your personal income and expense categories"
             color={TEAL}
             onPress={() => router.push('/custom-presets' as any)}
           />

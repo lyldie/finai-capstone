@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { StyleSheet, Text, View, Modal, TextInput, TouchableOpacity, Keyboard, TouchableWithoutFeedback, Alert, ActivityIndicator, ScrollView } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { hasSubCentPrecision } from '../utils/money';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -46,6 +47,10 @@ export default function DepositModal({
     }
 
     const amount = parseFloat(depositAmount);
+    if (hasSubCentPrecision(depositAmount)) {
+      Alert.alert('Too many decimal places', 'Contributions can be entered to the nearest centavo (up to 2 decimal places).');
+      return;
+    }
     if (!amount || amount <= 0) {
       Alert.alert('Invalid amount', 'Enter a valid amount.');
       return;

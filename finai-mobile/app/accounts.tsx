@@ -15,6 +15,7 @@ import { Account } from '../context/TransactionContext';
 import { getAccountDisplayEmoji, getAccountEmoji } from '../utils/accountEmoji';
 import EmojiPicker from '../components/EmojiPicker';
 import { getSecureItem } from '../utils/secureStorage';
+import { hasSubCentPrecision } from '../utils/money';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -83,7 +84,9 @@ export default function PersonalAccountsScreen() {
     setAccountEmoji(getAccountDisplayEmoji(account.icon, account.name));
 
     // Hanapin kung may tumutugmang template o gamitin ang icon niya
-    const matchedTemplate = templates.find(t => t.name.toLowerCase() === account.name.toLowerCase()) || templates[0] || null;
+    const matchedTemplate = templates.find(t => t.id === account.parent_template_id)
+      || templates.find(t => t.name.toLowerCase() === account.name.toLowerCase())
+      || null;
     setSelectedTemplate(matchedTemplate);
     setIsModalVisible(true);
   };
@@ -105,6 +108,10 @@ export default function PersonalAccountsScreen() {
     }
     if (!name) {
       Alert.alert('Account name required', 'Enter a name for your personal account.');
+      return;
+    }
+    if (hasSubCentPrecision(openingBalance)) {
+      Alert.alert('Too many decimal places', 'Opening balances can be entered to the nearest centavo (up to 2 decimal places).');
       return;
     }
     if (!Number.isFinite(initialBalance) || initialBalance < 0) {
@@ -179,7 +186,10 @@ export default function PersonalAccountsScreen() {
       {/* Modern Gradient Header */}
       <LinearGradient colors={[TEAL, DEEP_GREEN]} style={styles.header}>
         <View style={styles.headerTop}>
-          <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
+          <TouchableOpacity
+            onPress={() => router.canGoBack() ? router.back() : router.replace('/(tabs)' as never)}
+            style={styles.backBtn}
+          >
             <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
           </TouchableOpacity>
           <Text style={styles.title}>My Accounts</Text>
@@ -187,7 +197,7 @@ export default function PersonalAccountsScreen() {
             <Ionicons name="add" size={24} color={DEEP_GREEN} />
           </TouchableOpacity>
         </View>
-        <Text style={styles.subtitle}>Manage your manual payment accounts and opening balances.</Text>
+        <Text style={styles.subtitle}>Track the money in your cash, e-wallet, bank, and savings accounts.</Text>
       </LinearGradient>
 
       {isLoading ? (
@@ -203,7 +213,7 @@ export default function PersonalAccountsScreen() {
                 <Ionicons name="wallet-outline" size={42} color={GOLD} />
               </View>
               <Text style={styles.emptyTitle}>No personal accounts yet</Text>
-              <Text style={styles.emptyText}>Add an account from an administrator-approved type before recording transactions.</Text>
+              <Text style={styles.emptyText}>Choose an available account type, give it a name such as GCash or BPI, and enter its starting balance.</Text>
               <TouchableOpacity style={styles.primaryButton} onPress={openAddModal}>
                 <Text style={styles.primaryButtonText}>Add New Account</Text>
               </TouchableOpacity>
@@ -211,17 +221,21 @@ export default function PersonalAccountsScreen() {
           }
           renderItem={({ item }) => (
             <View style={styles.accountCard}>
-              <View style={styles.cardInfo}>
+              <TouchableOpacity style={styles.cardInfo} activeOpacity={0.8} onPress={() => router.push({ pathname: '/account-details', params: { accountId: item.id, accountName: item.name } } as never)} accessibilityRole="button" accessibilityLabel={`View ${item.name} wallet details`}>
                 <View style={styles.accountIconBox}>
                   <Text style={{ fontSize: 24 }}>{getAccountDisplayEmoji(item.icon, item.name)}</Text>
                 </View>
                 <View style={{ flex: 1, marginRight: 10 }}>
                   <Text style={styles.accountName}>{item.name}</Text>
-                  <Text style={styles.openingBalance}>
-                    Opening balance: ₱{Number(item.initial_balance || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                  <Text style={styles.accountType}>
+                    {templates.find(template => template.id === item.parent_template_id)?.name
+                      || (item.parent_template_id ? 'Account type unavailable' : 'Custom account')}
+                  </Text>
+                  <Text style={styles.currentBalance}>
+                    Current balance: ₱{Number(item.current_balance ?? item.initial_balance ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                   </Text>
                 </View>
-              </View>
+              </TouchableOpacity>
 
               {/* Action Buttons: Edit and Archive */}
               <View style={styles.actionButtonsRow}>
@@ -250,7 +264,7 @@ export default function PersonalAccountsScreen() {
 
             {!editingAccount && (
               <>
-                <Text style={styles.label}>Select Account Preset</Text>
+                <Text style={styles.label}>Select Account Type</Text>
                 <View style={styles.templateList}>
                   {templates.map((template) => (
                     <TouchableOpacity
@@ -265,7 +279,7 @@ export default function PersonalAccountsScreen() {
                     </TouchableOpacity>
                   ))}
                 </View>
-                <Text style={styles.fieldHint}>The preset chooses the account type. You can give your own account the same name as the preset.</Text>
+                <Text style={styles.fieldHint}>Choose a type, then name your account—for example, choose E-wallet and name it GCash or Maya.</Text>
               </>
             )}
 
@@ -274,17 +288,18 @@ export default function PersonalAccountsScreen() {
               <Text style={{ flex: 1, color: SAGE, fontSize: 13, fontWeight: '600' }}>Choose an icon for this account</Text>
             </View>
 
-            <Text style={styles.label}>Your Account Name</Text>
+            <Text style={styles.label}>Account Name</Text>
             <TextInput
               value={accountName}
               onChangeText={setAccountName}
-              placeholder="e.g., GCash or My GCash"
+              placeholder="e.g., GCash, Maya, or BPI"
               placeholderTextColor={SAGE}
               style={styles.input}
               maxLength={40}
             />
 
             <Text style={styles.label}>Opening Balance</Text>
+            <Text style={styles.fieldHint}>The amount already in this account when you start tracking. New transactions update its current balance.</Text>
             <TextInput
               value={openingBalance}
               onChangeText={(value) => setOpeningBalance(value.replace(/[^0-9.]/g, ''))}
@@ -348,6 +363,8 @@ const styles = StyleSheet.create({
   accountIconBox: { width: 50, height: 50, borderRadius: 16, backgroundColor: ACCOUNT_TINT, alignItems: 'center', justifyContent: 'center', marginRight: 14 },
   accountName: { color: DEEP_GREEN, fontSize: 16, fontWeight: '800', marginBottom: 3 },
   openingBalance: { color: SAGE, fontSize: 12, fontWeight: '600' },
+  accountType: { color: TEAL, fontSize: 12, fontWeight: '700', marginBottom: 3 },
+  currentBalance: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800', marginBottom: 2 },
 
   actionButtonsRow: { flexDirection: 'row', gap: 8 },
   editBtn: { padding: 10, backgroundColor: '#E0F2FE', borderRadius: 12 },

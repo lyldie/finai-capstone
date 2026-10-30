@@ -19,6 +19,7 @@ import { router, useLocalSearchParams } from 'expo-router';
 import { API_URL } from '../config'; 
 import { getGoalEmoji } from '../utils/goalEmoji'; // 👈 IMPORT NATIN YUNG EMOJI HELPER
 import { getDisplayEmoji } from '../components/EmojiPicker';
+import { hasSubCentPrecision } from '../utils/money';
 
 const FINAI_DEEP_GREEN = '#0D5C3A';
 const FINAI_BG = '#F4F7F5';
@@ -116,6 +117,10 @@ export default function CreateGoal() {
     }
 
     const parsedAmount = parseFloat(amount);
+    if (hasSubCentPrecision(amount)) {
+      Alert.alert('Too many decimal places', 'Goal targets can be entered to the nearest centavo (up to 2 decimal places).');
+      return;
+    }
     if (isNaN(parsedAmount) || parsedAmount <= 0) {
       Alert.alert('Invalid amount', 'Enter a valid target amount.');
       return;

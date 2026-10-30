@@ -176,7 +176,7 @@ export default function AccountsScreen() {
         </View>
         <View>
           <Text style={[styles.cardText, item.is_archived && styles.cardTextArchived]}>{item.name}</Text>
-          <Text style={styles.cardTypeLabel}>PRESET ACCOUNT</Text>
+          <Text style={styles.cardTypeLabel}>ACCOUNT TYPE</Text>
         </View>
       </View>
 
@@ -214,7 +214,7 @@ export default function AccountsScreen() {
           <TouchableOpacity onPress={() => router.back()} style={styles.backBtn}>
             <Ionicons name="arrow-back" size={22} color="#FFFFFF" />
           </TouchableOpacity>
-          <Text style={styles.title}>Accounts</Text>
+          <Text style={styles.title}>Account Types</Text>
           <TouchableOpacity onPress={() => router.push('/(admin)/add-account')} style={styles.addBtnHeader}>
             <Ionicons name="add" size={24} color={DEEP_GREEN} />
           </TouchableOpacity>
@@ -243,7 +243,7 @@ export default function AccountsScreen() {
         <View style={styles.emptyState}>
           <Ionicons name={view === 'active' ? 'wallet-outline' : 'archive-outline'} size={48} color={SAGE} />
           <Text style={styles.emptyText}>
-            {view === 'active' ? 'No account presets found.' : 'Nothing archived right now.'}
+            {view === 'active' ? 'No account types found.' : 'Nothing archived right now.'}
           </Text>
         </View>
       ) : (
@@ -260,7 +260,7 @@ export default function AccountsScreen() {
       <Modal visible={modalVisible} transparent animationType="fade">
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Edit Account</Text>
+            <Text style={styles.modalTitle}>Edit Account Type</Text>
 
             <View style={styles.previewRow}>
               <EmojiPicker value={editEmoji} onChange={(value) => { setEmojiTouched(true); setEditEmoji(value); }} fallback={getAccountEmoji(newName)} context="account" tint="#FFF9E6" accessibilityLabel="Choose account emoji" />

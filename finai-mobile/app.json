@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "finai-mobile",
+    "name": "FinAI",
     "slug": "finai-mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -17,6 +17,7 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.finai.mobile",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
@@ -37,10 +38,23 @@
       "expo-splash-screen",
       "expo-status-bar",
       "expo-sharing",
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow FinAI to access a receipt photo you choose to scan.",
+          "microphonePermission": false
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "78ed4302-b6a5-453a-815b-a85ce4f04f94"
+      }
     }
   }
 }

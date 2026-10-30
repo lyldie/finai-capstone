@@ -8,12 +8,14 @@ import { useTransactions } from '../context/TransactionContext';
 import { API_URL } from '../config';
 import QuickAddCategoryModal from '../components/QuickAddCategoryModal';
 import { getSecureItem } from '../utils/secureStorage';
+import { hasSubCentPrecision } from '../utils/money';
 
 
 const FINAI_DEEP_GREEN = '#144A3D';
 const FINAI_SAGE = '#8A9A86';
 const FINAI_LIGHT_BG = '#F7F9F8';
 const FINAI_CARD_BG = '#FFFFFF';
+const PESO = String.fromCharCode(0x20b1);
 
 const PERIODS = [
   { label: 'Weekly', value: 'weekly' },
@@ -38,6 +40,13 @@ export default function SetBudgetScreen() {
 
   // A category may have a separate weekly, monthly, and annual budget.
   const availableCategories = expenseCategories;
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+  const categoryBudgets = selectedCategory
+    ? budgets.filter((item: any) => item.category_id === selectedCategory.id && item.start_date <= todayKey && item.end_date >= todayKey)
+    : [];
+  const samePeriodBudget = categoryBudgets.find((item: any) => item.period_type === selectedPeriod);
+  const otherPeriodBudgets = categoryBudgets.filter((item: any) => item.period_type !== selectedPeriod);
 
   const handleCategoryCreated = (created: { id: string; name: string; type: 'expense' | 'income'; icon?: string }) => {
     setSelectedCategory(created);
@@ -62,6 +71,11 @@ export default function SetBudgetScreen() {
   const handleSaveBudget = async () => {
     if (!selectedCategory) {
       Alert.alert('Choose a category', 'Select a category before continuing.');
+      return;
+    }
+
+    if (hasSubCentPrecision(amount)) {
+      Alert.alert('Too many decimal places', 'Budget limits can be entered to the nearest centavo (up to 2 decimal places).');
       return;
     }
 
@@ -99,11 +113,11 @@ export default function SetBudgetScreen() {
         void fetchTransactions(false);
       }
 
-      const formattedAmount = `₱${numericAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const formattedAmount = `${PESO}${numericAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       const periodLabel = selectedPeriod;
       showTransactionToast({
         kind: 'success',
-        title: id ? 'Budget updated' : 'Budget saved',
+        title: id || samePeriodBudget ? 'Budget updated' : 'Budget saved',
         messages: [`${selectedCategory.name} ${periodLabel} limit is ${formattedAmount}.`],
       });
       if (router.canGoBack()) router.back();
@@ -111,7 +125,7 @@ export default function SetBudgetScreen() {
     } catch (error) {
       Alert.alert('Could not save budget', error instanceof Error
         ? error.message
-        : 'We couldn’t save this limit. Check your connection and try again.');
+        : "We couldn't save this limit. Check your connection and try again.");
     } finally {
       setLoading(false);
     }
@@ -123,13 +137,21 @@ export default function SetBudgetScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={FINAI_DEEP_GREEN} />
         </TouchableOpacity>
-        <Text style={styles.appBarTitle}>{id ? "Edit Budget" : "Set Limit"}</Text>
+        <Text style={styles.appBarTitle}>{id ? 'Edit budget' : 'Set a budget limit'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
+        <TouchableOpacity style={styles.fixedBillsLink} accessibilityRole="button" onPress={() => router.push('/fixed-bills' as never)}>
+          <Ionicons name="calendar-outline" size={19} color={FINAI_DEEP_GREEN} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.fixedBillsLinkTitle}>Scheduled bills</Text>
+            <Text style={styles.fixedBillsLinkCopy}>Add recurring payments and due dates separately</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={FINAI_SAGE} />
+        </TouchableOpacity>
         <View style={styles.welcomeSection}>
-          <Text style={styles.title}>{id ? "Edit Limit ✏️" : "Set Budget Limit 💰"}</Text>
+          <Text style={styles.title}>{id ? 'Edit your limit' : 'Set a spending limit'}</Text>
         </View>
 
         <View style={styles.formCard}>
@@ -167,7 +189,7 @@ export default function SetBudgetScreen() {
 
         {!id && (
           <View style={styles.formCard}>
-            <Text style={styles.label}>Siklo ng Badyet</Text>
+            <Text style={styles.label}>Budget period</Text>
             <View style={styles.row}>
               {PERIODS.map((period) => (
                 <TouchableOpacity key={period.value} style={[styles.periodBtn, selectedPeriod === period.value && styles.activePeriodBtn]} onPress={() => setSelectedPeriod(period.value)}>
@@ -179,13 +201,19 @@ export default function SetBudgetScreen() {
         )}
 
         <View style={styles.formCard}>
-          <Text style={styles.label}>Magkano ang Limit (₱)</Text>
+          {selectedCategory && samePeriodBudget && !id ? (
+          <View style={styles.infoCard}><Ionicons name="information-circle-outline" size={18} color={FINAI_DEEP_GREEN} /><Text style={styles.infoText}>A {selectedPeriod} limit already exists for {selectedCategory.name}. Saving here updates it.</Text></View>
+          ) : null}
+          {selectedCategory && otherPeriodBudgets.length > 0 ? (
+          <View style={styles.infoCard}><Ionicons name="information-circle-outline" size={18} color={FINAI_DEEP_GREEN} /><Text style={styles.infoText}>This category also has a {otherPeriodBudgets.map((item: any) => item.period_type).join(" and ")} limit. This creates a separate period limit that tracks the same spending.</Text></View>
+          ) : null}
+          <Text style={styles.label}>Limit amount ({PESO})</Text>
           <View style={styles.inputWrapper}>
-            <Text style={styles.currencySymbol}>₱</Text>
-            <TextInput style={styles.input} keyboardType="numeric" value={amount} onChangeText={setAmount} />
+            <Text style={styles.currencySymbol}>{PESO}</Text>
+            <TextInput style={styles.input} keyboardType="decimal-pad" value={amount} onChangeText={setAmount} placeholder="0.00" placeholderTextColor={FINAI_SAGE} />
           </View>
           <Text style={styles.helperText}>
-            This limit repeats every {selectedPeriod.replace('annual', 'year').replace('monthly', 'month').replace('weekly', 'week')}.
+            Enter the maximum amount for each {selectedPeriod.replace('annual', 'year').replace('monthly', 'month').replace('weekly', 'week')}. {id ? 'Change it here to update this limit.' : 'You can change it later with Edit budget.'}
           </Text>
         </View>
 
@@ -195,7 +223,7 @@ export default function SetBudgetScreen() {
               <Text style={styles.rolloverTitle}>Carry balance forward</Text>
               <Text style={styles.helperText}>
                 {rolloverEnabled
-                  ? 'Unused money adds to the next period. Spending above the available amount reduces the next period’s limit.'
+                  ? "Unused money adds to the next period. Spending above the available amount reduces the next period's limit."
                   : 'Off: each period starts with this limit and no carried balance.'}
               </Text>
             </View>
@@ -205,7 +233,7 @@ export default function SetBudgetScreen() {
 
         <View style={styles.actionContainer}>
           <TouchableOpacity style={styles.saveButton} onPress={handleSaveBudget} disabled={loading}>
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{id ? "Update Budget" : "Save Budget Limit"}</Text>}
+            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.saveButtonText}>{id || samePeriodBudget ? 'Update limit' : 'Save limit'}</Text>}
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -226,6 +254,9 @@ const styles = StyleSheet.create({
   backButton: { padding: 8, borderRadius: 8, backgroundColor: '#F0F4F2' },
   appBarTitle: { fontSize: 16, fontWeight: '700', color: FINAI_DEEP_GREEN },
   scrollContent: { paddingBottom: 40, paddingHorizontal: 20 },
+  fixedBillsLink: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#EAF4EF', borderRadius: 14, padding: 13, marginTop: 14 },
+  fixedBillsLinkTitle: { color: FINAI_DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  fixedBillsLinkCopy: { color: FINAI_SAGE, fontSize: 11, marginTop: 2 },
   welcomeSection: { marginVertical: 20 },
   title: { fontSize: 24, fontWeight: '800', color: FINAI_DEEP_GREEN, marginBottom: 6 },
   formCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', marginBottom: 16, elevation: 2 },
@@ -247,6 +278,8 @@ const styles = StyleSheet.create({
   currencySymbol: { fontSize: 20, fontWeight: '700', color: FINAI_DEEP_GREEN, marginRight: 8 },
   input: { flex: 1, color: FINAI_DEEP_GREEN, paddingVertical: 14, fontSize: 18, fontWeight: '700' },
   helperText: { color: FINAI_SAGE, fontSize: 12, lineHeight: 18, marginTop: 4 },
+  infoCard: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, backgroundColor: '#EAF4EF', borderRadius: 14, padding: 13, marginBottom: 16 },
+  infoText: { flex: 1, color: FINAI_DEEP_GREEN, fontSize: 12, lineHeight: 18 },
   rolloverHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
   rolloverCopy: { flex: 1 },
   rolloverTitle: { color: FINAI_DEEP_GREEN, fontSize: 14, fontWeight: '700' },

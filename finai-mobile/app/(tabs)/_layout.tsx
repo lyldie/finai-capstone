@@ -6,11 +6,10 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 // ---- FINAI BRAND TOKENS (matches every other screen) ----
 const DEEP_GREEN = '#1c3c36';
 const GOLD = '#edb232';
-const SAGE = '#8BA19D';
 
 function TabBarIcon(props: {
   name: React.ComponentProps<typeof Ionicons>['name'];
-  color: string;
+  color: React.ComponentProps<typeof Ionicons>['color'];
 }) {
   return <Ionicons size={24} style={{ marginBottom: -3 }} {...props} />;
 }
@@ -21,7 +20,7 @@ export default function TabLayout() {
       <Tabs
         screenOptions={{
           tabBarActiveTintColor: GOLD, 
-          tabBarInactiveTintColor: SAGE, 
+          tabBarInactiveTintColor: '#FFFFFF',
           headerShown: false,
           tabBarStyle: {
             backgroundColor: DEEP_GREEN, 
@@ -46,7 +45,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Home', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "home" : "home-outline"} color={focused ? GOLD : SAGE} />
+              <TabBarIcon name={focused ? "home" : "home-outline"} color={color} />
             ), 
           }} 
         />
@@ -57,7 +56,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Transactions', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "receipt" : "receipt-outline"} color={focused ? GOLD : SAGE} />
+              <TabBarIcon name={focused ? "receipt" : "receipt-outline"} color={color} />
             ), 
           }} 
         />
@@ -68,7 +67,7 @@ export default function TabLayout() {
           options={{ 
             title: 'Insights', 
             tabBarIcon: ({ color, focused }) => (
-              <TabBarIcon name={focused ? "pie-chart" : "pie-chart-outline"} color={focused ? GOLD : SAGE} />
+              <TabBarIcon name={focused ? "pie-chart" : "pie-chart-outline"} color={color} />
             ), 
           }} 
         />
@@ -76,9 +75,9 @@ export default function TabLayout() {
         <Tabs.Screen
           name="ai"
           options={{
-            title: 'AI',
-            tabBarIcon: ({ focused }) => (
-              <TabBarIcon name={focused ? 'chatbubbles' : 'chatbubbles-outline'} color={focused ? GOLD : '#FFFFFF'} />
+            title: 'Advisor',
+            tabBarIcon: ({ color, focused }) => (
+              <TabBarIcon name={focused ? 'chatbubbles' : 'chatbubbles-outline'} color={color} />
             ),
           }}
         />
@@ -87,10 +86,8 @@ export default function TabLayout() {
           name="profile"
           options={{
             title: 'Profile',
-            tabBarActiveTintColor: '#FFFFFF',
-            tabBarInactiveTintColor: '#FFFFFF',
-            tabBarIcon: ({ focused }) => (
-              <TabBarIcon name={focused ? 'person-circle' : 'person-circle-outline'} color="#FFFFFF" />
+            tabBarIcon: ({ color, focused }) => (
+              <TabBarIcon name={focused ? 'person-circle' : 'person-circle-outline'} color={color} />
             ),
           }}
         />

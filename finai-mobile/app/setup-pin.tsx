@@ -13,6 +13,7 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
 import { setSecureItem } from '../utils/secureStorage';
+import { hasSubCentPrecision } from '../utils/money';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -91,6 +92,10 @@ export default function SetupPinScreen() {
 
     const incomeText = income.trim();
     const parsedIncome = incomeText ? Number(incomeText) : null;
+    if (incomeText && hasSubCentPrecision(incomeText)) {
+      Alert.alert('Too many decimal places', 'Monthly income can be entered to the nearest centavo (up to 2 decimal places).');
+      return;
+    }
     if (parsedIncome !== null && (!Number.isFinite(parsedIncome) || parsedIncome < 0)) {
       Alert.alert("Invalid Amount", "Enter a valid monthly amount, or leave it blank for now.");
       return;
@@ -115,6 +120,10 @@ export default function SetupPinScreen() {
       }
 
       parsedGoalAmount = Number(goalAmount);
+      if (hasSubCentPrecision(goalAmount)) {
+        Alert.alert('Too many decimal places', 'Goal targets can be entered to the nearest centavo (up to 2 decimal places).');
+        return;
+      }
       if (!Number.isFinite(parsedGoalAmount) || parsedGoalAmount <= 0) {
         Alert.alert("Invalid Amount", "Enter a target amount greater than zero.");
         return;

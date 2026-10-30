@@ -4,7 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import Swipeable from 'react-native-gesture-handler/Swipeable';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
@@ -65,10 +65,12 @@ export default function TransactionsScreen() {
   const [selectedFilter, setSelectedFilter] = useState('All');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [selectedAccount, setSelectedAccount] = useState('All');
+  const routeParams = useLocalSearchParams<{ account?: string }>();
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<'start' | 'end' | null>(null);
+  const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
 
   const phTodayParts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -81,7 +83,21 @@ export default function TransactionsScreen() {
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<number | null>(today.getDate());
 
   const router = useRouter();
+  React.useEffect(() => {
+    if (typeof routeParams.account === 'string' && accounts.some((account) => account.name === routeParams.account)) {
+      setSelectedAccount(routeParams.account);
+      setActiveTab('Daily');
+    }
+  }, [routeParams.account, accounts]);
   const unreadNotifications = notifications.filter((notification) => !notification.is_read).length;
+  const categoryFilterOptions = useMemo(() => {
+    const uniqueNames = new Map<string, string>();
+    categories.forEach(({ name }) => {
+      const displayName = name.trim();
+      if (displayName) uniqueNames.set(displayName.toLocaleLowerCase(), displayName);
+    });
+    return Array.from(uniqueNames.values());
+  }, [categories]);
 
   useFocusEffect(
     useCallback(() => {
@@ -147,6 +163,10 @@ export default function TransactionsScreen() {
   }, [archiveTransaction]);
 
   const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
+    if (selectedTransactionIds.length > 0) {
+      setSelectedTransactionIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id]);
+      return;
+    }
     if (item.goal_id) {
       swipeableInstance?.close();
       Alert.alert('Goal contribution', 'Edit or remove this contribution from its savings goal so the goal total stays accurate.');
@@ -157,7 +177,7 @@ export default function TransactionsScreen() {
       pathname: '/(tabs)/two',
       params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date }
     });
-  }, [router]);
+  }, [router, selectedTransactionIds.length]);
 
   const renderRightActions = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => (
     <View style={styles.actionsContainer}>
@@ -193,8 +213,9 @@ export default function TransactionsScreen() {
         : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
     return (
-      <Swipeable ref={(ref) => { swipeableRef = ref; }} renderRightActions={() => renderRightActions(item, swipeableRef)}>
+      <Swipeable ref={(ref) => { swipeableRef = ref; }} renderRightActions={() => renderRightActions(item, swipeableRef)} enabled={!selectedTransactionIds.length}>
         <View style={styles.transactionCard}>
+          <TouchableOpacity style={[styles.cardMainRow, selectedTransactionIds.length > 0 && { paddingLeft: 26 }]} activeOpacity={0.82} onPress={() => handleEditPress(item, swipeableRef)} onLongPress={() => setSelectedTransactionIds((current) => current.includes(item.id) ? current : [...current, item.id])} accessibilityRole="button" accessibilityLabel={`Edit ${item.category} transaction`}>
           <View style={styles.cardLeft}>
             <View style={[styles.cardIconBox, { backgroundColor: bgColor }]}>
               <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
@@ -214,10 +235,32 @@ export default function TransactionsScreen() {
               <Text style={styles.cardAccountName} numberOfLines={1}>{item.account}</Text>
             </View>
           </View>
+          </TouchableOpacity>
+          {selectedTransactionIds.length > 0 ? <View style={styles.selectionMark}><Ionicons name={selectedTransactionIds.includes(item.id) ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={selectedTransactionIds.includes(item.id) ? DEEP_GREEN : SAGE} /></View> : null}
+          {selectedTransactionIds.length === 0 ? <View style={styles.visibleActionsRow}>
+            {!item.goal_id && <TouchableOpacity style={styles.visibleActionButton} onPress={() => handleEditPress(item, swipeableRef)} accessibilityRole="button" accessibilityLabel="Edit transaction"><Ionicons name="pencil-outline" size={16} color={DEEP_GREEN} /><Text style={styles.visibleActionText}>Edit</Text></TouchableOpacity>}
+            <TouchableOpacity style={styles.visibleActionButton} onPress={() => confirmArchive(item.id, swipeableRef)} accessibilityRole="button" accessibilityLabel="Archive transaction"><Ionicons name="archive-outline" size={16} color="#A33B34" /><Text style={[styles.visibleActionText, { color: '#A33B34' }]}>Archive</Text></TouchableOpacity>
+          </View> : null}
         </View>
       </Swipeable>
     );
-  }, [renderRightActions, categories]);
+  }, [renderRightActions, categories, handleEditPress, confirmArchive, selectedTransactionIds]);
+
+  const archiveSelectedTransactions = () => {
+    const ids = [...selectedTransactionIds];
+    if (!ids.length) return;
+    Alert.alert('Archive selected transactions?', `${ids.length} record${ids.length === 1 ? '' : 's'} will move to the archive.`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Archive', onPress: async () => {
+        let archived = 0;
+        for (const id of ids) {
+          try { await archiveTransaction(id); archived += 1; }
+          catch (error) { Alert.alert('Some records were not archived', `${archived} archived. ${error instanceof Error ? error.message : 'Try again.'}`); break; }
+        }
+        setSelectedTransactionIds([]);
+      } },
+    ]);
+  };
 
   const dailySections = useMemo(() => {
     const groups: { [key: string]: { title: string; data: Transaction[]; income: number; expense: number } } = {};
@@ -370,6 +413,9 @@ export default function TransactionsScreen() {
           <Text style={styles.headerTitle}>Transactions</Text>
 
           <View style={styles.headerRightActions}>
+            <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/(tabs)/two' as never)} accessibilityRole="button" accessibilityLabel="Add transaction">
+              <Ionicons name="add" size={22} color="#FFFFFF" />
+            </TouchableOpacity>
             <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/archive' as never)} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
               <Ionicons name="archive-outline" size={20} color="#FFFFFF" />
             </TouchableOpacity>
@@ -399,6 +445,14 @@ export default function TransactionsScreen() {
         </View>
         {isRefreshing && <Text style={styles.refreshingHint}>Updating your latest data…</Text>}
       </LinearGradient>
+
+      {selectedTransactionIds.length > 0 ? (
+        <View style={styles.bulkSelectionBar}>
+          <TouchableOpacity onPress={() => setSelectedTransactionIds([])} accessibilityRole="button"><Text style={styles.bulkCancel}>Cancel</Text></TouchableOpacity>
+          <Text style={styles.bulkCount}>{selectedTransactionIds.length} selected</Text>
+          <TouchableOpacity style={styles.bulkArchive} onPress={archiveSelectedTransactions} accessibilityRole="button"><Ionicons name="archive-outline" size={16} color="#FFFFFF" /><Text style={styles.bulkArchiveText}>Archive</Text></TouchableOpacity>
+        </View>
+      ) : null}
 
       {/* -------------------- DAILY TAB -------------------- */}
       {activeTab === 'Daily' && (
@@ -717,6 +771,8 @@ export default function TransactionsScreen() {
                   value={transactionDate(datePickerTarget === 'start' ? startDate || todayDateKey : endDate || todayDateKey)}
                   mode="date"
                   display="spinner"
+                  themeVariant="light"
+                  textColor={DEEP_GREEN}
                   maximumDate={new Date(2100, 11, 31)}
                   onChange={(_event: DateTimePickerEvent, value?: Date) => {
                     if (!value) return;
@@ -731,8 +787,8 @@ export default function TransactionsScreen() {
             )}
             <Text style={styles.filterLabel}>Category</Text>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.modalChipRow}>
-              {['All', ...categories.map((c) => c.name)].map((name) => (
-                <TouchableOpacity key={name} onPress={() => setSelectedCategory(name)} style={[styles.modalFilterChip, selectedCategory === name && styles.modalActiveFilterChip]}>
+              {['All', ...categoryFilterOptions].map((name) => (
+                <TouchableOpacity key={`category:${name.toLocaleLowerCase()}`} onPress={() => setSelectedCategory(name)} style={[styles.modalFilterChip, selectedCategory === name && styles.modalActiveFilterChip]}>
                   <Text style={[styles.modalFilterChipText, selectedCategory === name && styles.modalActiveFilterChipText]}>{name}</Text>
                 </TouchableOpacity>
               ))}
@@ -842,20 +898,25 @@ const styles = StyleSheet.create({
 
   // ---- Transaction card ----
   transactionCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
+    flexDirection: 'column',
     backgroundColor: '#FFFFFF',
-    padding: 14,
-    borderRadius: 18,
-    marginBottom: 10,
-    ...CARD_SHADOW,
-    shadowOpacity: 0.05,
-    shadowRadius: 8,
-    elevation: 1,
-    borderWidth: 1,
-    borderColor: 'rgba(28, 60, 54, 0.035)'
+    paddingHorizontal: 15,
+    paddingVertical: 12,
+    borderRadius: 0,
+    marginBottom: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: 'rgba(28, 60, 54, 0.12)',
   },
+  cardMainRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', width: '100%' },
+  selectionMark: { position: 'absolute', left: 2, top: 0, bottom: 0, justifyContent: 'center', zIndex: 2 },
+  bulkSelectionBar: { marginHorizontal: 14, marginBottom: 8, padding: 10, borderRadius: 14, backgroundColor: '#FFFFFF', flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  bulkCancel: { color: SAGE, fontSize: 13, fontWeight: '700' },
+  bulkCount: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  bulkArchive: { minHeight: 34, borderRadius: 10, paddingHorizontal: 12, backgroundColor: '#A33B34', flexDirection: 'row', alignItems: 'center', gap: 5 },
+  bulkArchiveText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
+  visibleActionsRow: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 9, width: '100%' },
+  visibleActionButton: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 10, paddingVertical: 6, borderRadius: 10, backgroundColor: CREAM },
+  visibleActionText: { color: DEEP_GREEN, fontSize: 11, fontWeight: '800' },
   cardLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   cardIconBox: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
   cardInfo: { flex: 1, justifyContent: 'center' },
@@ -952,7 +1013,7 @@ const styles = StyleSheet.create({
   filterModalTitle: { color: DEEP_GREEN, fontSize: 20, fontWeight: '800' },
   datePickerButton: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 7, minHeight: 46, paddingHorizontal: 10, borderRadius: 12, borderWidth: 1, borderColor: TRACK, backgroundColor: CREAM },
   datePickerText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700', flexShrink: 1 },
-  datePickerPanel: { backgroundColor: CREAM, borderRadius: 14, overflow: 'hidden', marginBottom: 12 },
+  datePickerPanel: { backgroundColor: '#FFFFFF', borderColor: TRACK, borderWidth: 1, borderRadius: 14, overflow: 'hidden', marginBottom: 12 },
   datePickerDone: { alignSelf: 'flex-end', margin: 10, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: DEEP_GREEN },
   datePickerDoneText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   closeBtnCircle: { width: 36, height: 36, borderRadius: 18, backgroundColor: CREAM, justifyContent: 'center', alignItems: 'center' },

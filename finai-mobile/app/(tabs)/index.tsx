@@ -30,6 +30,7 @@ export default function HomeDashboard() {
     totalIncome,
     totalExpense,
     totalSavings,
+    goals = [],
     fetchTransactions,
     accounts,
     categories,
@@ -41,6 +42,34 @@ export default function HomeDashboard() {
   } = useTransactions();
 
   const router = useRouter();
+
+  const goalContributions = transactions
+    .filter((transaction) => transaction.type === 'Contribution' || Boolean(transaction.goal_id))
+    .reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0);
+  const accountCardColors = useMemo(() => {
+    const palette: [string, string][] = [
+      ['#5B4A8A', '#806AB5'], ['#9A5938', '#C47B50'], ['#286A79', '#4195A4'],
+      ['#8A4961', '#BB6F87'], ['#526F41', '#78985D'], ['#725A35', '#A7894D'],
+    ];
+    const used = new Set<string>();
+    const result: Record<string, [string, string]> = {};
+    accounts.forEach((account, index) => {
+      const name = account.name.toLowerCase();
+      let colors: [string, string];
+      if (name.includes('gcash')) colors = ['#2463C7', '#4C8DF2'];
+      else if (name === 'cash' || name.includes('cash')) colors = ['#286650', '#4A9B7B'];
+      else {
+        const stableKey = account.id || account.name;
+        const hash = Array.from(stableKey).reduce((value, char) => (value * 31 + char.charCodeAt(0)) >>> 0, 7);
+        let paletteIndex = hash % palette.length;
+        for (let attempt = 0; attempt < palette.length && used.has(`palette:${paletteIndex}`); attempt++) paletteIndex = (paletteIndex + 1) % palette.length;
+        used.add(`palette:${paletteIndex}`);
+        colors = palette[paletteIndex];
+      }
+      result[account.id || `${account.name}:${index}`] = colors;
+    });
+    return result;
+  }, [accounts]);
 
   useFocusEffect(
     useCallback(() => {
@@ -104,7 +133,9 @@ export default function HomeDashboard() {
     );
   }
 
-  const recentTransactions = transactions.slice(0, 3);
+  const recentTransactions = [...transactions]
+    .sort((a, b) => (b.date || '').localeCompare(a.date || '') || b.id.localeCompare(a.id))
+    .slice(0, 5);
 
   const formatDate = (dateString: string) => {
     if (!dateString) return '';
@@ -183,7 +214,7 @@ export default function HomeDashboard() {
                 <Ionicons name="arrow-up" size={14} color="#5FE3B3" />
               </View>
               <View>
-                <Text style={styles.statLabel}>Total income</Text>
+                <Text style={styles.statLabel}>Income</Text>
                 <Text style={[styles.statValue, { color: '#5FE3B3' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   +₱{(totalIncome || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
@@ -197,7 +228,7 @@ export default function HomeDashboard() {
                 <Ionicons name="arrow-down" size={14} color="#FF9B93" />
               </View>
               <View>
-                <Text style={styles.statLabel}>Total expenses</Text>
+                <Text style={styles.statLabel}>Expenses</Text>
                 <Text style={[styles.statValue, { color: '#FF9B93' }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                   -₱{(totalExpense || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
                 </Text>
@@ -205,6 +236,13 @@ export default function HomeDashboard() {
             </View>
           </View>
 
+          <View style={styles.contributionSummary}>
+            <View style={styles.contributionSummaryCopy}>
+              <Text style={styles.statLabel}>Goal contributions</Text>
+              <Text style={styles.contributionSummaryValue}>-₱{goalContributions.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text>
+            </View>
+            <Text style={styles.balanceFootnote}>Set aside from wallets · still your money, reserved for goals.</Text>
+          </View>
         </LinearGradient>
 
         <View
@@ -220,18 +258,31 @@ export default function HomeDashboard() {
         </View>
         </View>
 
-        <View style={styles.savingsSummaryCard}>
+        <TouchableOpacity style={styles.savingsSummaryCard} activeOpacity={0.84} onPress={() => router.push('/savings' as never)} accessibilityRole="button" accessibilityLabel="Open goal savings">
+          <View style={styles.savingsTopRow}>
           <View style={styles.savingsSummaryIcon}>
-            <Ionicons name="flag-outline" size={20} color={TEAL} />
+            <Text style={styles.piggyEmoji}>🐷</Text>
           </View>
           <View style={styles.savingsSummaryCopy}>
-            <Text style={styles.savingsSummaryTitle}>Goal savings</Text>
-            <Text style={styles.savingsSummaryCaption}>Tracked separately from your wallets</Text>
+            <Text style={styles.savingsSummaryTitle}>GOAL SAVINGS</Text>
+            <Text style={styles.savingsSummaryCaption}>Set aside from wallets · not counted as spending</Text>
+          </View>
+          <View style={styles.notInWalletPill}><Text style={styles.notInWalletText}>Not in wallet balance</Text></View>
           </View>
           <Text style={styles.savingsSummaryAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
             ₱{totalSavings.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </Text>
-        </View>
+          {goals.length ? <View style={styles.goalPreviewList}>{goals.slice(0, 2).map((goal) => {
+            const target = Number(goal.target_amount) || 0;
+            const saved = Number(goal.current_savings) || 0;
+            const progress = target > 0 ? Math.min((saved / target) * 100, 100) : 0;
+            return <View key={goal.id} style={styles.goalPreviewRow}>
+              <View style={styles.goalPreviewCopy}><Text style={styles.goalPreviewName} numberOfLines={1}>{goal.target_name}</Text><Text style={styles.goalPreviewValue} numberOfLines={1}>₱{saved.toLocaleString()} of ₱{target.toLocaleString()} · {progress.toFixed(0)}%</Text></View>
+              <View style={styles.goalPreviewTrack}><View style={[styles.goalPreviewFill, { width: `${progress}%` }]} /></View>
+            </View>;
+          })}</View> : <Text style={styles.savingsSummaryCaption}>Create a goal to start setting money aside.</Text>}
+          <View style={styles.savingsOpenRow}><Text style={styles.savingsOpenText}>View goals and contributions</Text><Ionicons name="chevron-forward" size={17} color={TEAL} /></View>
+        </TouchableOpacity>
 
         {/* Wallets */}
         <View style={styles.sectionHeaderRow}>
@@ -247,22 +298,27 @@ export default function HomeDashboard() {
               const liveBalance = getAccountBalance(acc.name);
               // LILINISIN NATIN YUNG "walle" ISSUE DITO
               const displayIcon = getAccountDisplayEmoji(acc.icon, acc.name);
+              const walletColors = accountCardColors[acc.id || `${acc.name}:${idx}`] || ['#286650', '#4A9B7B'];
 
               return (
-                <View key={acc.id || idx} style={styles.accountCard}>
+                <TouchableOpacity key={acc.id || idx} style={styles.accountCard} activeOpacity={0.84} accessibilityRole="button" accessibilityLabel={`View ${acc.name} wallet details`} onPress={() => router.push({ pathname: '/account-details', params: { accountId: acc.id, accountName: acc.name } } as never)}>
+                  <LinearGradient colors={walletColors} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.accountCardFace}>
+                  <View style={styles.walletCardDecor} />
                   <View style={styles.accountCardHeader}>
-                    <View style={styles.accountIconBox}>
-                      <Text style={{ fontSize: 22 }}>{displayIcon}</Text>
-                    </View>
-                    <Ionicons name="ellipsis-horizontal" size={16} color={SAGE} />
+                    <Text style={styles.accountName} numberOfLines={1}>{acc.name}</Text>
+                    <View style={styles.accountIconBox}><Text style={{ fontSize: 18 }}>{displayIcon}</Text></View>
                   </View>
                   <View style={styles.accountCardBody}>
-                    <Text style={styles.accountName} numberOfLines={1}>{acc.name}</Text>
+                    <Text style={styles.accountBalanceLabel}>Balance</Text>
+                    <View style={styles.accountBalanceRow}>
                     <Text style={[styles.accountBalance, liveBalance < 0 && { color: EXPENSE }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
                       ₱{liveBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </Text>
+                    <Ionicons name="chevron-forward" size={15} color="rgba(255,255,255,0.78)" />
+                    </View>
                   </View>
-                </View>
+                  </LinearGradient>
+                </TouchableOpacity>
               );
             })}
           </ScrollView>
@@ -298,7 +354,7 @@ export default function HomeDashboard() {
                 : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
               return (
-                <View key={item.id || index} style={styles.recentFloatingCard}>
+                <TouchableOpacity key={item.id || index} style={styles.recentFloatingCard} activeOpacity={0.82} accessibilityRole="button" accessibilityLabel={`Edit ${item.category} transaction`} onPress={() => router.push({ pathname: '/(tabs)/two', params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date } } as never)}>
                   <View style={styles.recentLeft}>
                     <View style={[styles.recentIconBox, { backgroundColor: bgColor }]}>
                       <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
@@ -317,7 +373,7 @@ export default function HomeDashboard() {
                     </Text>
                     <Text style={styles.recentDate}>{formatDate(item.date)}</Text>
                   </View>
-                </View>
+                </TouchableOpacity>
               );
             })}
           </View>
@@ -405,12 +461,29 @@ const styles = StyleSheet.create({
   balanceLabel: { color: 'rgba(255,255,255,0.65)', fontSize: 13, fontWeight: '600', letterSpacing: 0.4 },
   balanceValue: { color: '#FFFFFF', fontSize: 38, fontWeight: '900', marginVertical: 8, letterSpacing: -0.5 },
   statsRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 16, paddingTop: 16, borderTopWidth: 1, borderTopColor: 'rgba(255,255,255,0.14)' },
-  savingsSummaryCard: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: '#FFFFFF', borderRadius: 18, padding: 15, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(28,60,54,0.06)' },
-  savingsSummaryIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: 'rgba(61,125,108,0.12)', alignItems: 'center', justifyContent: 'center' },
+  contributionSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 12, padding: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.13)' },
+  contributionSummaryCopy: { minWidth: 104 },
+  contributionSummaryValue: { color: '#FFE6A6', fontSize: 13, fontWeight: '900', marginTop: 3 },
+  balanceFootnote: { color: 'rgba(255,255,255,0.82)', fontSize: 10, fontWeight: '500', lineHeight: 14, flex: 1 },
+  savingsSummaryCard: { flexDirection: 'column', alignItems: 'stretch', gap: 10, backgroundColor: '#FFF9E9', borderRadius: 20, padding: 15, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(237,178,50,0.38)' },
+  savingsTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  savingsSummaryIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: '#FFE9B3', alignItems: 'center', justifyContent: 'center' },
+  piggyEmoji: { fontSize: 23 },
   savingsSummaryCopy: { flex: 1 },
-  savingsSummaryTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
+  savingsSummaryTitle: { color: '#80601B', fontSize: 11, fontWeight: '900', letterSpacing: 0.8 },
   savingsSummaryCaption: { color: SAGE, fontSize: 10, fontWeight: '600', marginTop: 3 },
-  savingsSummaryAmount: { color: TEAL, fontSize: 16, fontWeight: '900', maxWidth: '42%' },
+  savingsSummaryAmount: { color: '#80520E', fontSize: 25, lineHeight: 29, fontWeight: '900' },
+  notInWalletPill: { paddingHorizontal: 8, paddingVertical: 5, borderRadius: 10, backgroundColor: '#F8EDCF' },
+  notInWalletText: { color: '#80520E', fontSize: 9, fontWeight: '800' },
+  goalPreviewList: { gap: 9 },
+  goalPreviewRow: { gap: 5 },
+  goalPreviewCopy: { flexDirection: 'row', justifyContent: 'space-between', gap: 8 },
+  goalPreviewName: { color: DEEP_GREEN, fontSize: 11, fontWeight: '800', flex: 1 },
+  goalPreviewValue: { color: SAGE, fontSize: 10, fontWeight: '600' },
+  goalPreviewTrack: { height: 6, borderRadius: 3, backgroundColor: '#F0E5C8', overflow: 'hidden' },
+  goalPreviewFill: { height: '100%', borderRadius: 3, backgroundColor: '#D09116' },
+  savingsOpenRow: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: 'rgba(128,82,14,0.16)', paddingTop: 9, flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  savingsOpenText: { color: TEAL, fontSize: 12, fontWeight: '800' },
   statItem: { flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 },
   miniIconContainer: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
   statLabel: { color: 'rgba(255,255,255,0.6)', fontSize: 11, fontWeight: '600', textTransform: 'uppercase', letterSpacing: 0.4 },
@@ -422,26 +495,29 @@ const styles = StyleSheet.create({
   pillButton: { backgroundColor: 'rgba(237, 178, 50, 0.18)', paddingHorizontal: 14, paddingVertical: 6, borderRadius: 20 },
   pillButtonText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
 
-  accountsScrollRow: { gap: 16, paddingBottom: 15, paddingTop: 5, paddingHorizontal: 2 },
+  accountsScrollRow: { gap: 12, paddingBottom: 15, paddingTop: 5, paddingHorizontal: 2 },
   accountCard: {
-    backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, width: 160, height: 132,
-    justifyContent: 'space-between',
-    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.05, shadowRadius: 10, elevation: 3
+    backgroundColor: '#FFFFFF', borderRadius: 18, width: 152, height: 106, overflow: 'hidden',
+    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 5 }, shadowOpacity: 0.12, shadowRadius: 9, elevation: 3
   },
-  accountCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
-  accountIconBox: { width: 42, height: 42, borderRadius: 14, backgroundColor: 'rgba(28, 60, 54, 0.08)', justifyContent: 'center', alignItems: 'center' },
-  accountCardBody: { marginTop: 10 },
-  accountName: { color: SAGE, fontSize: 13, fontWeight: '600', marginBottom: 4 },
-  accountBalance: { color: DEEP_GREEN, fontSize: 19, fontWeight: '900', letterSpacing: -0.5 },
+  accountCardFace: { flex: 1, padding: 12, justifyContent: 'space-between', overflow: 'hidden' },
+  walletCardDecor: { position: 'absolute', width: 54, height: 18, borderBottomLeftRadius: 12, borderBottomRightRadius: 12, top: 0, right: 14, backgroundColor: 'rgba(255,255,255,0.24)' },
+  accountCardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', gap: 6 },
+  accountIconBox: { width: 30, height: 30, borderRadius: 10, backgroundColor: 'rgba(255,255,255,0.2)', justifyContent: 'center', alignItems: 'center' },
+  accountCardBody: { marginTop: 6 },
+  accountBalanceLabel: { color: 'rgba(255,255,255,0.74)', fontSize: 9, fontWeight: '700' },
+  accountBalanceRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
+  accountName: { color: '#FFFFFF', fontSize: 12, fontWeight: '800', marginBottom: 4, flex: 1 },
+  accountBalance: { color: '#FFFFFF', fontSize: 17, fontWeight: '900', letterSpacing: -0.5, flex: 1 },
 
   emptyAccountsCard: { backgroundColor: '#FFFFFF', borderRadius: 22, padding: 24, alignItems: 'center', borderWidth: 1, borderColor: '#ECE7DD', borderStyle: 'dashed', gap: 12 },
   emptyAccountsText: { color: SAGE, fontSize: 13, fontWeight: '600' },
 
-  recentListContainer: { paddingBottom: 10 },
+  recentListContainer: { paddingBottom: 0, backgroundColor: '#FFFFFF', borderRadius: 18, overflow: 'hidden', marginBottom: 12 },
   recentFloatingCard: {
     flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center',
-    backgroundColor: '#FFFFFF', padding: 15, borderRadius: 18, marginBottom: 10,
-    shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.04, shadowRadius: 8, elevation: 2
+    backgroundColor: '#FFFFFF', padding: 13, borderRadius: 0, marginBottom: 0,
+    borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: 'rgba(28,60,54,0.12)', minHeight: 74
   },
   recentLeft: { flexDirection: 'row', alignItems: 'center', flex: 1 },
   recentIconBox: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },

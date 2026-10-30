@@ -9,13 +9,12 @@ import DateTimePicker from '@react-native-community/datetimepicker';
 import ReceiptScannerModal from '../../components/ReceiptScannerModal';
 import QuickAddCategoryModal from '../../components/QuickAddCategoryModal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_URL } from '../../config';
-import { getSecureItem } from '../../utils/secureStorage';
 
 // Emoji helpers
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
-import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
+import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
+import { hasSubCentPrecision } from '../../utils/money';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -54,7 +53,7 @@ const isValidAmount = (value: string) => {
   if (!value) return false;
   const normalized = value.replace(/,/g, '');
   const num = Number(normalized);
-  return normalized !== '.' && !Number.isNaN(num) && num > 0;
+  return normalized !== '.' && Number.isFinite(num) && num > 0 && !hasSubCentPrecision(normalized);
 };
 
 const isValidIsoDate = (value: string) => {
@@ -120,7 +119,7 @@ export default function TabTwoScreen() {
   const insets = useSafeAreaInsets();
   const router = useRouter();
   const params = useLocalSearchParams();
-  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts, showTransactionToast } = useTransactions();
+  const { addTransaction, updateTransaction, fetchTransactions, categories, accounts, getAccountBalance, showTransactionToast } = useTransactions();
 
   const [type, setType] = useState<TransactionType>('Expense');
   const [amount, setAmount] = useState('');
@@ -137,10 +136,6 @@ export default function TabTwoScreen() {
   const [isCatModalVisible, setIsCatModalVisible] = useState(false);
   const [isQuickAddCategoryVisible, setIsQuickAddCategoryVisible] = useState(false);
   const [isAccModalVisible, setIsAccModalVisible] = useState(false);
-  const [isQuickAddAccountVisible, setIsQuickAddAccountVisible] = useState(false);
-  const [quickAccountName, setQuickAccountName] = useState('');
-  const [quickAccountBalance, setQuickAccountBalance] = useState('0');
-  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
   const [isScannerVisible, setIsScannerVisible] = useState(false);
   const [selectingTarget, setSelectingTarget] = useState<'from' | 'to'>('from');
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -223,10 +218,11 @@ export default function TabTwoScreen() {
     const parts = cleaned.split('.');
     if (parts.length > 2) return;
     const [whole, decimal] = cleaned.split('.');
-    setAmount(decimal === undefined ? whole : `${whole}.${decimal.slice(0, 2)}`);
+    setAmount(decimal === undefined ? whole : `${whole}.${decimal}`);
   };
 
   const handleAmountBlur = () => {
+    if (hasSubCentPrecision(amount)) return;
     if (!amount.trim() || !isValidAmount(amount)) return;
     const numericAmount = Number(amount.replace(/,/g, ''));
     if (Number.isFinite(numericAmount)) {
@@ -260,6 +256,7 @@ export default function TabTwoScreen() {
     if (type === 'Transfer' && !validAccountNames.includes(toAccount)) { Alert.alert('Invalid destination', 'Select a valid destination account and try again.'); return; }
 
     if (!isValidIsoDate(date) || date > philippineTodayKey()) { Alert.alert('Invalid date', 'Select a valid transaction date.'); return; }
+    if (hasSubCentPrecision(amount)) { Alert.alert('Too many decimal places', 'Enter an amount to the nearest centavo (up to 2 decimal places).'); return; }
     if (!isValidAmount(amount)) { Alert.alert('Amount required', 'Enter an amount for this transaction.'); return; }
     if (type === 'Transfer' && account === toAccount) { Alert.alert('Choose another account', 'You cannot transfer money to the same account.'); return; }
 
@@ -277,7 +274,9 @@ export default function TabTwoScreen() {
         budgetNotifications = await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
       }
 
-      const hasCriticalBudgetAlert = budgetNotifications.some(
+      const spikeNotifications = budgetNotifications.filter((notification) => notification.event_type === 'spending_spike');
+      const budgetAlerts = budgetNotifications.filter((notification) => notification.event_type !== 'spending_spike');
+      const hasCriticalBudgetAlert = budgetAlerts.some(
         (notification) => notification.threshold >= 90,
       );
       if (hasCriticalBudgetAlert && Platform.OS !== 'web') {
@@ -299,18 +298,24 @@ export default function TabTwoScreen() {
         ? 'Transaction updated'
         : type === 'Transfer' ? 'Transfer complete' : `${type} recorded`;
 
-      if (budgetNotifications.length > 0) {
-        const advisorNotification = budgetNotifications
+      if (spikeNotifications.length > 0) {
+        showTransactionToast({
+          kind: 'spending_spike',
+          title: 'Spending higher than usual',
+          messages: [...spikeNotifications.map((notification) => notification.message), ...budgetAlerts.map((notification) => notification.message)],
+        });
+      } else if (budgetAlerts.length > 0) {
+        const advisorNotification = budgetAlerts
           .filter((notification) => notification.threshold >= 90 && notification.advisor_conversation_id)
           .sort((a, b) => b.threshold - a.threshold)[0];
-        const highestBudgetAlert = [...budgetNotifications].sort((a, b) => b.threshold - a.threshold)[0];
+        const highestBudgetAlert = [...budgetAlerts].sort((a, b) => b.threshold - a.threshold)[0];
         showTransactionToast({
           kind: 'budget',
           title: toastTitle,
           threshold: highestBudgetAlert.threshold,
           percentage_used: highestBudgetAlert.percentage_used,
           level: highestBudgetAlert.level,
-          messages: [transactionSummary, ...new Set(budgetNotifications.map((notification) => notification.message))],
+          messages: [transactionSummary, ...new Set(budgetAlerts.map((notification) => notification.message))],
           advisorConversationId: advisorNotification?.advisor_conversation_id,
         });
       } else {
@@ -365,56 +370,8 @@ export default function TabTwoScreen() {
   };
 
   const openQuickAddAccount = () => {
-    setQuickAccountName('');
-    setQuickAccountBalance('0');
     setIsAccModalVisible(false);
-    setIsQuickAddAccountVisible(true);
-  };
-
-  const createQuickAccount = async () => {
-    const name = quickAccountName.trim();
-    const initialBalance = Number(quickAccountBalance.replace(/,/g, ''));
-    if (!name) {
-      Alert.alert('Account name required', 'Enter a name for your account.');
-      return;
-    }
-    if (!Number.isFinite(initialBalance) || initialBalance < 0) {
-      Alert.alert('Invalid opening balance', 'Enter zero or a positive amount.');
-      return;
-    }
-    if (accounts.some((item) => item.name.toLowerCase() === name.toLowerCase())) {
-      Alert.alert('Name already in use', 'You already have an account with this name.');
-      return;
-    }
-
-    setIsCreatingAccount(true);
-    try {
-      const userId = await AsyncStorage.getItem('user_id');
-      const token = await getSecureItem('user_token');
-      if (!userId || !token) throw new Error('Your session has expired. Please log in again.');
-
-      const response = await fetch(`${API_URL}/api/accounts/`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({
-          name,
-          initial_balance: initialBalance,
-          icon: getAccountEmoji(name),
-          user_id: userId,
-        }),
-      });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.detail || 'Unable to create account.');
-
-      await fetchTransactions(false);
-      if (selectingTarget === 'from') setAccount(result.name || name);
-      else setToAccount(result.name || name);
-      setIsQuickAddAccountVisible(false);
-    } catch (error: any) {
-      Alert.alert('Unable to create account', error?.message || 'Please try again.');
-    } finally {
-      setIsCreatingAccount(false);
-    }
+    router.push('/accounts');
   };
 
   // ---- derived display values (presentation only) ----
@@ -483,7 +440,7 @@ export default function TabTwoScreen() {
               />
             </View>
             <View style={[styles.amountUnderline, { backgroundColor: amountInvalid ? EXPENSE : tint }]} />
-            {amountInvalid && <Text style={styles.amountError}>Enter an amount to continue</Text>}
+            {amountInvalid && <Text style={styles.amountError}>Enter a valid positive amount with up to 2 decimal places.</Text>}
 
             <View style={styles.quickRow}>
               {QUICK_AMOUNTS.map((value) => (
@@ -679,63 +636,44 @@ export default function TabTwoScreen() {
               <Ionicons name="add-circle-outline" size={19} color="#FFFFFF" />
               <Text style={styles.quickAddAccountButtonText}>Add account</Text>
             </TouchableOpacity>
-            <ScrollView style={{ flexGrow: 0 }} showsVerticalScrollIndicator={false}>
-              {accountOptionsFor(selectingTarget).map((acc) => {
-                const selected = acc.name === activeAccountName;
-                return (
-                  <TouchableOpacity key={acc.id} style={styles.accOption} activeOpacity={0.8} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
-                    <View style={[styles.accIconChip, { backgroundColor: tint }]}>
-                      <Text style={{ fontSize: 18 }}>
-                        {getAccountDisplayEmoji(acc.icon, acc.name)}
-                      </Text>
-                    </View>
-                    <Text style={[styles.accOptionText, selected && { color: accent }]}>{acc.name}</Text>
-                    {selected && <Ionicons name="checkmark-circle" size={22} color={accent} />}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+            {accountOptionsFor(selectingTarget).length === 0 ? (
+              <View style={styles.emptyAccountState}>
+                <Ionicons name="wallet-outline" size={27} color={SAGE} />
+                <Text style={styles.emptyAccountStateText}>
+                  {type === 'Transfer' && accounts.length > 0
+                    ? 'You need a second account to make a transfer. Add one above, then choose it here.'
+                    : 'You do not have an account available yet. Add one above to record this transaction.'}
+                </Text>
+              </View>
+            ) : (
+              <ScrollView style={{ flexGrow: 0 }} showsVerticalScrollIndicator={false}>
+                {accountOptionsFor(selectingTarget).map((acc) => {
+                  const selected = acc.name === activeAccountName;
+                  return (
+                    <TouchableOpacity key={acc.id} style={styles.accOption} activeOpacity={0.8} onPress={() => { selectingTarget === 'from' ? setAccount(acc.name) : setToAccount(acc.name); setIsAccModalVisible(false); }}>
+                      <View style={[styles.accIconChip, { backgroundColor: tint }]}>
+                        <Text style={{ fontSize: 18 }}>
+                          {getAccountDisplayEmoji(acc.icon, acc.name)}
+                        </Text>
+                      </View>
+                      <View style={styles.accOptionDetails}>
+                        <Text style={[styles.accOptionText, selected && { color: accent }]}>{acc.name}</Text>
+                        <Text style={styles.accBalanceText}>
+                          {selectingTarget === 'from' && type !== 'Income' && !params?.id ? 'Available' : 'Current balance'}: ₱{getAccountBalance(acc.name).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </Text>
+                      </View>
+                      {selected && <Ionicons name="checkmark-circle" size={22} color={accent} />}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            )}
             <TouchableOpacity onPress={() => { setIsAccModalVisible(false); router.push('/accounts'); }} style={styles.manageAccountsButton}>
               <Ionicons name="settings-outline" size={18} color={DEEP_GREEN} />
               <Text style={styles.manageAccountsText}>Manage my accounts</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setIsAccModalVisible(false)} style={styles.closeModalButton}>
               <Text style={styles.closeModalText}>Close</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      </Modal>
-
-      <Modal visible={isQuickAddAccountVisible} animationType="slide" transparent onRequestClose={() => setIsQuickAddAccountVisible(false)}>
-        <View style={styles.sheetOverlay}>
-          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setIsQuickAddAccountVisible(false)} />
-          <View style={styles.sheet}>
-            <View style={styles.sheetHandle} />
-            <Text style={[styles.sheetTitle, { marginBottom: 16 }]}>Add account</Text>
-            <Text style={styles.quickAccountLabel}>Account name</Text>
-            <TextInput
-              value={quickAccountName}
-              onChangeText={setQuickAccountName}
-              placeholder="e.g. Cash, GCash, or Bank"
-              placeholderTextColor={SAGE}
-              autoCapitalize="words"
-              maxLength={60}
-              style={styles.quickAccountInput}
-            />
-            <Text style={styles.quickAccountLabel}>Starting balance</Text>
-            <TextInput
-              value={quickAccountBalance}
-              onChangeText={(value) => setQuickAccountBalance(value.replace(/[^0-9.]/g, ''))}
-              placeholder="0"
-              placeholderTextColor={SAGE}
-              keyboardType="decimal-pad"
-              style={styles.quickAccountInput}
-            />
-            <TouchableOpacity onPress={() => void createQuickAccount()} disabled={isCreatingAccount} style={[styles.quickAccountSaveButton, isCreatingAccount && { opacity: 0.7 }]}>
-              {isCreatingAccount ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.quickAccountSaveText}>Create and select</Text>}
-            </TouchableOpacity>
-            <TouchableOpacity onPress={() => setIsQuickAddAccountVisible(false)} disabled={isCreatingAccount} style={styles.closeModalButton}>
-              <Text style={styles.closeModalText}>Cancel</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -830,14 +768,14 @@ const styles = StyleSheet.create({
   accOption: { flexDirection: 'row', alignItems: 'center', paddingVertical: 13, borderBottomWidth: 0.5, borderBottomColor: TRACK },
   accIconChip: { width: 40, height: 40, borderRadius: 14, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
   accOptionText: { flex: 1, color: DEEP_GREEN, fontSize: 15, fontWeight: '800' },
+  accOptionDetails: { flex: 1 },
+  accBalanceText: { color: SAGE, fontSize: 11, fontWeight: '600', marginTop: 3 },
+  emptyAccountState: { alignItems: 'center', justifyContent: 'center', paddingHorizontal: 20, paddingVertical: 22, gap: 8 },
+  emptyAccountStateText: { color: SAGE, fontSize: 13, lineHeight: 19, fontWeight: '600', textAlign: 'center' },
   quickAddAccountButton: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8, backgroundColor: DEEP_GREEN, borderRadius: 14, paddingVertical: 12, marginBottom: 10 },
   quickAddAccountButtonText: { color: '#FFFFFF', fontSize: 14, fontWeight: '800' },
   manageAccountsButton: { flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 7, marginTop: 16, paddingVertical: 14, borderRadius: 16, backgroundColor: 'rgba(237, 178, 50, 0.16)' },
   manageAccountsText: { color: DEEP_GREEN, fontWeight: '800' },
-  quickAccountLabel: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800', marginTop: 10, marginBottom: 6 },
-  quickAccountInput: { backgroundColor: CREAM, borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12, color: DEEP_GREEN, fontSize: 15, borderWidth: 1, borderColor: TRACK },
-  quickAccountSaveButton: { alignItems: 'center', justifyContent: 'center', backgroundColor: DEEP_GREEN, borderRadius: 16, paddingVertical: 14, marginTop: 20 },
-  quickAccountSaveText: { color: '#FFFFFF', fontSize: 15, fontWeight: '800' },
 
   pickerModalOverlay: { flex: 1, backgroundColor: 'rgba(28, 60, 54, 0.35)', justifyContent: 'flex-end' },
   pickerModalContainer: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 25, borderTopRightRadius: 25, paddingBottom: 40, width: '100%', alignItems: 'center' },

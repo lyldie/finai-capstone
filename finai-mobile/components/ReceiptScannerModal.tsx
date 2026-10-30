@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView, Animated, Easing } from 'react-native';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView, Animated, Easing, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
@@ -256,11 +257,56 @@ export default function ReceiptScannerModal({
     }
   };
 
-  if (!permission) {
-    return <View />;
-  }
+  const handleChooseFromGallery = async () => {
+    if (isProcessing) return;
 
-  if (!permission.granted) {
+    try {
+      const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permissionResult.granted) {
+        Alert.alert(
+          'Photo access needed',
+          'Allow FinAI to access your photos so you can choose a receipt to scan.',
+          permissionResult.canAskAgain
+            ? [{ text: 'OK' }]
+            : [
+                { text: 'Cancel', style: 'cancel' },
+                { text: 'Open Settings', onPress: () => { void Linking.openSettings(); } },
+              ]
+        );
+        return;
+      }
+
+      const remainingSlots = isMultiMode ? MAX_MULTI_PHOTOS - capturedPhotos.length : 1;
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsMultipleSelection: isMultiMode,
+        selectionLimit: Math.max(1, remainingSlots),
+        quality: 1,
+      });
+
+      if (result.canceled || !result.assets?.length) return;
+
+      const selectedUris = await Promise.all(result.assets.map(async (asset) => {
+        // Normalize HEIC and other phone image formats to JPEG for the OCR backend.
+        const normalized = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [],
+          { compress: 0.92, format: ImageManipulator.SaveFormat.JPEG }
+        );
+        return normalized.uri;
+      }));
+      const nextPhotos = isMultiMode
+        ? [...capturedPhotos, ...selectedUris].slice(0, MAX_MULTI_PHOTOS)
+        : selectedUris.slice(0, 1);
+      setCapturedPhotos(nextPhotos);
+      setIsPreviewing(true);
+    } catch (error: any) {
+      console.log('Gallery receipt selection error:', error?.message || error);
+      Alert.alert('Could not open photos', 'Please try choosing the receipt photo again.');
+    }
+  };
+
+  if ((!permission || !permission.granted) && !isPreviewing && capturedPhotos.length === 0) {
     return (
       <Modal visible={visible} animationType="slide" transparent={true}>
         <View style={styles.modalOverlay}>
@@ -268,6 +314,9 @@ export default function ReceiptScannerModal({
             <Text style={styles.permissionText}>Camera access is needed to scan a receipt.</Text>
             <TouchableOpacity style={styles.permissionButton} onPress={requestPermission}>
               <Text style={styles.permissionButtonText}>Grant Permission</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { void handleChooseFromGallery(); }} style={styles.galleryPermissionButton}>
+              <Text style={styles.galleryPermissionButtonText}>Choose a receipt photo instead</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={onClose} style={{ marginTop: 15 }}>
               <Text style={{ color: '#7C9A95' }}>Cancel</Text>
@@ -537,9 +586,16 @@ export default function ReceiptScannerModal({
                   </View>
                 )}
 
-                <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
-                  <View style={styles.captureButtonInner} />
-                </TouchableOpacity>
+                <View style={styles.captureControls}>
+                  <TouchableOpacity style={styles.galleryButton} onPress={() => { void handleChooseFromGallery(); }}>
+                    <Ionicons name="images-outline" size={21} color="#FFFFFF" />
+                    <Text style={styles.galleryButtonText}>Choose photo</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.captureButton} onPress={handleCapture}>
+                    <View style={styles.captureButtonInner} />
+                  </TouchableOpacity>
+                  <View style={{ width: 104 }} />
+                </View>
               </View>
             )}
 
@@ -638,6 +694,11 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(16, 185, 129, 0.3)',
     overflow: 'hidden'
   },
+  captureControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', width: '100%', paddingHorizontal: 28 },
+  galleryButton: { minWidth: 104, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 7, backgroundColor: 'rgba(0,0,0,0.65)', borderRadius: 22, paddingHorizontal: 12, paddingVertical: 11 },
+  galleryButtonText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  galleryPermissionButton: { marginTop: 14, padding: 10 },
+  galleryPermissionButtonText: { color: '#144A3D', fontSize: 14, fontWeight: '700', textAlign: 'center' },
   freezeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
