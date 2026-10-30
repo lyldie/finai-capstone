@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict
 
 from fastapi import APIRouter, HTTPException, status, Depends
@@ -6,7 +7,7 @@ from bson import ObjectId
 from pymongo import ReturnDocument
 
 from database import db
-from schemas.budget import BudgetCreate
+from schemas.budget import BudgetCreate, BudgetBulkCreate
 from services.budget_service import (
     category_for_budget,
     create_crossed_threshold_notifications,
@@ -75,6 +76,7 @@ async def set_category_budget(budget: BudgetCreate, current_user: dict = Depends
     await db.budget_rules.update_one(
         {"user_id": user_id, "category_id": budget.category_id, "period_type": period_type},
         {"$set": {"amount": float(budget.amount), "rollover_enabled": budget.rollover_enabled,
+                  "budget_kind": budget.budget_kind,
                   "is_active": True, "updated_at": now},
          "$setOnInsert": {"created_at": now}},
         upsert=True,
@@ -86,6 +88,28 @@ async def set_category_budget(budget: BudgetCreate, current_user: dict = Depends
     await _refresh_budget_alerts_and_advisor(user_id, budget.category_id)
 
     return {"status": "Success", "id": str(budget_id)}
+
+
+@router.post("/set-limits-bulk", status_code=status.HTTP_201_CREATED)
+async def set_category_budgets_bulk(payload: BudgetBulkCreate, current_user: dict = Depends(get_current_user)):
+    """Save several different category limits after validating the whole request."""
+    user_id = current_user["id"]
+    for item in payload.budgets:
+        category = await category_for_budget(item.category_id, user_id)
+        if not category or category.get("is_archived", False) or category.get("type", "").lower() != "expense":
+            raise HTTPException(status_code=400, detail="Choose only available expense categories.")
+        period_type = normalize_period_type(item.period_type)
+        _, default_key, _, _ = period_details(period_type, ph_today())
+        period_key = item.period_key or default_key
+        if period_key != default_key:
+            raise HTTPException(status_code=400, detail="Budgets can only be created for the current period.")
+
+    results = []
+    for item in payload.budgets:
+        # Reuse the single-budget implementation so rollover, recurrence, alerts,
+        # and advisor refresh behave exactly the same as an individual save.
+        results.append(await set_category_budget(item, current_user))
+    return {"status": "Success", "saved": len(results), "budgets": results}
 
 
 @router.get("/get-all/{user_id}")
@@ -139,6 +163,12 @@ async def update_budget(budget_id: str, budget_data: Dict[str, Any], current_use
     amount = budget_data.get("amount")
     if isinstance(amount, bool) or not isinstance(amount, (int, float)) or not 0 < amount < float("inf"):
         raise HTTPException(status_code=400, detail="Budget amount must be greater than zero.")
+    try:
+        decimal_amount = Decimal(str(amount))
+        if decimal_amount != decimal_amount.quantize(Decimal("0.01")):
+            raise HTTPException(status_code=400, detail="Budget amount must have no more than two decimal places.")
+    except InvalidOperation as exc:
+        raise HTTPException(status_code=400, detail="Budget amount must have no more than two decimal places.") from exc
 
     existing = await db.budgets.find_one({"_id": oid})
     if not existing:
@@ -149,10 +179,14 @@ async def update_budget(budget_id: str, budget_data: Dict[str, Any], current_use
     rollover_enabled = budget_data.get("rollover_enabled", bool(existing.get("rollover_enabled", False)))
     if not isinstance(rollover_enabled, bool):
         raise HTTPException(status_code=400, detail="rollover_enabled must be true or false.")
+    budget_kind = budget_data.get("budget_kind", existing.get("budget_kind", "variable"))
+    if budget_kind not in {"fixed", "variable"}:
+        raise HTTPException(status_code=400, detail="budget_kind must be fixed or variable.")
 
     result = await db.budgets.update_one(
         {"_id": oid},
         {"$set": {"amount": float(amount), "rollover_enabled": rollover_enabled,
+                  "budget_kind": budget_kind,
                   "updated_at": datetime.utcnow()}},
     )
     if not result.matched_count:
@@ -167,6 +201,7 @@ async def update_budget(budget_id: str, budget_data: Dict[str, Any], current_use
             {"user_id": requester_id, "category_id": str(existing.get("category_id", "")),
              "period_type": current_period_type},
             {"$set": {"amount": float(amount), "rollover_enabled": rollover_enabled,
+                      "budget_kind": budget_kind,
                       "is_active": True, "updated_at": datetime.utcnow()},
              "$setOnInsert": {"created_at": datetime.utcnow()}},
             upsert=True,

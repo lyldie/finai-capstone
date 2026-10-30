@@ -40,6 +40,14 @@ async def ensure_indexes():
         [("user_id", 1), ("category_id", 1), ("period_type", 1)],
         unique=True,
     )
+    await db.bill_occurrences.create_index(
+        [("user_id", 1), ("bill_id", 1), ("period_key", 1)], unique=True,
+        name="bill_occurrence_user_bill_month_unique",
+    )
+    await db.fixed_bills.create_index(
+        [("user_id", 1), ("is_active", 1), ("due_day", 1)],
+        name="fixed_bills_user_active_due_day",
+    )
 
     # Canonical keys let Mongo enforce the same case/whitespace-insensitive
     # uniqueness as the API checks, including when concurrent requests race.

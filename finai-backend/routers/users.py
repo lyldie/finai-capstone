@@ -4,7 +4,7 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 from database import db
 from typing import List, Optional
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from passlib.context import CryptContext
 from datetime import datetime
 import re
@@ -12,6 +12,7 @@ import re
 from schemas.user import UserResponse
 from auth import SUPER_ADMIN_EMAIL, get_current_admin, get_current_super_admin, get_current_user
 from email_utils import send_password_change_notice
+from schemas.money import require_cent_precision
 from .logs import log_action
 
 router = APIRouter(prefix="/api/users", tags=["Admin Users"])
@@ -21,6 +22,11 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 class UpdateIncomeSchema(BaseModel):
     monthly_income: float = Field(..., ge=0, allow_inf_nan=False)
+
+    @field_validator("monthly_income", mode="before")
+    @classmethod
+    def income_has_cent_precision(cls, value):
+        return require_cent_precision(value, "Monthly income")
 
 
 class OwnProfileResponse(BaseModel):

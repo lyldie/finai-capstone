@@ -1,11 +1,12 @@
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 from fastapi.middleware.cors import CORSMiddleware
 from typing import Optional, List
+from decimal import Decimal, InvalidOperation
 from passlib.context import CryptContext
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -29,14 +30,16 @@ load_dotenv()
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db, ensure_indexes
 from email_utils import send_otp_email
+from schemas.money import require_cent_precision
 
 # JWT session creation for user and admin authentication.
 from auth import create_access_token, get_current_user
 from security import enforce_auth_rate_limit, clear_auth_rate_limit
 
 # I-IMPORT ANG ROUTERS
-from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export
+from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export,bills
 from services.budget_service import create_crossed_threshold_notifications, ph_today
+from services.spending_spike import create_weekly_spending_spike
 from services.gemini_service import (
     GEMINI_BACKUP_MODEL,
     GEMINI_PRIMARY_MODEL,
@@ -969,6 +972,17 @@ class TransactionSchema(BaseModel):
     date: Optional[str] = None
     goal_id: Optional[str] = None
 
+    @field_validator("amount", mode="before")
+    @classmethod
+    def amount_must_use_cents_precision(cls, value):
+        try:
+            amount = Decimal(str(value))
+            if not amount.is_finite() or amount != amount.quantize(Decimal("0.01")):
+                raise ValueError("Amount must be a positive value with no more than two decimal places.")
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError("Amount must be a positive value with no more than two decimal places.") from exc
+        return value
+
 
 class InitialSetupSchema(BaseModel):
     user_id: str
@@ -978,6 +992,11 @@ class InitialSetupSchema(BaseModel):
     target_amount: Optional[float] = Field(default=None, gt=0, allow_inf_nan=False)
     target_date: Optional[str] = Field(default=None, pattern=r'^\d{4}-\d{2}-\d{2}$')
     goal_type_id: Optional[str] = Field(default=None, min_length=24, max_length=24, pattern=r'^[0-9a-fA-F]{24}$')
+
+    @field_validator("monthly_income", "target_amount", mode="before")
+    @classmethod
+    def setup_money_has_cent_precision(cls, value):
+        return require_cent_precision(value, "Amount")
 
 
 class PinVerify(BaseModel):
@@ -1041,6 +1060,11 @@ async def validate_transaction_references(transaction: TransactionSchema, user_i
             raise HTTPException(status_code=422, detail=f"Choose an active {field.replace('_', ' ')} available to this user.")
         setattr(transaction, field, account["name"])
         setattr(transaction, "account_id" if field == "account" else "to_account_id", str(account["_id"]))
+
+    # Compare resolved account IDs as well as the submitted labels. Labels are
+    # case-insensitive, so e.g. "Cash" and "cash" can refer to the same account.
+    if transaction.type == "Transfer" and transaction.account_id == transaction.to_account_id:
+        raise HTTPException(status_code=422, detail="Transfer source and destination accounts must be different.")
 
     if transaction.type in {"Transfer", "Contribution"}:
         transaction.category_id = None
@@ -1515,6 +1539,17 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
             transaction.user_id, transaction.category_id
         )
 
+        # Keep unusual-spending alerts in the in-app inbox; they don't send
+        # email or push notifications. The deterministic weekly key deduplicates.
+        try:
+            spike_notification = await create_weekly_spending_spike(
+                transaction.user_id, transaction.category_id, transaction.date
+            )
+            if spike_notification:
+                notifications_created.append(spike_notification)
+        except Exception as exc:
+            print(f"Could not evaluate weekly spending spike for user {transaction.user_id}: {exc}")
+
         # 2. ðŸš¨ EMAIL ALERT INTEGRATION ðŸš¨
     try:
         await advisor.evaluate_proactive_financial_signals(
@@ -1679,6 +1714,15 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
         notifications_created = await safely_refresh_budget_notifications(
             transaction.user_id, transaction.category_id
         )
+        if transaction.type.lower() == "expense":
+            try:
+                spike_notification = await create_weekly_spending_spike(
+                    transaction.user_id, transaction.category_id, transaction.date
+                )
+                if spike_notification:
+                    notifications_created.append(spike_notification)
+            except Exception as exc:
+                print(f"Could not evaluate weekly spending spike for user {transaction.user_id}: {exc}")
         try:
             await advisor.evaluate_proactive_financial_signals(
                 transaction.user_id,
@@ -2032,6 +2076,7 @@ async def check_system_health():
 
 # --- ROUTERS ---
 app.include_router(budgets.router)
+app.include_router(bills.router)
 app.include_router(categories.router)
 app.include_router(accounts.router)
 app.include_router(goal_types.router)

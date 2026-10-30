@@ -13,11 +13,24 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException
 from google import genai
 from google.genai import types
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from auth import get_current_user
 from database import db
 from services.budget_service import list_budget_usage, ph_today
+from services.forecast_engine import (
+    compute_safe_to_spend, what_if_spend_less, scheduled_forecast,
+    seasonal_comparison, goal_acceleration,
+)
+from services.planning_insights import (
+    budget_insight, spending_pattern_insight,
+    seasonal_insight, goal_insight, cash_flow_insight,
+    long_term_cash_flow_insight, sma_category_insight,
+    upcoming_bill_insight, on_track_summary, validate_ai_recommendations,
+    overview_claims_supported,
+    seasonal_history_eligible,
+)
+from schemas.money import require_cent_precision
 from services.gemini_service import (
     GEMINI_BACKUP_MODEL,
     GEMINI_PRIMARY_MODEL,
@@ -51,11 +64,205 @@ class ConversationCreate(BaseModel):
     topic: Literal["general", "budget", "goals"] = "general"
 
 
+class WhatIfRequest(BaseModel):
+    category_id: str
+    monthly_reduction: float = Field(..., gt=0, allow_inf_nan=False)
+
+    @field_validator("monthly_reduction", mode="before")
+    @classmethod
+    def amount_has_cent_precision(cls, value):
+        return require_cent_precision(value, "Monthly reduction")
+
+
+class GoalWhatIfRequest(BaseModel):
+    goal_id: str = Field(min_length=24, max_length=24, pattern=r"^[0-9a-fA-F]{24}$")
+    additional_monthly_contribution: float = Field(..., gt=0, allow_inf_nan=False)
+
+    @field_validator("additional_monthly_contribution", mode="before")
+    @classmethod
+    def contribution_has_cent_precision(cls, value):
+        return require_cent_precision(value, "Additional monthly contribution")
+
+
 class ConversationMessageCreate(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
 
 
 router = APIRouter(prefix="/advisor", tags=["AI Advisor"])
+
+
+@router.post("/what-if")
+async def calculate_what_if(payload: WhatIfRequest, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    try:
+        category_oid = ObjectId(payload.category_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Choose a valid expense category.") from exc
+    category = await db.categories.find_one({
+        "_id": category_oid,
+        "type": {"$regex": "^expense$", "$options": "i"},
+        "is_archived": {"$ne": True},
+        "$or": [{"category_role": "admin"}, {"category_role": "user", "user_id": user_id}],
+    })
+    if not category:
+        raise HTTPException(status_code=400, detail="Choose an active expense category available to you.")
+    return {"category": category.get("name", "Category"), **what_if_spend_less(payload.monthly_reduction, 3)}
+
+
+def _completed_month_windows(today: date, count: int) -> list[tuple[date, date]]:
+    end_month = today.replace(day=1) - timedelta(days=1)
+    windows = []
+    for _ in range(count):
+        start_month = end_month.replace(day=1)
+        windows.append((start_month, end_month))
+        end_month = start_month - timedelta(days=1)
+    return list(reversed(windows))
+
+
+async def _goal_contribution_paces(user_id: str, goals: list[dict], today: date) -> dict[str, dict]:
+    """Average goal contributions over up to three completed months per goal."""
+    if not goals:
+        return {}
+    windows = _completed_month_windows(today, 3)
+    goal_ids = [str(goal.get("_id")) for goal in goals if goal.get("_id")]
+    amounts_by_goal_month: dict[tuple[str, str], float] = {}
+    if goal_ids:
+        cursor = db.expenses.aggregate([
+            {"$match": {
+                "user_id": user_id,
+                "goal_id": {"$in": goal_ids},
+                "is_archived": {"$ne": True},
+                "type": {"$regex": "^contribution$", "$options": "i"},
+                "date": {"$gte": windows[0][0].isoformat(), "$lte": windows[-1][1].isoformat()},
+            }},
+            {"$group": {
+                "_id": {"goal_id": "$goal_id", "month": {"$substrBytes": ["$date", 0, 7]}},
+                "amount": {"$sum": {"$convert": {"input": "$amount", "to": "double", "onError": 0, "onNull": 0}}},
+            }},
+        ])
+        for row in await cursor.to_list(length=1000):
+            group = row.get("_id") or {}
+            amounts_by_goal_month[(str(group.get("goal_id", "")), str(group.get("month", "")))] = float(row.get("amount", 0) or 0)
+
+    result = {}
+    for goal in goals:
+        goal_id = str(goal.get("_id", ""))
+        created_at = goal.get("created_at")
+        try:
+            created_day = created_at.date() if isinstance(created_at, datetime) else date.fromisoformat(str(created_at)[:10])
+        except (TypeError, ValueError):
+            try:
+                created_day = goal["_id"].generation_time.date()
+            except Exception:
+                created_day = None
+        active_windows = [(start, end) for start, end in windows if created_day is None or start >= created_day]
+        period_values = [amounts_by_goal_month.get((goal_id, start.strftime("%Y-%m")), 0.0) for start, _end in active_windows]
+        average_cents = sum(int(round(value * 100)) for value in period_values) / len(period_values) if period_values else 0
+        result[goal_id] = {
+            "monthly_contribution_pace": round(average_cents / 100, 2),
+            "contribution_period_count": len(active_windows),
+            "contribution_months": [round(value, 2) for value in period_values],
+        }
+    return result
+
+
+async def _seasonal_category_patterns(user_id: str, categories: list[dict], account_created_at, today: date) -> list[dict]:
+    """Find prior-calendar-year same-month spend above the 12-month average."""
+    comparison_year = today.year - 1
+    year_end = date(comparison_year, 12, 31)
+    try:
+        account_start = account_created_at.date() if isinstance(account_created_at, datetime) else date.fromisoformat(str(account_created_at)[:10])
+    except (TypeError, ValueError):
+        account_start = None
+    if account_start is None or account_start > date(comparison_year, 1, 1):
+        return []
+    eligible_categories = []
+    for category in categories:
+        if str(category.get("type", "")).lower() != "expense":
+            continue
+        created_at = category.get("created_at")
+        try:
+            category_start = created_at.date() if isinstance(created_at, datetime) else date.fromisoformat(str(created_at)[:10])
+        except (TypeError, ValueError):
+            try:
+                category_start = category["_id"].generation_time.date()
+            except Exception:
+                category_start = None
+        if category_start is None or seasonal_history_eligible(account_start, category_start, comparison_year):
+            eligible_categories.append(category)
+    if not eligible_categories:
+        return []
+
+    rows = await db.expenses.aggregate([
+        {"$match": {
+            "user_id": user_id, "is_archived": {"$ne": True}, "goal_id": None,
+            "type": {"$regex": "^expense$", "$options": "i"},
+            "date": {"$gte": year_start.isoformat(), "$lte": year_end.isoformat()},
+        }},
+        {"$group": {
+            "_id": {
+                "month": {"$substrBytes": ["$date", 0, 7]},
+                "category_key": {"$cond": [
+                    {"$ifNull": ["$category_id", False]},
+                    {"$toString": "$category_id"},
+                    {"$concat": ["legacy:", {"$ifNull": ["$category", "Uncategorized"]}]},
+                ]},
+            },
+            "amount": {"$sum": {"$convert": {"input": "$amount", "to": "double", "onError": 0, "onNull": 0}}},
+        }},
+    ]).to_list(length=12000)
+    monthly_by_category: dict[tuple[str, int], float] = {}
+    for row in rows:
+        group = row.get("_id") or {}
+        month_text = str(group.get("month", ""))
+        key = str(group.get("category_key", ""))
+        try:
+            month_number = int(month_text[5:7])
+        except (ValueError, IndexError):
+            continue
+        monthly_by_category[(key, month_number)] = float(row.get("amount", 0) or 0)
+
+    patterns = []
+    for category in eligible_categories:
+        category_id = str(category.get("_id", ""))
+        key = category_id or f"legacy:{category.get('name', 'Uncategorized')}"
+        monthly_values = [monthly_by_category.get((key, month), 0.0) for month in range(1, 13)]
+        comparison = seasonal_comparison(monthly_values, today.month - 1)
+        if comparison is None:
+            continue
+        month_name = date(comparison_year, today.month, 1).strftime("%B")
+        patterns.append({
+            "category_id": category_id,
+            "category": category.get("name", "Category"),
+            "month": month_name,
+            "comparison_year": comparison_year,
+            **comparison,
+        })
+    patterns.sort(key=lambda item: item["difference"], reverse=True)
+    return patterns
+
+
+@router.post("/goal-what-if")
+async def calculate_goal_acceleration(payload: GoalWhatIfRequest, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    goal = await db.goals.find_one({
+        "_id": ObjectId(payload.goal_id), "user_id": user_id, "is_archived": {"$ne": True},
+    })
+    if not goal:
+        raise HTTPException(status_code=404, detail="The selected active savings goal could not be found.")
+    pace = (await _goal_contribution_paces(user_id, [goal], ph_today())).get(str(goal["_id"]), {})
+    remaining = max(float(goal.get("target_amount", 0) or 0) - float(goal.get("current_savings", 0) or 0), 0)
+    return {
+        "goal_id": str(goal["_id"]),
+        "goal": goal.get("target_name", "Savings goal"),
+        "saved": round(float(goal.get("current_savings", 0) or 0), 2),
+        "target": round(float(goal.get("target_amount", 0) or 0), 2),
+        "contribution_period_count": pace.get("contribution_period_count", 0),
+        "contribution_months": pace.get("contribution_months", []),
+        **goal_acceleration(remaining, pace.get("monthly_contribution_pace", 0), payload.additional_monthly_contribution),
+    }
+
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_ATTEMPT_TIMEOUT_MS = 10000
 GEMINI_TOTAL_TIMEOUT_SECONDS = 21
@@ -148,11 +355,16 @@ def _compact_planning_evidence(kind: str, evidence: dict) -> dict:
         "goal_plan": (
             "target", "saved", "goal", "remaining", "days_to_target",
             "suggested_monthly_saving", "target_date_passed", "target_due_today",
+            "monthly_contribution_pace", "contribution_period_count", "contribution_months",
             "required_monthly_saving_exceeds_reported_available_amount",
         ),
         "spending_pattern": (
             "category", "current_period_spending", "comparison_periods",
             "comparison_month_count", "average_previous_spending", "increase_amount", "change_percent",
+        ),
+        "seasonal_pattern": (
+            "category", "month", "comparison_year", "same_month_spending",
+            "annual_monthly_average", "difference", "difference_pct", "monthly_values",
         ),
         "cash_flow": ("start", "end", "income", "expense", "net"),
         "long_term_cash_flow": (
@@ -1583,12 +1795,22 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             date.fromisoformat(day_key)
         except ValueError:
             continue
-        day = daily.setdefault(day_key, {"income": 0.0, "expense": 0.0, "categories": {}, "category_names": {}, "records": 0})
+        day = daily.setdefault(day_key, {
+            "income": 0.0, "expense": 0.0,
+            "categories": {}, "category_names": {},
+            "income_categories": {}, "income_category_names": {}, "records": 0,
+            "expense_category_counts": {}, "income_category_counts": {},
+        })
         amount = float(bucket.get("amount", 0) or 0)
         kind = bucket.get("_id", {}).get("type")
         if kind == "income":
             day["records"] += int(bucket.get("count", 0))
             day["income"] += amount
+            category_name = str(bucket.get("_id", {}).get("category") or "Uncategorized")
+            category_key = str(bucket.get("_id", {}).get("category_key") or f"legacy:{category_name}")
+            day["income_categories"][category_key] = day["income_categories"].get(category_key, 0.0) + amount
+            day["income_category_names"][category_key] = category_name
+            day["income_category_counts"][category_key] = day["income_category_counts"].get(category_key, 0) + int(bucket.get("count", 0))
         elif kind == "expense":
             day["records"] += int(bucket.get("count", 0))
             day["expense"] += amount
@@ -1596,6 +1818,7 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             category_key = str(bucket.get("_id", {}).get("category_key") or f"legacy:{category_name}")
             day["categories"][category_key] = day["categories"].get(category_key, 0.0) + amount
             day["category_names"][category_key] = category_name
+            day["expense_category_counts"][category_key] = day["expense_category_counts"].get(category_key, 0) + int(bucket.get("count", 0))
 
     period_totals = _period_analytics(daily, today)
 
@@ -1696,16 +1919,192 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         "method": "Observed monthly recorded net cash-flow percentiles multiplied by 12; this is a scenario range, not an account-balance forecast.",
         "coverage_note": "Months without recorded activity are not treated as zero-income or zero-expense months. Missing records can bias these scenarios.",
     }
+
+    # Produce category forecasts from completed calendar months / ISO weeks.
+    # Profile monthly income remains an aggregate fallback and is never allocated
+    # across income categories.
+    from services.forecast_engine import forecast_category, limit_usage_pct, net_forecast
+    category_docs = await db.categories.find({
+        "is_archived": {"$ne": True},
+        "$or": [{"category_role": "admin"}, {"category_role": "user", "user_id": user_id}],
+    }).to_list(length=500)
+    monthly_periods = []
+    end_month = today.replace(day=1) - timedelta(days=1)
+    for _ in range(6):
+        start_month = end_month.replace(day=1)
+        monthly_periods.append((start_month, end_month))
+        end_month = start_month - timedelta(days=1)
+    monthly_periods.reverse()
+    week_end = today - timedelta(days=today.weekday() + 1)
+    weekly_periods = []
+    for _ in range(8):
+        weekly_periods.append((week_end - timedelta(days=6), week_end))
+        week_end -= timedelta(days=7)
+    weekly_periods.reverse()
+
+    def category_amount(start: date, end: date, category_key: str, transaction_type: str) -> float:
+        field = "income_categories" if transaction_type == "income" else "categories"
+        total = 0.0
+        cursor_date = start
+        while cursor_date <= end:
+            total += float(daily.get(cursor_date.isoformat(), {}).get(field, {}).get(category_key, 0) or 0)
+            cursor_date += timedelta(days=1)
+        return total
+
+    def category_count(start: date, end: date, category_key: str, transaction_type: str) -> int:
+        field = "income_category_counts" if transaction_type == "income" else "expense_category_counts"
+        total = 0
+        cursor_date = start
+        while cursor_date <= end:
+            total += int(daily.get(cursor_date.isoformat(), {}).get(field, {}).get(category_key, 0) or 0)
+            cursor_date += timedelta(days=1)
+        return total
+
+    category_forecasts = []
+    for category in category_docs:
+        category_id = str(category.get("_id", ""))
+        category_key = category_id or f"legacy:{category.get('name', 'Uncategorized')}"
+        transaction_type = str(category.get("type", "")).lower()
+        if transaction_type not in {"income", "expense"}:
+            continue
+        created_at = category.get("created_at")
+        if isinstance(created_at, datetime):
+            category_created = created_at.date()
+        else:
+            try:
+                category_created = category["_id"].generation_time.date()
+            except Exception:
+                category_created = None
+
+        amount_field = "income_categories" if transaction_type == "income" else "categories"
+        daily_category_amounts = [
+            (day_key, float(day.get(amount_field, {}).get(category_key, 0) or 0))
+            for day_key, day in daily.items()
+            if float(day.get(amount_field, {}).get(category_key, 0) or 0) > 0
+        ]
+        # Backdated transactions are valid evidence that a category was in use
+        # before its current preset document was created (common for demo seeds
+        # and imported records). Use the earlier observed transaction date so
+        # those completed periods contribute to the forecast. When no matching
+        # history exists, retain category creation as the eligibility boundary.
+        first_transaction_date = None
+        if daily_category_amounts:
+            try:
+                first_transaction_date = min(date.fromisoformat(day_key) for day_key, _amount in daily_category_amounts)
+            except ValueError:
+                first_transaction_date = None
+        history_start_date = min(
+            (value for value in (category_created, first_transaction_date) if value is not None),
+            default=None,
+        )
+
+        def existing_periods(periods):
+            if history_start_date is None:
+                return list(periods)
+            return [(start, end) for start, end in periods if end >= history_start_date]
+
+        active_months = existing_periods(monthly_periods)
+        active_weeks = existing_periods(weekly_periods)
+        monthly_values = [category_amount(start, end, category_key, transaction_type) for start, end in active_months]
+        weekly_values = [category_amount(start, end, category_key, transaction_type) for start, end in active_weeks]
+        monthly_counts = [category_count(start, end, category_key, transaction_type) for start, end in active_months]
+        weekly_counts = [category_count(start, end, category_key, transaction_type) for start, end in active_weeks]
+        largest_spending_day = max(daily_category_amounts, key=lambda entry: entry[1], default=None)
+        monthly_result = forecast_category(monthly_values, 3)
+        weekly_result = forecast_category(weekly_values, 4)
+        if history_truncated:
+            for result in (monthly_result, weekly_result):
+                result["confidence"] = "low"
+                result["range_low"] = None
+                result["range_high"] = None
+        monthly_result["limit"] = None
+        monthly_result["limit_usage_pct"] = None
+        monthly_result["periods"] = [
+            {"label": start.strftime("%b %Y"), "actual": round(value, 2), "transaction_count": count}
+            for (start, _end), value, count in zip(active_months, monthly_values, monthly_counts)
+        ]
+        weekly_result["limit"] = None
+        weekly_result["limit_usage_pct"] = None
+        weekly_result["periods"] = [
+            {"label": f"{start.isoformat()} – {end.isoformat()}", "actual": round(value, 2), "transaction_count": count}
+            for (start, end), value, count in zip(active_weeks, weekly_values, weekly_counts)
+        ]
+        category_forecasts.append({
+            "category_id": category_id,
+            "category": category.get("name", "Category"),
+            "type": transaction_type,
+            "monthly": monthly_result,
+            "weekly": weekly_result,
+            "drivers": {
+                "average_transactions_per_period": round(sum(monthly_counts[-3:]) / max(len(monthly_counts[-3:]), 1), 2),
+                "average_transaction_amount": round(sum(monthly_values[-3:]) / sum(monthly_counts[-3:]), 2) if sum(monthly_counts[-3:]) else None,
+                "largest_recorded_day": ({"date": largest_spending_day[0], "amount": round(largest_spending_day[1], 2)}
+                                          if largest_spending_day else None),
+            },
+        })
+    category_forecasts.sort(key=lambda item: (item["type"], item["category"].casefold()))
+    monthly_net_forecast = net_forecast(
+        (item["monthly"]["forecast"] for item in category_forecasts if item["type"] == "income"),
+        (item["monthly"]["forecast"] for item in category_forecasts if item["type"] == "expense"),
+    )
     history_analysis_ms = round((time.perf_counter() - history_analysis_started_at) * 1000)
 
     profile_budget_started_at = time.perf_counter()
-    profile = await db.users.find_one({"_id": ObjectId(user_id)}, {"monthly_income": 1})
+    profile = await db.users.find_one({"_id": ObjectId(user_id)}, {"monthly_income": 1, "created_at": 1})
     monthly_baseline = float((profile or {}).get("monthly_income", 0) or 0)
+    user_created_at = (profile or {}).get("created_at")
+    if user_created_at is None:
+        try:
+            user_created_at = ObjectId(user_id).generation_time
+        except Exception:
+            user_created_at = None
+    seasonal_patterns = await _seasonal_category_patterns(user_id, category_docs, user_created_at, today)
 
     active_budgets = [
         item for item in await list_budget_usage(user_id)
         if item.get("start_date") and item.get("end_date")
         and item["start_date"] <= today_key <= item["end_date"]
+    ]
+    monthly_limit_by_category = {
+        str(item.get("category_id", "")): float(item.get("available_limit", item.get("amount", 0)) or 0)
+        for item in active_budgets if item.get("period_type") == "monthly"
+    }
+    for item in category_forecasts:
+        if item["type"] == "expense":
+            limit = monthly_limit_by_category.get(item["category_id"])
+            item["monthly"]["limit"] = limit
+            item["monthly"]["limit_usage_pct"] = limit_usage_pct(item["monthly"]["forecast"], limit)
+    # Fixed bills are separately scheduled obligations, not transactions. Creating
+    # or marking a reminder paid never changes account balances or spending totals.
+    from routers.bills import _ensure_occurrence, _public_bill
+    fixed_bill_rows = await db.fixed_bills.find({"user_id": user_id, "is_active": True}).to_list(length=200)
+    bill_occurrences = []
+    upcoming_bill_occurrences = []
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    for bill in fixed_bill_rows:
+        occurrence = await _ensure_occurrence(user_id, bill, today.year, today.month)
+        current_occurrence = _public_bill(bill, occurrence)
+        bill_occurrences.append(current_occurrence)
+        upcoming_bill_occurrences.append(current_occurrence)
+        if (today + timedelta(days=14)) >= next_month:
+            next_occurrence = await _ensure_occurrence(user_id, bill, next_month.year, next_month.month)
+            upcoming_bill_occurrences.append(_public_bill(bill, next_occurrence))
+    bill_occurrences.sort(key=lambda bill: bill["due_date"])
+    upcoming_bill_occurrences.sort(key=lambda bill: bill["due_date"])
+    month_end_date = (today.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    upcoming_bills = [
+        bill for bill in upcoming_bill_occurrences
+        if bill["status"] == "unpaid"
+        and today_key <= bill["due_date"] <= (today + timedelta(days=14)).isoformat()
+    ]
+    unpaid_bills_due_this_month = [
+        bill for bill in bill_occurrences
+        if bill["status"] == "unpaid" and bill["due_date"] <= month_end_date.isoformat()
+    ]
+    fixed_bill_deduction = round(sum(float(bill["amount"]) for bill in unpaid_bills_due_this_month), 2)
+    fixed_bill_forecasts = [
+        {**bill, **scheduled_forecast(float(bill["amount"]), 3)}
+        for bill in bill_occurrences
     ]
     profile_budget_ms = round((time.perf_counter() - profile_budget_started_at) * 1000)
 
@@ -1819,25 +2218,13 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         budget_forecasts.append(forecast)
 
         if elapsed_days >= 3 and historical_active_days > 0 and forecast["forecast_over_limit"]:
-            recommendations.append({
-                "kind": "budget_risk",
-                "priority": "high",
-                "title": f"{forecast['category']} may exceed its limit",
-                "message": f"Projected to exceed {forecast['period']} limit · {forecast['confidence']} confidence.",
-                "evidence": forecast,
-                "action": f"About PHP {forecast['daily_remaining_allowance']:.2f} remains per day for the rest of this period if you want to stay within the limit.",
-            "how_calculated": forecast["how_calculated"],
-            })
+            insight = budget_insight(forecast)
+            if insight:
+                recommendations.append(insight)
         elif forecast["percentage_used"] >= 70:
-            recommendations.append({
-                "kind": "budget_watch",
-                "priority": "medium",
-                "title": f"Keep an eye on {forecast['category']}",
-                "message": f"{forecast['percentage_used']:.0f}% used · \u20b1{forecast['daily_remaining_allowance']:,.0f}/day remaining allowance.",
-                "evidence": forecast,
-                "action": f"About PHP {forecast['daily_remaining_allowance']:.2f} remains per day for the rest of this period.",
-                "how_calculated": f"\u20b1{forecast['spent']:,.0f} of \u20b1{forecast['limit']:,.0f} = {forecast['percentage_used']:.0f}%. \u20b1{max(forecast['limit']-forecast['spent'],0):,.0f} left / {forecast['days_remaining']} days",
-            })
+            insight = budget_insight(forecast)
+            if insight:
+                recommendations.append(insight)
 
     budget_analysis_ms = round((time.perf_counter() - budget_analysis_started_at) * 1000)
 
@@ -1845,91 +2232,81 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         forecast for forecast in budget_forecasts
         if forecast["spent"] > 0 and forecast["confidence"] in {"medium", "high"}
     ]
-    on_track_budget_forecasts = [
-        forecast for forecast in tracked_budget_forecasts
-        if forecast["projected_period_end_spend"] <= forecast["limit"]
-    ]
-    positive_reinforcement = None
-    if len(tracked_budget_forecasts) >= 2 and len(on_track_budget_forecasts) >= 2:
-        positive_reinforcement = {
-            "kind": "budgets_on_track",
-            "on_track_count": len(on_track_budget_forecasts),
-            "tracked_budget_count": len(tracked_budget_forecasts),
-            "as_of_date": today_key,
-            "message": (
-                f"Recorded spending is currently projected to stay within the limit for "
-                f"{len(on_track_budget_forecasts)} of {len(tracked_budget_forecasts)} "
-                "active budget limits with spending logged."
-            ),
-            "basis": "Based on current-period pace and recent recorded spending with enough history to estimate; forecasts can change.",
-        }
+    positive_reinforcement = on_track_summary(tracked_budget_forecasts)
+    if positive_reinforcement:
+        positive_reinforcement["as_of_date"] = today_key
 
     for pattern in category_spending_comparisons:
-        recommendations.append({
-            "kind": "spending_pattern",
-            "priority": "medium",
-            "title": f"{pattern['category']} spending is above its recent pattern",
-            "message": (
-                f"Recorded spending so far this month is {pattern['change_percent']:.0f}% above "
-                f"the average of {pattern['comparison_month_count']} prior same-date periods. "
-                "This comparison does not explain why it changed."
-            ),
-            "evidence": pattern,
-            "action": "Review the transactions in this category and decide whether any change fits your plans.",
-        })
+        recommendations.append(spending_pattern_insight(pattern))
+    for pattern in seasonal_patterns:
+        recommendations.append(seasonal_insight(pattern))
 
     goal_analysis_started_at = time.perf_counter()
     goals = await db.goals.find({"user_id": user_id, "is_archived": {"$ne": True}}).to_list(length=50)
-    goal_plans = [_goal_projection(goal, today, monthly_baseline) for goal in goals]
+    contribution_paces = await _goal_contribution_paces(user_id, goals, today)
+    goal_plans = []
+    for goal in goals:
+        plan = _goal_projection(goal, today, monthly_baseline)
+        pace = contribution_paces.get(str(goal.get("_id", "")), {})
+        plan.update({
+            "goal_id": str(goal.get("_id", "")),
+            "monthly_contribution_pace": pace.get("monthly_contribution_pace", 0),
+            "contribution_period_count": pace.get("contribution_period_count", 0),
+            "contribution_months": pace.get("contribution_months", []),
+        })
+        goal_plans.append(plan)
     for goal in goal_plans:
-        if goal["remaining"] <= 0:
-            continue
-        if goal["target_date_passed"] or goal["target_due_today"]:
-            recommendations.append({
-                "kind": "goal_review",
-                "priority": "medium",
-                "title": f"Review the target date for {goal['target']}",
-                "message": f"{goal['remaining']:.2f} remains and the target date has arrived or passed.",
-                "evidence": goal,
-                "action": "Consider choosing a later target date or revising the target amount.",
-            })
-        elif goal["suggested_monthly_saving"] is not None:
-            needed = goal["suggested_monthly_saving"]
-            exceeds_baseline = monthly_baseline > 0 and needed > monthly_baseline
-            recommendations.append({
-                "kind": "goal_plan",
-                "priority": "medium" if exceeds_baseline else "goal",
-                "title": f"Plan savings for {goal['target']}",
-                "message": f"\u20b1{needed:,.0f}/mo needed to reach goal by target date.",
-                "evidence": goal,
-                "action": (
-                    "That monthly pace is above your reported baseline. Consider a later date or lower target; actual affordability also depends on expenses not recorded here."
-                    if exceeds_baseline else "Compare this monthly amount with your budget before committing to it."
-                ),
-                **({"how_calculated": f"PHP {goal['remaining']:,.2f} remaining / {goal['days_to_target']} days x 30.4375 = PHP {needed:,.2f}/month"} if goal["days_to_target"] is not None else {}),
-            })
+        insight = goal_insight(goal, monthly_baseline)
+        if insight:
+            recommendations.append(insight)
 
     current_month = period_totals["this_month"]
-    if current_month["income"] > 0 and current_month["net"] < 0:
-        recommendations.append({
-            "kind": "cash_flow",
-            "priority": "medium",
-            "title": "Recorded spending is above recorded income this month",
-            "message": "Recorded expenses exceed income this month.",
-            "evidence": current_month,
-            "action": "Review upcoming expenses and whether your current savings targets still fit this month's cash flow.",
-            "how_calculated": f"\u20b1{current_month['income']:,.0f} income - \u20b1{current_month['expense']:,.0f} expenses = \u20b1{current_month['net']:,.0f} net",
-        })
+    # Safe-to-spend is deterministic and separate from the forecast. Flexible
+    # monthly limits and unpaid scheduled bills are counted independently.
+    variable_monthly_budgets = [
+        item for item in active_budgets
+        if item.get("period_type") == "monthly" and item.get("budget_kind", "variable") == "variable"
+    ]
+    goal_contributions_due = round(sum(
+        max(float(goal.get("suggested_monthly_saving") or 0), 0)
+        for goal in goal_plans if float(goal.get("remaining") or 0) > 0
+    ), 2)
+    days_remaining_in_month = max((month_end_date - today).days + 1, 1)
+    week_end = today + timedelta(days=6 - today.weekday())
+    days_remaining_in_week = max((week_end - today).days + 1, 1)
+    recorded_month_income = float(current_month.get("income", 0) or 0)
+    expected_income = monthly_baseline if monthly_baseline > 0 else recorded_month_income
+    safe_to_spend = compute_safe_to_spend(
+        variable_budget_remaining=(
+            max(float(item.get("available_limit", item.get("amount", 0)) or 0) - float(item.get("spent", 0) or 0), 0)
+            for item in variable_monthly_budgets
+        ),
+        has_variable_budgets=bool(variable_monthly_budgets),
+        unpaid_bills=fixed_bill_deduction,
+        goal_contributions=goal_contributions_due,
+        spent_so_far=float(current_month.get("expense", 0) or 0),
+        expected_income=expected_income,
+        days_remaining_in_month=days_remaining_in_month,
+        days_remaining_in_week=days_remaining_in_week,
+    )
 
-    if long_term_outlook["available"] and long_term_outlook["average_monthly_recorded_net_cash_flow"] < 0:
-        recommendations.append({
-            "kind": "long_term_cash_flow",
-            "priority": "medium",
-            "title": "Review the longer-term cash-flow pattern",
-            "message": "Across months with recorded activity, expenses have averaged above recorded income. Missing records may affect this comparison.",
-            "evidence": long_term_outlook,
-            "action": "Review recurring and flexible expenses, then choose one category where a change would feel realistic.",
-        })
+    insight = cash_flow_insight(current_month)
+    if insight:
+        recommendations.append(insight)
+
+    insight = long_term_cash_flow_insight(long_term_outlook)
+    if insight:
+        recommendations.append(insight)
+
+    for forecast_item in category_forecasts:
+        if forecast_item["type"] != "expense":
+            continue
+        monthly_forecast = forecast_item["monthly"]
+        insight = sma_category_insight(forecast_item["category"], monthly_forecast)
+        if insight:
+            recommendations.append(insight)
+    for bill in upcoming_bills[:3]:
+        recommendations.append(upcoming_bill_insight(bill))
 
     priority_order = {"high": 0, "medium": 1, "goal": 2}
     recommendations.sort(key=lambda item: priority_order.get(item["priority"], 3))
@@ -1942,6 +2319,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         "days_with_records": len(daily),
         "active_budget_count": len(active_budgets),
         "active_goal_count": len(goal_plans),
+        "upcoming_bills": upcoming_bills,
+        "fixed_bill_forecasts": fixed_bill_forecasts,
+        "unpaid_fixed_bill_total": fixed_bill_deduction,
         "current_month": current_month,
         "period_analytics": period_analytics,
         "period_series": period_series,
@@ -1989,6 +2369,22 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "evidence": pattern,
             "how_calculated": pattern["how_calculated"],
         }
+    for index, pattern in enumerate(seasonal_patterns):
+        evidence_catalog[f"seasonal_{index}"] = {
+            "kind": "seasonal_pattern",
+            "evidence": pattern,
+            "how_calculated": (
+                f"{pattern['month']} {pattern['comparison_year']} spending compared with the "
+                "average across all 12 completed months in that calendar year."
+            ),
+        }
+    for index, forecast_item in enumerate(category_forecasts):
+        evidence_catalog[f"forecast_{index}"] = {"kind": "category_forecast", "evidence": forecast_item}
+    for index, bill in enumerate(upcoming_bills[:3]):
+        evidence_catalog[f"bill_{index}"] = {"kind": "upcoming_bill", "evidence": bill}
+    for index, bill in enumerate(fixed_bill_forecasts):
+        evidence_catalog[f"fixed_bill_{index}"] = {"kind": "scheduled_fixed_bill", "evidence": bill}
+    evidence_catalog["safe_to_spend"] = {"kind": "safe_to_spend", "evidence": safe_to_spend}
     if current_month["income"] > 0:
         evidence_catalog["cash_flow"] = {
             "kind": "cash_flow",
@@ -2015,6 +2411,10 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
     if ai_client or GROQ_API_KEY:
         prompt_data = {
             "metrics": metrics,
+            "category_forecasts": category_forecasts,
+            "safe_to_spend": safe_to_spend,
+            "upcoming_bills": upcoming_bills,
+            "fixed_bill_forecasts": fixed_bill_forecasts,
             "budget_forecasts": budget_forecasts,
             "goal_plans": goal_plans,
             "long_term_outlook": long_term_outlook,
@@ -2040,8 +2440,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         planning_prompt = (
             "You are the primary pattern analyst for FinAI, a personal budgeting and savings "
             "planning feature. Analyze the aggregated metrics, active budget forecasts, goal "
-            "paces, same-period category comparisons, and (when available) 12-month cash-flow "
-            "scenarios. Identify up to 5 useful personalized recommendations, prioritizing "
+            "paces, same-period category comparisons, seasonal comparisons when available, and "
+            "(when available) 12-month cash-flow "
+            "scenarios. Identify up to 3 useful personalized recommendations, prioritizing "
             "concrete opportunities or risks over generic praise. Each recommendation MUST cite "
             "exactly one evidence_id from evidence_catalog. Use only cited evidence; do not invent "
             "amounts, dates, bills, income, causes, or facts. "
@@ -2149,8 +2550,8 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 }, ensure_ascii=False, separators=(",", ":"))
                 groq_planning_prompt = (
                     "You are FinAI's proactive budget and savings analyst. Review the supplied current "
-                    "cash flow, recent trend, budget forecasts, goal plans, category comparisons, and "
-                    "long-term cash-flow scenarios together. Identify up to five specific, useful "
+                    "cash flow, recent trend, budget forecasts, goal plans, category comparisons, seasonal comparisons, and "
+                    "long-term cash-flow scenarios together. Identify up to three specific, useful "
                     "insights across budgets, goals, and cash flow; include predictive risks or "
                     "opportunities only when the supplied forecast evidence supports them. You may "
                     "recommend only insights backed by an evidence_catalog item, and each recommendation "
@@ -2215,40 +2616,14 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 overview = result.get("overview")
                 proposed = result.get("recommendations")
                 if isinstance(overview, str) and isinstance(proposed, list):
-                    validated = []
-                    seen_ids = set()
-                    for item in proposed[:5]:
-                        if not isinstance(item, dict):
-                            continue
-                        evidence_id = item.get("evidence_id")
-                        source = evidence_catalog.get(evidence_id)
-                        if not source or evidence_id in seen_ids:
-                            continue
-                        fields = (item.get("title"), item.get("message"))
-                        if not all(isinstance(value, str) and value.strip() for value in fields):
-                            continue
-                        actions = item.get("actions")
-                        if not isinstance(actions, list) or not actions or not all(
-                            isinstance(action, str) and action.strip() for action in actions[:2]
-                        ):
-                            continue
-                        priority = item.get("priority")
-                        validated.append({
-                            "kind": source["kind"],
-                            "priority": priority if priority in {"high", "medium", "goal"} else "medium",
-                            "title": item["title"].strip()[:72],
-                            "message": item["message"].strip()[:120],
-                            "action": " ".join(action.strip()[:100] for action in actions[:2]),
-                            "actions": [action.strip()[:100] for action in actions[:2]],
-                            "context_question": item.get("context_question", "")[:120]
-                            if isinstance(item.get("context_question"), str) else "",
-                            # Keep the formula deterministic; model-authored math is not trusted.
-                            "how_calculated": source.get("how_calculated", "")[:200]
-                            if isinstance(source.get("how_calculated"), str) else "",
-                            "evidence": source["evidence"],
-                        })
-                        seen_ids.add(evidence_id)
+                    validated = validate_ai_recommendations(proposed, evidence_catalog)
                     summary = overview.strip()[:700] or fallback_summary
+                    if not overview_claims_supported(summary, evidence_catalog):
+                        print(
+                            f"[{analysis_provider}][plan_ahead:{plan_call_id}] "
+                            "discarded overview with unsupported numeric claims."
+                        )
+                        summary = fallback_summary
                     # Keep the deterministic plan if the AI output fails validation;
                     # otherwise AI-authored content becomes the displayed advice.
                     if validated or not recommendations:
@@ -2354,12 +2729,17 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "breakdown": health_breakdown,
         },
         "budget_daily_allowance": budget_daily_allowance,
+        "safe_to_spend": safe_to_spend,
+        "upcoming_bills": upcoming_bills,
+        "fixed_bill_forecasts": fixed_bill_forecasts,
         "summary": summary,
         "summary_source": summary_source,
         "recommendation_source": recommendation_source,
         "analysis_provider": analysis_provider if recommendation_source == "ai" else None,
         "metrics": metrics,
         "long_term_outlook": long_term_outlook,
+        "category_forecasts": category_forecasts,
+        "monthly_net_forecast": monthly_net_forecast,
         "budget_forecasts": budget_forecasts,
         "positive_reinforcement": positive_reinforcement,
         "goal_plans": goal_plans,

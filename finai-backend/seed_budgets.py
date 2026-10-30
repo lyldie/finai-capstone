@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 
 load_dotenv(Path(__file__).with_name(".env"))
-USER_ID = os.getenv("DEMO_USER_ID", "6adff6c40dd00daaec95d9cc")
+STAGING_DB_NAME = "FinAI_Staging"
+USER_ID = os.getenv("DEMO_USER_ID", "").strip()
 SEED_TAG = "finai-defense-demo-2026-01-10-v1"
 LIMITS = {
     "Groceries": 7000,
@@ -38,13 +39,20 @@ def main() -> None:
     mongo_url = os.getenv("MONGO_URL")
     if not mongo_url:
         raise SystemExit("Set MONGO_URL in finai-backend/.env. Do not put credentials in this script.")
+    if not USER_ID:
+        raise SystemExit("Set DEMO_USER_ID to the staging demo user's MongoDB _id before running this script.")
     if not ObjectId.is_valid(USER_ID):
         raise SystemExit("DEMO_USER_ID must be a valid MongoDB ObjectId string.")
 
     client = MongoClient(mongo_url, serverSelectionTimeoutMS=10000)
     try:
         client.admin.command("ping")
-        db = client["FinAI_DB"]
+        db = client[STAGING_DB_NAME]
+        target_user = db.users.find_one({"_id": ObjectId(USER_ID)}, {"name": 1, "email": 1, "role": 1})
+        if not target_user:
+            raise SystemExit(f"No user {USER_ID} exists in {STAGING_DB_NAME}; refusing to seed.")
+        if str(target_user.get("role", "user")).lower() != "user":
+            raise SystemExit("DEMO_USER_ID must belong to a regular user, not an admin account.")
         cats = list(db.categories.find({
             "is_archived": {"$ne": True},
             "$or": [
@@ -77,12 +85,27 @@ def main() -> None:
                           "demo_seed_tag": SEED_TAG, "updated_at": now}
             prepared.append((annual_key, annual_doc))
 
-        print(f"Target user: {USER_ID}")
+        print(f"Target database: {STAGING_DB_NAME}")
+        print(f"Target user: {target_user.get('name', USER_ID)} ({USER_ID})")
         print(f"Prepared {len(prepared)} budget records: Jan-Oct monthly budgets plus 2026 annual budgets.")
         print("Monthly limits (PHP): " + ", ".join(f"{name} {value:,.0f}" for name, value in LIMITS.items()))
         print("Annual limits are monthly limits multiplied by 12.")
         if missing:
             print("Skipped categories not found as active expense categories: " + ", ".join(missing))
+
+        # Never overwrite a budget the user created manually or another seed owns.
+        # Re-running this seed may update only records carrying this exact seed tag.
+        safe_prepared = []
+        conflicts = []
+        for key, document in prepared:
+            existing = db.budgets.find_one(key, {"demo_seed_tag": 1})
+            if existing and existing.get("demo_seed_tag") != SEED_TAG:
+                conflicts.append(key)
+                continue
+            safe_prepared.append((key, document))
+        prepared = safe_prepared
+        if conflicts:
+            print(f"Skipped {len(conflicts)} budget periods that already have unseeded or differently seeded budgets; they were left unchanged.")
         if not args.apply:
             print("Preview only. Add --apply to upsert these records. Existing untagged budgets are not modified.")
             return

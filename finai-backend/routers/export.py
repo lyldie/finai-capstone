@@ -1,5 +1,6 @@
 # finai-backend/routers/export.py
 from datetime import datetime
+from decimal import Decimal, InvalidOperation
 import math
 from typing import Any, Dict, List
 
@@ -77,6 +78,12 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
             raise HTTPException(status_code=422, detail=f"Invalid {field} in backup.")
         if value < 0 or (not allow_zero and value == 0):
             raise HTTPException(status_code=422, detail=f"Invalid {field} in backup.")
+        try:
+            decimal_value = Decimal(str(value))
+            if decimal_value != decimal_value.quantize(Decimal("0.01")):
+                raise HTTPException(status_code=422, detail=f"Invalid {field}: use no more than two decimal places.")
+        except InvalidOperation as exc:
+            raise HTTPException(status_code=422, detail=f"Invalid {field} in backup.") from exc
         return float(value)
 
     def optional_text(record: dict, field: str, max_length: int = 500) -> str | None:
