@@ -16,22 +16,26 @@ const EMOJI_GROUPS: Record<EmojiPickerContext, { title: string; emojis: string[]
   account: [
     { title: 'Cash and cards', emojis: ['💵', '💴', '💶', '💷', '💰', '🪙', '💳', '🧾'] },
     { title: 'Banks and digital wallets', emojis: ['🏦', '📱', '💻', '💼', '🏧', '🔐', '📈', '💸'] },
+    { title: 'More account icons', emojis: ['🏛️', '🏪', '👛', '👜', '🗄️', '💹', '💲', '📥', '🔑'] },
   ],
   expense: [
     { title: 'Food and groceries', emojis: ['🍽️', '🍔', '🥗', '🍕', '🍜', '🛒', '🥤', '☕', '🍰'] },
-    { title: 'Transport and travel', emojis: ['🚗', '🚌', '🚆', '🚲', '✈️', '⛽', '🚕', '🧳'] },
-    { title: 'Home and bills', emojis: ['🏠', '💡', '💧', '⚡', '🧹', '🔧', '🛋️', '📦'] },
-    { title: 'Health and personal', emojis: ['💊', '🏥', '🩺', '🧘', '💇', '🐾'] },
-    { title: 'Shopping and leisure', emojis: ['🛍️', '👕', '👟', '🎮', '🎬', '🎧', '📚', '🎁'] },
+    { title: 'Transport and travel', emojis: ['🚗', '🚌', '🚆', '🚲', '✈️', '⛽', '🚕', '🧳', '🛵', '🚢'] },
+    { title: 'Home and bills', emojis: ['🏠', '💡', '💧', '⚡', '🧹', '🔧', '🛋️', '📦', '🚿', '🔌'] },
+    { title: 'Health and personal', emojis: ['💊', '🏥', '🩺', '🧘', '💇', '🦷', '🧴', '👓'] },
+    { title: 'Shopping and leisure', emojis: ['🛍️', '👕', '👟', '🎮', '🎬', '🎧', '🎁', '🎨', '🏖️'] },
+    { title: 'Education and pets', emojis: ['🎓', '📝', '🐶', '🐱', '🐕', '🐈', '🦴'] },
+    { title: 'Services and other', emojis: ['🧾', '📱', '📺', '🧺', '🪴', '🤝', '❤️'] },
   ],
   income: [
     { title: 'Work and business', emojis: ['💼', '🏢', '💵', '🧾', '🛍️', '🧑‍💻', '🤝'] },
     { title: 'Savings and investments', emojis: ['🏦', '📈', '🪙', '💰', '💸', '📊'] },
-    { title: 'Other income', emojis: ['🎁', '🎓', '✨', '🏠', '🌱', '💳'] },
+    { title: 'Other income', emojis: ['🎁', '🎓', '✨', '🏠', '🌱', '💳', '🎟️', '🏆', '🌾', '🛠️', '🤲', '🤑'] },
   ],
   goal: [
     { title: 'Savings and milestones', emojis: ['🎯', '💰', '🏦', '📈', '🪙', '✅', '🏆'] },
     { title: 'Things you are saving for', emojis: ['🏠', '🚗', '🎓', '✈️', '💻', '📱', '🎁', '🌱'] },
+    { title: 'More goals', emojis: ['💍', '👶', '🐾', '🚲', '🛋️', '🧳', '🎸', '🏕️', '🏖️', '🧸'] },
   ],
 };
 

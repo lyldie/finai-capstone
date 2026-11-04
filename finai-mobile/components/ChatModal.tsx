@@ -122,6 +122,7 @@ export default function ChatModal({ visible, onClose, userId }: ChatModalProps) 
             contentContainerStyle={styles.chatContentContainer}
             onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: true })}
             showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           />
 
           <View style={styles.chatInputWrapper}>

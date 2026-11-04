@@ -5,6 +5,7 @@ from schemas.money import require_cent_precision
 
 class GoalCreate(BaseModel):
     user_id: str
+    client_request_id: Optional[str] = Field(None, min_length=1, max_length=100)
     goal_type_id: str  
     target_name: str  
     target_amount: float = Field(..., gt=0, allow_inf_nan=False)
@@ -26,12 +27,27 @@ class GoalResponse(GoalCreate):
 # HETO ANG IDADAGDAG NATIN PAPS:
 class GoalDeposit(BaseModel):
     user_id: str  # FIX: required so the endpoint can verify the requester actually owns this goal
+    client_request_id: Optional[str] = Field(None, min_length=1, max_length=100)
     amount: float = Field(..., gt=0, allow_inf_nan=False)  # FIX: previously unconstrained -- a negative amount could
                                        # silently drain a goal's savings and inject a phantom
                                        # negative "expense" into budget/insights totals.
     account: str  # Dito natin sasabihin kung Cash, GCash, o Bank ang ginamit
+    date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
 
     @field_validator("amount", mode="before")
     @classmethod
     def deposit_has_cent_precision(cls, value):
         return require_cent_precision(value, "Contribution amount")
+
+
+class GoalWithdrawal(BaseModel):
+    user_id: str
+    client_request_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    amount: float = Field(..., gt=0, allow_inf_nan=False)
+    account: str
+    date: Optional[str] = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @field_validator("amount", mode="before")
+    @classmethod
+    def withdrawal_has_cent_precision(cls, value):
+        return require_cent_precision(value, "Withdrawal amount")

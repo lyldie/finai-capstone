@@ -1,6 +1,6 @@
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator, Alert, FlatList, Modal, StyleSheet,
+  ActivityIndicator, Alert, FlatList, Modal, StyleSheet, ScrollView,
   Text, TextInput, TouchableOpacity, View, StatusBar, KeyboardAvoidingView, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -13,9 +13,11 @@ import { Account } from '../context/TransactionContext';
 
 // Import natin ang emoji helper
 import { getAccountDisplayEmoji, getAccountEmoji } from '../utils/accountEmoji';
+import { ACCOUNT_CARD_PALETTE } from '../utils/accountCardColors';
 import EmojiPicker from '../components/EmojiPicker';
 import { getSecureItem } from '../utils/secureStorage';
 import { hasSubCentPrecision } from '../utils/money';
+import { logUnexpectedError, userFacingError } from '../utils/userFacingError';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -43,6 +45,7 @@ export default function PersonalAccountsScreen() {
   const [accountName, setAccountName] = useState('');
   const [openingBalance, setOpeningBalance] = useState('0');
   const [accountEmoji, setAccountEmoji] = useState(getAccountEmoji('account'));
+  const [cardColor, setCardColor] = useState<string | null>(null);
 
   const loadAccounts = useCallback(async () => {
     setIsLoading(true);
@@ -57,7 +60,7 @@ export default function PersonalAccountsScreen() {
       setAccounts(accountResponse.ok ? await accountResponse.json() : []);
       setTemplates(templateResponse.ok ? await templateResponse.json() : []);
     } catch (error) {
-      console.error('Personal account fetch failed:', error);
+      logUnexpectedError('Personal account fetch failed unexpectedly:', error);
       Alert.alert('Unable to load accounts', 'Check your connection and try again.');
     } finally {
       setIsLoading(false);
@@ -73,6 +76,7 @@ export default function PersonalAccountsScreen() {
     setAccountName(templates[0]?.name || '');
     setOpeningBalance('0');
     setAccountEmoji(getAccountDisplayEmoji(templates[0]?.icon, templates[0]?.name || 'account'));
+    setCardColor(null);
     setIsModalVisible(true);
   };
 
@@ -82,6 +86,7 @@ export default function PersonalAccountsScreen() {
     setAccountName(account.name);
     setOpeningBalance(String(account.initial_balance || 0));
     setAccountEmoji(getAccountDisplayEmoji(account.icon, account.name));
+    setCardColor(account.card_color || null);
 
     // Hanapin kung may tumutugmang template o gamitin ang icon niya
     const matchedTemplate = templates.find(t => t.id === account.parent_template_id)
@@ -93,7 +98,7 @@ export default function PersonalAccountsScreen() {
 
   const selectTemplate = (template: AccountTemplate) => {
     setSelectedTemplate(template);
-    setAccountName(template.name);
+    if (!editingAccount) setAccountName(template.name);
     setAccountEmoji(getAccountDisplayEmoji(template.icon, template.name));
   };
 
@@ -138,13 +143,16 @@ export default function PersonalAccountsScreen() {
         name,
         initial_balance: initialBalance,
         icon: accountEmoji || getAccountEmoji(name),
-        user_id: userId
+        user_id: userId,
+        parent_template_id: selectedTemplate?.id || null,
+        card_color: cardColor,
       } : {
         name,
         initial_balance: initialBalance,
         icon: accountEmoji || getAccountEmoji(name),
         user_id: userId,
         parent_template_id: selectedTemplate?.id,
+        card_color: cardColor,
       };
 
       const response = await fetch(url, {
@@ -159,7 +167,7 @@ export default function PersonalAccountsScreen() {
       setIsModalVisible(false);
       await loadAccounts();
     } catch (error: any) {
-      Alert.alert('Unable to save account', error.message || 'Please try again.');
+      Alert.alert('Unable to save account', userFacingError(error, 'Please check your connection and try again.'));
     } finally {
       setIsSaving(false);
     }
@@ -173,7 +181,7 @@ export default function PersonalAccountsScreen() {
         const token = await getSecureItem('user_token');
         const response = await fetch(`${API_URL}/api/accounts/${account.id}/archive`, { method: 'PATCH', headers: { Authorization: `Bearer ${token || ''}` } });
         const result = await response.json().catch(() => ({}));
-        if (!response.ok) Alert.alert('Cannot archive account', result.detail || 'Please try again.');
+        if (!response.ok) Alert.alert('Cannot archive account', userFacingError(result.detail, 'Please check your connection and try again.'));
         else loadAccounts();
       }},
     ]);
@@ -254,6 +262,7 @@ export default function PersonalAccountsScreen() {
       {/* Add / Edit Account Modal */}
       <Modal visible={isModalVisible} transparent animationType="slide" onRequestClose={() => setIsModalVisible(false)}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.overlay}>
+          <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'flex-end' }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>{editingAccount ? 'Edit Account' : 'Add Personal Account'}</Text>
@@ -262,9 +271,9 @@ export default function PersonalAccountsScreen() {
               </TouchableOpacity>
             </View>
 
-            {!editingAccount && (
+            {templates.length > 0 && (
               <>
-                <Text style={styles.label}>Select Account Type</Text>
+                <Text style={styles.label}>{editingAccount ? 'Account Type' : 'Select Account Type'}</Text>
                 <View style={styles.templateList}>
                   {templates.map((template) => (
                     <TouchableOpacity
@@ -286,6 +295,16 @@ export default function PersonalAccountsScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, marginBottom: 12 }}>
               <EmojiPicker value={accountEmoji} onChange={setAccountEmoji} fallback={getAccountEmoji(accountName || 'account')} context="account" tint={ACCOUNT_TINT} accessibilityLabel="Choose personal account emoji" />
               <Text style={{ flex: 1, color: SAGE, fontSize: 13, fontWeight: '600' }}>Choose an icon for this account</Text>
+            </View>
+
+            <Text style={styles.label}>Wallet card color</Text>
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
+              {ACCOUNT_CARD_PALETTE.map((item) => (
+                <TouchableOpacity key={item.key} onPress={() => setCardColor(item.key)} accessibilityRole="button" accessibilityLabel={`${item.key} wallet card color`} accessibilityState={{ selected: cardColor === item.key }} style={{ width: 34, height: 34, borderRadius: 17, backgroundColor: item.start, borderWidth: cardColor === item.key ? 3 : 1, borderColor: cardColor === item.key ? DEEP_GREEN : '#FFFFFF', alignItems: 'center', justifyContent: 'center' }}>
+                  {cardColor === item.key && <Ionicons name="checkmark" size={16} color="#FFFFFF" />}
+                </TouchableOpacity>
+              ))}
+              <TouchableOpacity onPress={() => setCardColor(null)} accessibilityRole="button" accessibilityLabel="Use automatic wallet card color" style={{ minHeight: 34, justifyContent: 'center', paddingHorizontal: 8 }}><Text style={{ color: SAGE, fontSize: 11, fontWeight: '700' }}>Auto</Text></TouchableOpacity>
             </View>
 
             <Text style={styles.label}>Account Name</Text>
@@ -317,6 +336,7 @@ export default function PersonalAccountsScreen() {
               {isSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={styles.primaryButtonText}>{editingAccount ? 'Update Account' : 'Save Account'}</Text>}
             </TouchableOpacity>
           </View>
+          </ScrollView>
         </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>

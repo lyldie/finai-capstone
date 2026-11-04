@@ -6,6 +6,7 @@ class AccountCreate(BaseModel):
     name: str
     initial_balance: float = Field(default=0.0, ge=0, allow_inf_nan=False)
     icon: Optional[str] = "wallet"
+    card_color: Optional[str] = None
     user_id: Optional[str] = None
     account_role: Optional[str] = "user"
     parent_template_id: Optional[str] = None
@@ -21,6 +22,7 @@ class AccountResponse(BaseModel):
     initial_balance: float = 0.0
     current_balance: float = 0.0
     icon: Optional[str] = "wallet"
+    card_color: Optional[str] = None
     user_id: Optional[str] = None
     account_role: Optional[str] = "admin"
     parent_template_id: Optional[str] = None

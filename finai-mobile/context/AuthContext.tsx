@@ -66,12 +66,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const logoutUser = useCallback(async () => {
-    const userId = await AsyncStorage.getItem('user_id');
+    // Clear in-memory identity immediately so the signed-in UI cannot linger
+    // with a fallback greeting while persistent storage is being cleaned up.
     setUser(null);
+    const userIdPromise = AsyncStorage.getItem('user_id');
+    const keysPromise = AsyncStorage.getAllKeys();
+    const [userId, allKeys] = await Promise.all([userIdPromise, keysPromise]);
     const keysToRemove = ['user_id', 'user_name', 'user_email', 'user_role'];
     if (userId) {
       const userCachePrefix = `@offline_${userId}_`;
-      const cachedKeys = (await AsyncStorage.getAllKeys()).filter((key) => key.startsWith(userCachePrefix));
+      // Keep queued writes so signing out before reconnecting cannot discard
+      // transactions that have not reached the server yet. The queue is scoped
+      // to this user ID and will only sync after that same account signs in.
+      const pendingQueueKey = `${userCachePrefix}pending_transactions`;
+      const cachedKeys = allKeys.filter(
+        (key) => key.startsWith(userCachePrefix) && key !== pendingQueueKey,
+      );
       keysToRemove.push(...cachedKeys);
     }
     await Promise.allSettled([

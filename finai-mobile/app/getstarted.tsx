@@ -111,8 +111,7 @@ export default function GetStartedScreen() {
             />
           </Animated.View>
 
-          <Text style={styles.appName}>FINAI</Text>
-          <Text style={styles.tagline}>NA SOBRANG FINE</Text>
+          <Text style={styles.appName}>FinAI</Text>
         </View>
 
         <View style={styles.buttonContainer}>
@@ -165,7 +164,6 @@ const styles = StyleSheet.create({
     fontSize: 56, 
     fontWeight: '900',
     letterSpacing: 8,
-    textTransform: 'uppercase',
   },
   tagline: {
     color: 'white',

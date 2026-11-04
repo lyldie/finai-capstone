@@ -1,44 +1,95 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
+import { useTransactions } from '../context/TransactionContext';
+import { useNetworkStatus } from '../context/NetworkStatusContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import PlanningDashboard from '../components/PlanningDashboard';
 import { CategoryForecast, PlanningData } from '../types/planning';
+import { userFacingError } from '../utils/userFacingError';
 
 const DEEP_GREEN = '#1c3c36';
 const CREAM = '#FAF7F2';
 
+type PlanningCacheEntry = { signature: string; data: PlanningData };
+const planningMemoryCache = new Map<string, PlanningCacheEntry>();
+const planningRequests = new Map<string, Promise<PlanningData>>();
+
+function planningInputSignature(input: Record<string, unknown>) {
+  const source = JSON.stringify(input);
+  let hash = 2166136261;
+  for (let i = 0; i < source.length; i += 1) {
+    hash ^= source.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+function requestPlanning(userId: string, token: string, signature: string, apiUrl: string) {
+  const requestKey = `${userId}:${signature}`;
+  const existing = planningRequests.get(requestKey);
+  if (existing) return existing;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+  const request = fetch(`${apiUrl}/advisor/planning`, {
+    headers: { Authorization: `Bearer ${token}` },
+    signal: controller.signal,
+  }).then(async (response) => {
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.detail || 'FinAI could not load your planning analysis.');
+    return payload as PlanningData;
+  }).finally(() => {
+    clearTimeout(timeout);
+    planningRequests.delete(requestKey);
+  });
+  planningRequests.set(requestKey, request);
+  return request;
+}
+
 export default function PlanAheadScreen() {
   const router = useRouter();
   const { user } = useAuth();
+  const { isOnline } = useNetworkStatus();
+  const { pendingTransactionCount, transactions, budgets, goals, accounts, categories, isLoading: financialDataLoading } = useTransactions();
   const [data, setData] = useState<PlanningData | null>(null);
   const [dataUserId, setDataUserId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [openingAdvisor, setOpeningAdvisor] = useState(false);
+  const [needsSyncedRefresh, setNeedsSyncedRefresh] = useState(false);
+  const forceRefresh = useRef(false);
+  const loadedSignature = useRef<string | null>(null);
+  const previousPendingCount = useRef(pendingTransactionCount);
 
-  const openFinnChat = async (topic: 'general' | 'budget' | 'goals', prompt: string) => {
-    if (!user?.token || openingAdvisor) return;
-    setOpeningAdvisor(true);
-    try {
-      const response = await fetch(`${API_URL}/advisor/conversations`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${user.token}` },
-        body: JSON.stringify({ topic }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.detail || 'Could not open Finn’s conversation.');
-      router.push({ pathname: '/chat', params: { conversation_id: payload.id, prefill: prompt } });
-    } catch (error) {
-      Alert.alert('Couldn’t open Finn', error instanceof Error ? error.message : 'Check your connection and try again.');
-    } finally {
-      setOpeningAdvisor(false);
+  const inputSignature = useMemo(() => planningInputSignature({
+    day: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date()),
+    transactions: transactions.map(({ id, amount, category_id, category, type, date, account_id, to_account_id, goal_id, pending_sync }) =>
+      [id, amount, category_id, category, type, date, account_id, to_account_id, goal_id, pending_sync]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    budgets: budgets.map(({ id, category_id, amount, period_type, period_key, budget_kind, rollover_enabled }) =>
+      [id, category_id, amount, period_type, period_key, budget_kind, rollover_enabled]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    goals: goals.map(({ id, target_name, target_amount, current_savings, target_date }) =>
+      [id, target_name, target_amount, current_savings, target_date]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    accounts: accounts.map(({ id, initial_balance, current_balance, account_role }) =>
+      [id, initial_balance, current_balance, account_role]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+    categories: categories.map(({ id, name, type }) => [id, name, type]).sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+  }), [transactions, budgets, goals, accounts, categories]);
+
+  useEffect(() => {
+    if (previousPendingCount.current > 0 && pendingTransactionCount === 0) {
+      setNeedsSyncedRefresh(true);
     }
+    previousPendingCount.current = pendingTransactionCount;
+  }, [pendingTransactionCount]);
+  const openFinnChat = (topic: 'general' | 'budget' | 'goals', prompt: string) => {
+    if (!user?.token) return;
+    if (isOnline === false) { Alert.alert('Finn is offline', 'Your saved forecasts remain viewable, but Finn can only create or continue an AI conversation when you are online.'); return; }
+    router.push({ pathname: '/chat', params: { topic, prefill: prompt } });
   };
 
   useFocusEffect(useCallback(() => {
@@ -50,54 +101,101 @@ export default function PlanAheadScreen() {
       return;
     }
 
-    const controller = new AbortController();
-    let timedOut = false;
-    const requestTimeout = setTimeout(() => {
-      timedOut = true;
-      controller.abort();
-    }, 30000);
+    let active = true;
+    const cacheKey = `@offline_${user.id}_planning_data`;
+    if (isOnline === false) {
+      AsyncStorage.getItem(cacheKey).then((cached) => {
+        if (!active) return;
+        if (cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            setData(parsed.data || parsed); setDataUserId(user.id); setError(null);
+          }
+          catch { setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first forecast.'); }
+        } else {
+          setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first forecast. Your Insights and saved records remain available offline.');
+        }
+        setLoading(false);
+      });
+      return () => { active = false; };
+    }
+
+    if (financialDataLoading) return () => { active = false; };
+
+    const force = forceRefresh.current;
+    forceRefresh.current = false;
+    const memory = planningMemoryCache.get(user.id);
+    if (!force && memory?.signature === inputSignature) {
+      setData(memory.data);
+      setDataUserId(user.id);
+      setError(null);
+      setNeedsSyncedRefresh(false);
+      setLoading(false);
+      loadedSignature.current = inputSignature;
+      return () => { active = false; };
+    }
+    if (!force && dataUserId === user.id && data && loadedSignature.current === inputSignature) {
+      setLoading(false);
+      return () => { active = false; };
+    }
+
     setLoading(true);
     setError(null);
-    fetch(`${API_URL}/advisor/planning`, {
-      headers: { Authorization: `Bearer ${user.token}` },
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => ({}));
-        if (!response.ok) throw new Error(payload.detail || 'FinAI could not load your planning analysis.');
-        return payload;
-      })
+    const load = async () => {
+      if (!force) {
+        try {
+          const cached = await AsyncStorage.getItem(cacheKey);
+          const parsed = cached ? JSON.parse(cached) : null;
+          if (active && parsed?.signature === inputSignature && parsed?.data) {
+            planningMemoryCache.set(user.id, { signature: inputSignature, data: parsed.data });
+            loadedSignature.current = inputSignature;
+            setData(parsed.data);
+            setDataUserId(user.id);
+            setNeedsSyncedRefresh(false);
+            setError(null);
+            setLoading(false);
+            return;
+          }
+        } catch { /* A bad or old cache is replaced by the next successful response. */ }
+      }
+      return requestPlanning(user.id, user.token!, inputSignature, API_URL);
+    };
+    load()
       .then((payload) => {
-        if (!controller.signal.aborted) {
-          setData(payload);
-          setDataUserId(user.id);
+        if (payload) {
+          loadedSignature.current = inputSignature;
+          planningMemoryCache.set(user.id, { signature: inputSignature, data: payload });
+          void AsyncStorage.setItem(cacheKey, JSON.stringify({ signature: inputSignature, data: payload }));
+          if (active) {
+            setData(payload);
+            setDataUserId(user.id);
+            setNeedsSyncedRefresh(false);
+          }
         }
       })
       .catch((requestError) => {
-        if (!controller.signal.aborted) {
-          setError(requestError instanceof Error ? requestError.message : 'Please check your connection and try again.');
-        } else if (timedOut) {
-          setError('The plan is taking longer than expected. Try again in a moment; your recorded insights are still available.');
+        if (active) {
+          setError(userFacingError(requestError, 'Please check your connection and try again.'));
+          if (requestError?.name === 'AbortError') {
+            setError('The plan is taking longer than expected. Try again in a moment; your recorded insights are still available.');
+          }
         }
       })
       .finally(() => {
-        clearTimeout(requestTimeout);
-        if (!controller.signal.aborted) setLoading(false);
-        else if (timedOut) setLoading(false);
+        if (active) setLoading(false);
       });
 
     return () => {
-      clearTimeout(requestTimeout);
-      controller.abort();
+      active = false;
     };
-  }, [user?.id, user?.token, refreshKey]));
+  }, [user?.id, user?.token, isOnline, inputSignature, financialDataLoading, refreshKey, data, dataUserId]));
 
   const hasCurrentPlan = !!data && dataUserId === user?.id;
   const outlookDate = data?.metrics?.as_of_date
     ? new Date(`${data.metrics.as_of_date}T12:00:00`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : null;
 
-  if (loading && !hasCurrentPlan) {
+  if (loading) {
     return (
       <SafeAreaView style={styles.loadingScreen} edges={['top', 'right', 'bottom', 'left']}>
         <LinearGradient colors={[DEEP_GREEN, '#2D6659']} style={styles.loadingGradient}>
@@ -139,15 +237,21 @@ export default function PlanAheadScreen() {
           <Text style={styles.headerTitle}>Plan Ahead</Text>
           <Text style={styles.headerSubtitle}>{outlookDate ? `Based on recorded activity as of ${outlookDate}` : 'Your financial outlook'}</Text>
         </View>
-        <TouchableOpacity onPress={() => setRefreshKey((value) => value + 1)} style={styles.headerIcon} accessibilityRole="button" accessibilityLabel="Refresh Plan Ahead forecast">
+        <TouchableOpacity onPress={() => { forceRefresh.current = true; setData(null); setDataUserId(null); loadedSignature.current = null; setLoading(true); setRefreshKey((value) => value + 1); }} style={styles.headerIcon} accessibilityRole="button" accessibilityLabel="Refresh Plan Ahead forecast">
           <Ionicons name="refresh-outline" size={19} color={DEEP_GREEN} />
         </TouchableOpacity>
       </View>
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        {error && !data && <View style={{ padding: 20 }}><Text style={{ color: DEEP_GREEN }}>{error}</Text><TouchableOpacity onPress={() => setRefreshKey((value) => value + 1)}><Text style={{ color: '#3D7D6C', paddingTop: 12 }}>Try again</Text></TouchableOpacity></View>}
+        {(pendingTransactionCount > 0 || needsSyncedRefresh) && dataUserId === user?.id && data && <View style={styles.pendingNotice}>
+          <Ionicons name="cloud-upload-outline" size={18} color="#785B17" />
+          <Text style={styles.pendingNoticeText}>{pendingTransactionCount > 0
+            ? `${pendingTransactionCount} saved ${pendingTransactionCount === 1 ? 'change has' : 'changes have'} not synced yet. This plan may not include ${pendingTransactionCount === 1 ? 'it' : 'them'}.`
+            : error ? 'Your changes synced, but this forecast could not refresh. The figures shown may be out of date.' : 'Your changes synced. Plan Ahead is refreshing to include them.'}</Text>
+        </View>}
+        {error && !data && <View style={{ padding: 20 }}><Text style={{ color: DEEP_GREEN }}>{error}</Text><TouchableOpacity onPress={() => { forceRefresh.current = true; setLoading(true); setRefreshKey((value) => value + 1); }}><Text style={{ color: '#3D7D6C', paddingTop: 12 }}>Try again</Text></TouchableOpacity></View>}
         {dataUserId === user?.id && data && <PlanningDashboard
           data={data}
-          onFinn={() => openFinnChat('budget', 'Please help me understand my latest Plan Ahead outlook and forecast. Explain the recorded figures and uncertainty.')}
+          onFinn={(message) => openFinnChat('budget', message || 'Please help me understand my latest Plan Ahead outlook and forecast. Explain the recorded figures and uncertainty.')}
           onManageBills={() => router.push('/fixed-bills' as never)}
           onCategory={(item: CategoryForecast, period) => router.push({ pathname: '/category-forecast' as never, params: { category_id: item.category_id, period, name: item.category, forecast: JSON.stringify(item) } } as never)}
         />}
@@ -176,4 +280,6 @@ const styles = StyleSheet.create({
   headerSubtitle: { color: '#627772', fontSize: 12, fontWeight: '600', marginTop: 2 },
   headerIcon: { width: 38, height: 38, borderRadius: 13, backgroundColor: 'rgba(237,178,50,0.2)', alignItems: 'center', justifyContent: 'center' },
   scrollContent: { paddingBottom: 24 },
+  pendingNotice: { marginHorizontal: 16, marginTop: 6, marginBottom: 8, padding: 12, borderRadius: 14, backgroundColor: '#FFF3D5', flexDirection: 'row', alignItems: 'center', gap: 9 },
+  pendingNoticeText: { flex: 1, color: '#785B17', fontSize: 12, lineHeight: 17, fontWeight: '600' },
 });

@@ -40,6 +40,8 @@ async def calculate_account_balance(account_name: str, user_id: Optional[str], i
         to_matches = str(txn.get("to_account_id")) == account_key if account_key and txn.get("to_account_id") else acc_to == account_name
         if t_type == "Income" and from_matches:
             balance += amount
+        elif t_type == "Goal withdrawal" and from_matches:
+            balance += amount
         elif t_type in {"Expense", "Contribution"} and from_matches:
             balance -= amount
         elif t_type == "Transfer":
@@ -253,7 +255,25 @@ async def update_account(
     account_data["account_role"] = existing.get("account_role", "admin")
     account_data["owner_scope"] = "admin" if account_data["account_role"] == "admin" else current_user["id"]
     account_data["name_key"] = account_data["name"].casefold()
-    account_data["parent_template_id"] = existing.get("parent_template_id")
+    if existing.get("account_role") == "user" and "parent_template_id" in account.model_fields_set:
+        requested_template_id = account_data.get("parent_template_id")
+        if requested_template_id:
+            try:
+                template_oid = ObjectId(requested_template_id)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail="Choose a valid account type.") from exc
+            template = await db.accounts.find_one({
+                "_id": template_oid, "account_role": "admin", "is_archived": {"$ne": True},
+            })
+            if not template:
+                raise HTTPException(status_code=422, detail="That account type is no longer available. Refresh and choose another.")
+            account_data["parent_template_id"] = str(template_oid)
+        else:
+            account_data["parent_template_id"] = None
+    else:
+        account_data["parent_template_id"] = existing.get("parent_template_id")
+    if "card_color" not in account.model_fields_set:
+        account_data["card_color"] = existing.get("card_color")
     account_data["is_archived"] = existing.get("is_archived", False)
 
     await _check_duplicate_name(account_data["name"], account_data.get("user_id"), exclude_id=oid)

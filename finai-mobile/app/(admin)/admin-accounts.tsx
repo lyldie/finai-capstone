@@ -1,13 +1,14 @@
 import React, { useCallback, useState } from 'react';
 import {
   ActivityIndicator, Alert, FlatList, Modal, StatusBar,
-  StyleSheet, Text, TextInput, TouchableOpacity, View,
+  StyleSheet, Text, TextInput, TouchableOpacity, View, KeyboardAvoidingView, Platform, ScrollView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
+import { userFacingError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 
 const GREEN = '#1c3c36';
@@ -54,7 +55,7 @@ export default function AdminAccountsScreen() {
       setAccounts(Array.isArray(data) ? data : []);
     } catch (error) {
       setAccounts([]);
-      Alert.alert('Could not load accounts', error instanceof Error ? error.message : 'Check your connection and try again.');
+      Alert.alert('Could not load accounts', userFacingError(error, 'Check your connection and try again.'));
     } finally {
       setLoading(false);
     }
@@ -108,7 +109,7 @@ export default function AdminAccountsScreen() {
       await loadAccounts();
       Alert.alert(editing ? 'Account updated' : 'Administrator added', editing ? 'The administrator account was updated.' : 'The account was created. Share the initial password securely with its owner.');
     } catch (error) {
-      Alert.alert('Could not save account', error instanceof Error ? error.message : 'Check your connection and try again.');
+      Alert.alert('Could not save account', userFacingError(error, 'Check your connection and try again.'));
     } finally {
       setSaving(false);
     }
@@ -124,7 +125,7 @@ export default function AdminAccountsScreen() {
       if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : `Could not ${action} this account.`);
       await loadAccounts();
     } catch (error) {
-      Alert.alert('Action failed', error instanceof Error ? error.message : 'Check your connection and try again.');
+      Alert.alert('Action failed', userFacingError(error, 'Check your connection and try again.'));
     }
   };
 
@@ -203,7 +204,8 @@ export default function AdminAccountsScreen() {
       )}
 
       <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={() => setModalVisible(false)}>
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View style={styles.modal}>
             <Text style={styles.modalTitle}>{editing ? 'Edit administrator' : 'Add administrator'}</Text>
             <TextInput style={styles.input} placeholder="Full name" value={name} onChangeText={setName} autoCapitalize="words" editable={!saving} />
@@ -224,7 +226,8 @@ export default function AdminAccountsScreen() {
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setModalVisible(false)} disabled={saving} style={styles.cancelButton}><Text style={styles.cancelText}>Cancel</Text></TouchableOpacity>
           </View>
-        </View>
+        </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

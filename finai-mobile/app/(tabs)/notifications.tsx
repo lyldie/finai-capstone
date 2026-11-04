@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
 import { useTransactions, AppNotification } from '../../context/TransactionContext';
+import { useNetworkStatus } from '../../context/NetworkStatusContext';
 import { getBudgetStatusColor, getBudgetStatusTextColor, getBudgetStatusTint } from '../../utils/budgetThresholdColors';
 
 const GREEN = '#1c3c36';
@@ -18,6 +19,7 @@ const WHITE = '#FFFFFF';
 
 export default function NotificationsScreen() {
   const router = useRouter();
+  const { isOnline } = useNetworkStatus();
   const {
     notifications,
     isLoading,
@@ -69,7 +71,7 @@ export default function NotificationsScreen() {
               size={13}
               color={badgeText}
             />
-            <Text style={[styles.levelText, { color: badgeText }]}>{isSpendingSpike ? 'SPENDING HIGHER THAN USUAL' : levelTitle}</Text>
+            <Text style={[styles.levelText, { color: badgeText }]}>{item.provisional ? 'OFFLINE ESTIMATE' : isSpendingSpike ? 'SPENDING HIGHER THAN USUAL' : levelTitle}</Text>
           </View>
           <Text style={styles.dateText}>
             {new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -79,23 +81,45 @@ export default function NotificationsScreen() {
         <Text style={styles.messageText}>{item.message}</Text>
 
         <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={styles.reviewButton}
-            onPress={() => {
-              void markNotificationRead(item.id);
-              router.push(isSpendingSpike ? '/(tabs)/transactions' as never : '/(tabs)/insights' as never);
-            }}
-            activeOpacity={0.8}
-            accessibilityRole="button"
-          >
-            <Text style={styles.reviewButtonText}>{isSpendingSpike ? 'Review transactions' : 'Review Budget'}</Text>
-            <Ionicons name="arrow-forward" size={13} color={TEAL} />
-          </TouchableOpacity>
+          <View style={styles.primaryActions}>
+            <TouchableOpacity
+              style={styles.reviewButton}
+              onPress={() => {
+                void markNotificationRead(item.id);
+                router.push(isSpendingSpike ? '/(tabs)/transactions' as never : '/(tabs)/insights' as never);
+              }}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+            >
+              <Text style={styles.reviewButtonText}>{isSpendingSpike ? 'Review transactions' : 'Review budget'}</Text>
+              <Ionicons name="arrow-forward" size={13} color={TEAL} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.askFinnButton}
+              onPress={() => {
+                void markNotificationRead(item.id);
+                router.push({
+                  pathname: '/chat',
+                  params: {
+                    topic: 'budget',
+                    prefill: `Can you explain this ${isSpendingSpike ? 'spending activity' : 'budget'} alert and suggest what I should review? ${item.message}`,
+                  },
+                } as never);
+              }}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Discuss this notification with Finn"
+            >
+              <Ionicons name="chatbubble-ellipses-outline" size={14} color={GREEN} />
+              <Text style={styles.askFinnText}>Ask Finn</Text>
+            </TouchableOpacity>
+          </View>
 
           {!item.is_read && (
             <TouchableOpacity
               style={styles.markReadBtn}
               onPress={() => void markNotificationRead(item.id)}
+              disabled={isOnline === false}
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
               <Ionicons name="checkmark-done" size={15} color={SAGE} />
@@ -124,6 +148,7 @@ export default function NotificationsScreen() {
             <TouchableOpacity
               style={styles.actionPill}
               onPress={() => void markAllNotificationsRead()}
+              disabled={isOnline === false}
               accessibilityRole="button"
               accessibilityLabel="Mark all as read"
             >
@@ -135,6 +160,7 @@ export default function NotificationsScreen() {
             <TouchableOpacity
               style={styles.iconCircle}
               onPress={handleClearAll}
+              disabled={isOnline === false}
               accessibilityRole="button"
               accessibilityLabel="Clear all notifications"
             >
@@ -143,6 +169,8 @@ export default function NotificationsScreen() {
           )}
         </View>
       </View>
+
+      {isOnline === false && <Text style={{ color: '#725D2B', backgroundColor: '#FFF1C9', paddingHorizontal: 18, paddingVertical: 8, fontSize: 11, fontWeight: '600' }}>Showing saved alerts. New budget alerts and email notices are checked after you reconnect.</Text>}
 
       {isLoading && !notifications.length ? (
         <ActivityIndicator color={TEAL} style={styles.loader} />
@@ -259,10 +287,13 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 10,
     borderTopWidth: 1,
     borderTopColor: '#F3F0EA',
     paddingTop: 10,
   },
+  primaryActions: { flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', columnGap: 14, rowGap: 6, flex: 1 },
   reviewButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -274,6 +305,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '800',
   },
+  askFinnButton: { minHeight: 32, paddingHorizontal: 10, borderRadius: 12, backgroundColor: '#EAF2EE', flexDirection: 'row', alignItems: 'center', gap: 5 },
+  askFinnText: { color: GREEN, fontSize: 12, fontWeight: '800' },
   markReadBtn: {
     flexDirection: 'row',
     alignItems: 'center',

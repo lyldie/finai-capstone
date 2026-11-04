@@ -1,0 +1,34 @@
+# Local secrets and environment-specific settings
+.env
+.env.*
+
+# Dependencies and generated Expo output
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Source control and local tooling
+.git/
+.vscode/
+.idea/
+
+# Native/generated files and signing material
+.kotlin/
+*.orig.*
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Local debug/build artifacts
+.metro-health-check*
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+*.tsbuildinfo
+*.log

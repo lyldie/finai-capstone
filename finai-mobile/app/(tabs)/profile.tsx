@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -14,9 +14,12 @@ import * as DocumentPicker from 'expo-document-picker';
 
 import { useAuth } from '../../context/AuthContext';
 import { useTransactions } from '../../context/TransactionContext';
+import { useNetworkStatus } from '../../context/NetworkStatusContext';
 import { API_URL } from '../../config';
+import { logUnexpectedError, userFacingError } from '../../utils/userFacingError';
 import { setSecureItem } from '../../utils/secureStorage';
 import { hasSubCentPrecision } from '../../utils/money';
+import { useWalkthrough } from '../../context/WalkthroughContext';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -33,6 +36,8 @@ const formatBaseline = (amount: number) => `${String.fromCharCode(0x20B1)}${amou
 export default function ProfileScreen() {
   const { user, logoutUser } = useAuth();
   const { fetchTransactions } = useTransactions();
+  const { isOnline } = useNetworkStatus();
+  const { openWalkthrough } = useWalkthrough();
   const router = useRouter();
 
   // --- MODAL STATES ---
@@ -93,6 +98,7 @@ export default function ProfileScreen() {
 
   // --- HANDLERS ---
   const handleUpdateIncome = async () => {
+    if (isOnline === false) { Alert.alert('Internet required', 'Your monthly income baseline is stored in your account. Connect to the internet to update it.'); return; }
     if (!newIncome.trim()) {
       Alert.alert('Amount needed', 'Enter a monthly amount, or leave your baseline unchanged.');
       return;
@@ -122,7 +128,7 @@ export default function ProfileScreen() {
         setNewIncome('');
       } else {
         const data = await response.json().catch(() => ({}));
-        Alert.alert('Could not update baseline', typeof data.detail === 'string' ? data.detail : 'Please try again.');
+        Alert.alert('Could not update baseline', userFacingError(data.detail, 'Please try again.'));
       }
     } catch (error) {
       Alert.alert('Could not update baseline', 'We couldn’t reach FinAI. Check your internet connection and try again.');
@@ -130,6 +136,7 @@ export default function ProfileScreen() {
   };
 
   const handleChangePin = async () => {
+    if (isOnline === false) { Alert.alert('Internet required', 'Changing your app PIN updates your account security. Connect to the internet first.'); return; }
     if (!oldPin || !newPin || newPin.length !== 4) {
       Alert.alert('Oops!', 'Kumpletuhin ang form. Ang bagong PIN ay dapat 4 digits.');
       return;
@@ -150,7 +157,7 @@ export default function ProfileScreen() {
         setOldPin('');
         setNewPin('');
       } else {
-        Alert.alert('Could not change PIN', typeof data.detail === 'string' ? data.detail : 'Check your current PIN and try again.');
+        Alert.alert('Could not change PIN', userFacingError(data.detail, 'Check your current PIN and try again.'));
       }
     } catch (error) {
       Alert.alert('Could not change PIN', 'We couldn’t reach FinAI. Check your internet connection and try again.');
@@ -158,6 +165,7 @@ export default function ProfileScreen() {
   };
 
   const handleChangePassword = async () => {
+    if (isOnline === false) { Alert.alert('Internet required', 'Changing your password requires online account verification. Connect to the internet first.'); return; }
     if (!oldPassword || !newPassword) {
       Alert.alert('Missing information', 'Enter your current password and a new password.');
       return;
@@ -192,7 +200,7 @@ export default function ProfileScreen() {
         setNewPassword('');
         setShowNewPassword(false);
       } else {
-        Alert.alert('Could not change password', typeof data.detail === 'string' ? data.detail : 'Check your current password and try again.');
+        Alert.alert('Could not change password', userFacingError(data.detail, 'Check your current password and try again.'));
       }
     } catch (error) {
       Alert.alert('Could not change password', 'We couldn’t reach FinAI. Check your internet connection and try again.');
@@ -201,6 +209,7 @@ export default function ProfileScreen() {
 
   // 1. CLOUD BACKUP & EXPORT HANDLER
   const handleCloudBackupExport = async () => {
+    if (isOnline === false) { Alert.alert('Internet required', 'Export Backup File downloads your records from your cloud account. Connect to the internet to use it.'); return; }
     const targetUserId = user?.id || (user as any)?._id;
     if (!targetUserId) {
       Alert.alert('Sign-in required', 'Please sign in again to continue.');
@@ -230,13 +239,14 @@ export default function ProfileScreen() {
       }
 
     } catch (error) {
-      console.error("Backup export error:", error);
+      logUnexpectedError('Backup export failed unexpectedly:', error);
       Alert.alert("Error", "There was a problem exporting your records.");
     }
   };
 
   // 2. CLOUD RESTORE & IMPORT HANDLER
   const handleCloudRestoreImport = async () => {
+    if (isOnline === false) { Alert.alert('Internet required', 'Restoring a backup updates your cloud account. Connect to the internet to use it.'); return; }
     try {
       const result = await DocumentPicker.getDocumentAsync({
         type: 'application/json',
@@ -281,7 +291,7 @@ export default function ProfileScreen() {
       );
 
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Could not read the selected backup file.';
+      const message = userFacingError(error, 'Could not read the selected backup file.');
       Alert.alert('Could not open backup', message);
     }
   };
@@ -311,7 +321,7 @@ export default function ProfileScreen() {
       await fetchTransactions(false);
       Alert.alert('Restore complete', 'Your financial records were restored successfully.');
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Check your connection and try again.';
+      const message = userFacingError(error, 'Check your connection and try again.');
       Alert.alert('Restore failed', message);
     }
   };
@@ -324,6 +334,8 @@ export default function ProfileScreen() {
   };
 
   const performLogout = async () => {
+    // Leave the profile immediately; session/cache cleanup can finish behind login.
+    router.replace('/login');
     let storageClearFailed = false;
     try {
       await logoutUser();
@@ -331,7 +343,6 @@ export default function ProfileScreen() {
       storageClearFailed = true;
     }
 
-    router.replace('/login');
     if (storageClearFailed) {
       Alert.alert('Signed out', 'Your session was closed, but some saved session data could not be cleared.');
     }
@@ -365,6 +376,17 @@ export default function ProfileScreen() {
       </LinearGradient>
 
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+
+        <Text style={styles.sectionTitle}>Help</Text>
+        <View style={styles.cardGroup}>
+          <MenuOption
+            icon="help-circle-outline"
+            title="App walkthrough"
+            subtitle="A quick guide to FinAI’s main features"
+            color={TEAL}
+            onPress={openWalkthrough}
+          />
+        </View>
         
         {/* FINANCIAL SETTINGS */}
         <Text style={styles.sectionTitle}>Financial Settings</Text>
@@ -422,11 +444,11 @@ export default function ProfileScreen() {
             onPress={() => router.push('/archive' as any)} 
           />
           <View style={styles.divider} />
-          {/* CLOUD BACKUP & EXPORT */}
+          {/* MANUAL BACKUP EXPORT */}
           <MenuOption 
             icon="cloud-upload-outline" 
-            title="Cloud Backup & Export" 
-            subtitle="Export and store financial records externally"
+            title="Export Backup File"
+            subtitle="Save a copy to your device or cloud drive"
             color={TEAL}
             onPress={handleCloudBackupExport} 
           />
@@ -451,7 +473,8 @@ export default function ProfileScreen() {
 
       {/* 1. INCOME UPDATE MODAL */}
       <Modal visible={isIncomeModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Update Monthly Budget</Text>
             <Text style={styles.modalDesc}>Use your typical monthly money available, including salary, allowance, or regular support. Enter 0 if you do not have a regular amount. This is optional context for the AI Budget Advisor.</Text>
@@ -477,12 +500,14 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* 2. CHANGE PIN MODAL */}
       <Modal visible={isPinModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Change App PIN</Text>
             <Text style={styles.modalDesc}>Enter your current PIN before setting a new one.</Text>
@@ -517,12 +542,14 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* 3. CHANGE PASSWORD MODAL */}
       <Modal visible={isPasswordModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={styles.modalOverlay}>
+        <ScrollView contentContainerStyle={{ flexGrow: 1, justifyContent: 'center' }} keyboardShouldPersistTaps="handled">
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Change Password</Text>
             <Text style={styles.modalDesc}>Protect your FinAI account with a strong password.</Text>
@@ -581,7 +608,8 @@ export default function ProfileScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </ScrollView>
+        </KeyboardAvoidingView>
       </Modal>
 
     </View>

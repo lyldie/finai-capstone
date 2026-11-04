@@ -94,6 +94,10 @@ async def ensure_indexes():
     # Existing collisions must be resolved explicitly; startup now fails rather
     # than silently running without the protections these indexes provide.
     await db.users.create_index([("email_key", ASCENDING)], unique=True, name="users_email_key_unique", partialFilterExpression={"email_key": {"$type": "string"}})
+    await db.users.create_index(
+        [("google_sub", ASCENDING)], unique=True, name="users_google_sub_unique",
+        partialFilterExpression={"google_sub": {"$type": "string"}},
+    )
     await db.categories.create_index(
         [("category_role", ASCENDING), ("owner_scope", ASCENDING), ("type", ASCENDING), ("name_key", ASCENDING)],
         unique=True, name="categories_owner_type_name_unique",
@@ -110,17 +114,49 @@ async def ensure_indexes():
     # unverified registration 15 minutes after it was created, a small safety margin
     # past the 10-minute app-level expiry check, so abandoned signups don't pile up.
     await db.pending_signups.create_index("timestamp", expireAfterSeconds=900)
+    await db.password_resets.create_index("expires_at", expireAfterSeconds=0, name="password_resets_ttl")
     await db.auth_attempts.create_index("expires_at", expireAfterSeconds=0, name="auth_attempts_ttl")
     await db.category_name_locks.create_index("expires_at", expireAfterSeconds=0, name="category_name_locks_ttl")
 
     # Keeps date-range analytics (dashboard and advisor) scoped to one user's
     # non-archived transaction history instead of scanning the entire collection.
     await db.expenses.create_index([("user_id", 1), ("is_archived", 1), ("date", 1)])
+    await db.expenses.create_index(
+        [("user_id", 1), ("client_request_id", 1)],
+        unique=True,
+        partialFilterExpression={"client_request_id": {"$type": "string"}},
+        name="expenses_user_client_request_unique",
+    )
+    await db.goals.create_index(
+        [("user_id", 1), ("client_request_id", 1)],
+        unique=True,
+        partialFilterExpression={"client_request_id": {"$type": "string"}},
+        name="goals_user_client_request_unique",
+    )
 
-    # Advisor threads are one per user and topic; messages remain separately
-    # addressable so the inbox can load previews without reading full histories.
+    # Keep one automatic/proactive advisor thread per user and topic while
+    # allowing users to start multiple independent conversations on a topic.
+    # Older installations used a unique user/topic index; migrate those
+    # existing threads to the proactive-thread pool before replacing it.
+    await db.advisor_conversations.update_many(
+        {"is_proactive_thread": {"$exists": False}},
+        {"$set": {"is_proactive_thread": True}},
+    )
+    for index_name, index_info in (await db.advisor_conversations.index_information()).items():
+        if index_name == "_id_":
+            continue
+        index_keys = index_info.get("key", [])
+        if index_keys == [("user_id", 1), ("topic", 1)] and index_info.get("unique"):
+            await db.advisor_conversations.drop_index(index_name)
     await db.advisor_conversations.create_index(
-        [("user_id", 1), ("topic", 1)], unique=True,
+        [("user_id", 1), ("topic", 1)],
+        unique=True,
+        partialFilterExpression={"is_proactive_thread": True},
+        name="advisor_proactive_thread_unique",
+    )
+    await db.advisor_conversations.create_index(
+        [("user_id", 1), ("updated_at", -1)],
+        name="advisor_conversations_user_updated",
     )
     await db.advisor_messages.create_index(
         [("user_id", 1), ("conversation_id", 1), ("created_at", 1)],

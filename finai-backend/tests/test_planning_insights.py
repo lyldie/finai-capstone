@@ -96,9 +96,11 @@ class PlanningInsightRuleTests(unittest.TestCase):
             {"evidence_id": "forecast", "title": "Missing message", "actions": ["Review."]},
         ], catalog)
         self.assertEqual(len(result), 1)
-        self.assertEqual(result[0]["kind"], "sma_trend")
+        self.assertEqual(result[0]["id"], "forecast")
+        self.assertEqual(result[0]["finding"]["key_number"]["value"], 20)
+        self.assertEqual(result[0]["source"], "ai")
         self.assertEqual(result[0]["priority"], "high")
-        self.assertEqual(result[0]["how_calculated"], "Deterministic SMA.")
+        self.assertEqual(result[0]["evidence"]["how_calculated"], "Deterministic SMA.")
 
 
 if __name__ == "__main__":

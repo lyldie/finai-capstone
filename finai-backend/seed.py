@@ -19,48 +19,66 @@ STAGING_DB_NAME = "FinAI_Staging"
 USER_ID = os.getenv("DEMO_USER_ID", "").strip()
 SEED_TAG = "finai-defense-demo-2026-01-10-v1"
 GOAL_NAME = "Palawan Trip"
-GOAL_TARGET = 36000.0
-MONTHLY_CONTRIBUTION = 3000.0
+GOAL_TARGET = 48000.0
+MONTHLY_CONTRIBUTION = 4000.0
 
-# Plausible recurring income and household expenses. October includes records through Oct 27.
+# One urban working adult records personal finances and their share of housing
+# and household bills. This is an illustrative individual persona, not a claim
+# that one salary defines the middle class for every household or location.
 MONTHLY_EXPENSES = [
-    (3, "Rent", 6000, "Monthly rent contribution"),
-    (5, "Groceries", 1850, "Weekly groceries"),
-    (7, "Utilities", 2180, "Electricity and water"),
-    (9, "Transportation", 620, "Commute and transport"),
-    (11, "Food", 250, "Lunch and meryenda"),
-    (17, "Groceries", 2130, "Weekly groceries"),
-    (20, "Health", 760, "Pharmacy"),
-    (23, "Utilities", 920, "Internet and mobile load"),
-    (25, "Leisure", 650, "Movie or recreation"),
-    (26, "Food", 450, "Family meal"),
-    (27, "Groceries", 1670, "End-of-month groceries"),
+    (3, "Rent", 12000, "Monthly rent share"),
+    (5, "Groceries", 1500, "Weekly groceries"),
+    (7, "Utilities", 1800, "Electricity share"),
+    (9, "Transportation", 600, "Commute and transport"),
+    (10, "Food", 350, "Lunch and snacks"),
+    (12, "Utilities", 500, "Water share"),
+    (14, "Groceries", 1500, "Weekly groceries"),
+    (16, "Transportation", 600, "Commute and transport"),
+    (17, "Utilities", 1500, "Home internet share"),
+    (18, "Food", 450, "Meal with friends"),
+    (20, "Health", 1000, "Medicine and pharmacy"),
+    (21, "Utilities", 800, "Mobile plan"),
+    (22, "Transportation", 600, "Commute and transport"),
+    (23, "Groceries", 1500, "Weekly groceries"),
+    (25, "Leisure", 1200, "Movie or recreation"),
+    (26, "Shopping", 800, "Personal essentials"),
+    (27, "Transportation", 600, "Commute and transport"),
+    (28, "Groceries", 1500, "End-of-month groceries"),
 ]
 ALIASES = {
     "allowance": ("student allowance", "family allowance"),
+    "salary": ("wages", "payroll"),
     "part-time work": ("part time work", "part-time income", "freelance", "side income"),
     "transportation": ("transport", "transpo", "commute", "transportation & fuel"),
     "leisure": ("entertainment", "dining", "food and dining"),
     "health": ("medical", "healthcare"),
     "groceries": ("food", "food and groceries"),
-    "rent": ("housing",),
+    "rent": ("housing", "bills"),
     "utilities": ("bills",),
 }
 
-# Regular student allowance is steady, while variable spending and occasional
-# part-time income make each month's cash flow distinct.
+# Salary is steady; seasonal expenses and occasional side income vary personal
+# cash flow enough to exercise budgets, forecasts, and Plan Ahead.
 MONTHLY_CASH_FLOW = {
-    1:  {"spending_factor": 0.92, "extra_income": 0,    "extras": []},
-    2:  {"spending_factor": 1.08, "extra_income": 0,    "extras": [("Leisure", 1500, 21, "Birthday celebration")]},
-    3:  {"spending_factor": 1.02, "extra_income": 3500, "extras": [("Health", 2200, 18, "Annual health checkup")]},
-    4:  {"spending_factor": 1.14, "extra_income": 0,    "extras": [("Transportation", 1800, 22, "Out-of-town family visit")]},
-    5:  {"spending_factor": 0.96, "extra_income": 5000, "extras": [("Groceries", 1700, 19, "Family gathering groceries")]},
-    6:  {"spending_factor": 1.05, "extra_income": 0,    "extras": [("Utilities", 2600, 16, "Home appliance repair")]},
-    7:  {"spending_factor": 0.91, "extra_income": 2800, "extras": [("Leisure", 1900, 24, "Weekend family outing")]},
-    8:  {"spending_factor": 1.17, "extra_income": 0,    "extras": [("Health", 1350, 12, "Medicine and pharmacy supplies")]},
-    9:  {"spending_factor": 1.03, "extra_income": 8000, "extras": [("Transportation", 1200, 20, "Additional commute costs")]},
-    10: {"spending_factor": 1.11, "extra_income": 3000, "extras": [("Leisure", 2200, 18, "Family celebration")]},
+    1:  {"spending_factor": 0.94, "extra_income": 0,    "extras": []},
+    2:  {"spending_factor": 1.04, "extra_income": 0,    "extras": [("Leisure", 900, 21, "Birthday outing")]},
+    3:  {"spending_factor": 1.02, "extra_income": 2000, "extras": [("Health", 1200, 18, "Dental checkup and medicine")]},
+    4:  {"spending_factor": 1.08, "extra_income": 0,    "extras": [("Transportation", 900, 22, "Additional commute costs")]},
+    5:  {"spending_factor": 0.96, "extra_income": 3000, "extras": [("Groceries", 1000, 19, "Groceries for a small gathering")]},
+    6:  {"spending_factor": 1.06, "extra_income": 0,    "extras": [("Utilities", 900, 16, "Household repair contribution")]},
+    7:  {"spending_factor": 0.93, "extra_income": 1800, "extras": [("Leisure", 1100, 24, "Weekend outing")]},
+    8:  {"spending_factor": 1.09, "extra_income": 0,    "extras": [("Health", 850, 12, "Medicine and pharmacy supplies")]},
+    9:  {"spending_factor": 1.01, "extra_income": 4000, "extras": [("Transportation", 700, 20, "Additional commute costs")]},
+    10: {"spending_factor": 1.10, "extra_income": 1500, "extras": [("Leisure", 1300, 18, "Personal celebration")]},
 }
+
+SCHEDULED_BILLS = [
+    ("Rent share", "Rent", 12000, 3),
+    ("Electricity share", "Utilities", 1800, 7),
+    ("Water share", "Utilities", 500, 12),
+    ("Home internet", "Utilities", 1500, 17),
+    ("Mobile plan", "Utilities", 800, 21),
+]
 
 
 def main() -> None:
@@ -102,12 +120,10 @@ def main() -> None:
                 found = found or by_cat.get((kind.lower(), alias))
             return found
 
-        allowance = category("income", "Allowance")
-        if not allowance:
-            raise SystemExit("Add an active Income category named Allowance (or Student Allowance) before previewing this seed.")
-        part_time = category("income", "Part-time Work")
-        if not part_time:
-            raise SystemExit("Add an active Income category named Part-time Work (or Part-time Income/Freelance) before previewing this seed.")
+        salary = category("income", "Salary")
+        if not salary:
+            raise SystemExit("Add an active Income category named Salary before previewing this seed.")
+        side_income = category("income", "Others") or category("income", "Business")
 
         personal_accounts = list(db.accounts.find({
             "user_id": USER_ID, "account_role": "user", "is_archived": {"$ne": True},
@@ -162,18 +178,15 @@ def main() -> None:
 
         for month in range(1, 11):
             cash_flow = MONTHLY_CASH_FLOW[month]
-            for day in (1, 15):
+            for day, amount, title, account in (
+                (1, 30000, "Salary allocation", wallet_account),
+                (15, 12000, "Salary allocation", cash_account),
+            ):
                 d = f"2026-{month:02d}-{day:02d}"
-                if str(cash_account["_id"]) == str(wallet_account["_id"]):
-                    add(d, "Income", allowance, 12000, "Allowance deposit", f"allowance-{d}", transaction_account=wallet_account)
-                else:
-                    # Split each allowance between GCash and cash so both seeded
-                    # account ledgers have funds for the expenses assigned to them.
-                    add(d, "Income", allowance, 9000, "Allowance deposit", f"allowance-gcash-{d}", transaction_account=wallet_account)
-                    add(d, "Income", allowance, 3000, "Cash allowance", f"allowance-cash-{d}", transaction_account=cash_account)
-            if cash_flow["extra_income"]:
+                add(d, "Income", salary, amount, title, f"salary-{d}", transaction_account=account)
+            if cash_flow["extra_income"] and side_income:
                 d = f"2026-{month:02d}-20"
-                add(d, "Income", part_time, cash_flow["extra_income"], "Part-time work income",
+                add(d, "Income", side_income, cash_flow["extra_income"], "Occasional side income",
                     f"extra-income-{d}", transaction_account=wallet_account)
             for day, name, amount, note in MONTHLY_EXPENSES:
                 if month == 10 and day > 27:
@@ -204,7 +217,8 @@ def main() -> None:
         used_accounts = sorted({d["account"] for d in docs})
         print(f"Target user: {target_user.get('name', USER_ID)} ({USER_ID}); accounts: {', '.join(used_accounts)}")
         print(f"Prepared {len(docs)} tagged transactions from Jan 1 through Oct 27, 2026.")
-        print("Palawan goal: PHP 36,000 target by Dec 31; PHP 30,000 saved from ten PHP 3,000 contributions; PHP 6,000 remaining.")
+        print("Demo persona: one urban working adult; PHP 42,000 regular monthly salary, shares housing and household bills, plus occasional side income.")
+        print("Palawan goal: PHP 48,000 target by Dec 31; PHP 40,000 saved from ten PHP 4,000 contributions; PHP 8,000 remaining.")
         for month in range(1, 11):
             prefix = f"2026-{month:02d}-"
             rows = [r for r in docs if r["date"].startswith(prefix)]
@@ -215,8 +229,32 @@ def main() -> None:
             print("Missing expense categories (corresponding rows omitted): " + ", ".join(sorted(set(skipped))))
         old_seed_count = db.expenses.count_documents({"user_id": USER_ID, "demo_seed_tag": SEED_TAG})
         print(f"Existing rows tagged by this seed version: {old_seed_count}")
+        bill_docs = []
+        active_bills = list(db.fixed_bills.find({"user_id": USER_ID, "is_active": True}))
+        active_bill_names = {str(b.get("name", "")).strip().casefold() for b in active_bills if b.get("demo_seed_tag") != SEED_TAG}
+        skipped_bills = []
+        for name, category_name, amount, due_day in SCHEDULED_BILLS:
+            bill_category = category("expense", category_name) or category("expense", "Bills")
+            if not bill_category:
+                skipped_bills.append(f"{name} (missing {category_name}/Bills category)")
+                continue
+            if name.casefold() in active_bill_names:
+                skipped_bills.append(f"{name} (an unseeded active bill with this name already exists)")
+                continue
+            key = f"{SEED_TAG}:bill:{name.casefold().replace(' ', '-') }"
+            bill_id = ObjectId(hashlib.sha256(f"{USER_ID}:{key}".encode()).hexdigest()[:24])
+            bill_docs.append({
+                "_id": bill_id, "user_id": USER_ID, "name": name,
+                "category_id": str(bill_category["_id"]), "category": bill_category["name"],
+                "amount": float(amount), "due_day": due_day, "is_active": True,
+                "demo_seed_tag": SEED_TAG, "demo_seed_key": key,
+                "created_at": datetime(2026, 1, 1), "updated_at": datetime.utcnow(),
+            })
+        print(f"Prepared {len(bill_docs)} scheduled monthly bills: " + ", ".join(b["name"] for b in bill_docs))
+        if skipped_bills:
+            print("Skipped scheduled bills: " + "; ".join(skipped_bills))
         if not args.apply:
-            print("Preview only. Add --apply to upsert. No existing untagged transactions will be deleted or changed.")
+            print("Preview only. Add --apply to upsert. No existing untagged transactions, bills, or goals will be deleted or changed.")
             return
 
         keys = [d["demo_seed_key"] for d in docs]
@@ -226,7 +264,17 @@ def main() -> None:
         deleted = db.expenses.delete_many({"user_id": USER_ID, "demo_seed_tag": SEED_TAG, "demo_seed_key": {"$nin": keys}}).deleted_count
         db.goals.update_one({"_id": goal_id, "user_id": USER_ID},
                             {"$set": goal_doc, "$setOnInsert": {"_id": goal_id}}, upsert=True)
-        print(f"Seed complete: {result.upserted_count} inserted, {result.modified_count} updated, {deleted} stale tagged rows removed; Palawan goal upserted.")
+        for bill in bill_docs:
+            bill_fields = {key: value for key, value in bill.items() if key != "_id"}
+            db.fixed_bills.update_one(
+                {"_id": bill["_id"], "user_id": USER_ID},
+                {"$set": bill_fields, "$setOnInsert": {"_id": bill["_id"]}},
+                upsert=True,
+            )
+        stale_bills = [b["_id"] for b in active_bills if b.get("demo_seed_tag") == SEED_TAG and b.get("_id") not in {x["_id"] for x in bill_docs}]
+        if stale_bills:
+            db.fixed_bills.update_many({"_id": {"$in": stale_bills}, "user_id": USER_ID}, {"$set": {"is_active": False, "updated_at": datetime.utcnow()}})
+        print(f"Seed complete: {result.upserted_count} transactions inserted, {result.modified_count} updated, {deleted} stale tagged rows removed; Palawan goal and {len(bill_docs)} scheduled bills upserted.")
     finally:
         client.close()
 

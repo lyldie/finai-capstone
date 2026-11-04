@@ -18,6 +18,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
+import { userFacingError } from '../../utils/userFacingError';
 import EmojiPicker from '../../components/EmojiPicker';
 
 const DEEP_GREEN = '#1c3c36';
@@ -70,9 +71,7 @@ export default function AddCategoryScreen() {
         Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
       } else {
         const data = await response.json().catch(() => ({}));
-        const message = typeof data?.detail === 'string'
-          ? data.detail
-          : 'Review the category name and type, then try again.';
+        const message = userFacingError(data?.detail, 'Review the category name and type, then try again.');
         Alert.alert('Could not save category', message);
       }
     } catch (error) {

@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from auth import get_current_user
 from database import db
+from security import enforce_user_feature_rate_limit
 from services.budget_service import list_budget_usage, ph_today
 from services.forecast_engine import (
     compute_safe_to_spend, what_if_spend_less, scheduled_forecast,
@@ -27,6 +28,8 @@ from services.planning_insights import (
     seasonal_insight, goal_insight, cash_flow_insight,
     long_term_cash_flow_insight, sma_category_insight,
     upcoming_bill_insight, on_track_summary, validate_ai_recommendations,
+    normalize_rule_insight, income_stability_insight, income_capacity_insight,
+    income_goal_funding_insight, income_cushion_insight,
     overview_claims_supported,
     seasonal_history_eligible,
 )
@@ -45,6 +48,11 @@ from services.groq_service import (
     GROQ_PLANNING_MODEL,
     GROQ_TIMEOUT_SECONDS,
     generate_groq_response,
+)
+from services.vertex_service import (
+    VERTEX_AI_TIMEOUT_SECONDS,
+    generate_vertex_response,
+    is_vertex_configured,
 )
 
 
@@ -284,7 +292,7 @@ TOPIC_TITLES = {
 }
 _proactive_tasks: set[asyncio.Task] = set()
 _FINANCE_SCOPE_PATTERN = re.compile(
-    r"\b(budget|budgets|spend|spending|spent|expense|expenses|income|salary|sahod|"
+    r"\b(budget|budgets|budgeting|spend|spending|spent|expense|expenses|income|salary|sahod|"
     r"earnings|cash flow|balance|wallet|account|transaction|transactions|money|pera|"
     r"savings?|save|ipon|goal|goals|limit|rollover|bill|bills|afford|financial|"
     r"gastos|utang|debt|monthly saving|monthly income)\b",
@@ -292,6 +300,7 @@ _FINANCE_SCOPE_PATTERN = re.compile(
 )
 _GREETING_PATTERN = re.compile(r"^(hi|hello|hey|good morning|good afternoon|good evening|thanks|thank you)(\s+finn)?[!.?, ]*$", re.IGNORECASE)
 _CONTEXTUAL_FOLLOW_UP_PATTERN = re.compile(r"^(and\b|what about\b|how about\b|what if\b|then\b|it\b|that\b|this\b)", re.IGNORECASE)
+_PLANNING_FOLLOW_UP_PATTERN = re.compile(r"\b(plan|planning|roadmap)\b", re.IGNORECASE)
 
 
 def _validate_planning_response(response) -> None:
@@ -385,6 +394,10 @@ def _is_in_advisor_scope(message: str, history: Optional[List[ChatHistoryItem]],
     if _CONTEXTUAL_FOLLOW_UP_PATTERN.search(text):
         recent_context = " ".join(item.text for item in (history or [])[-4:])
         return bool(_FINANCE_SCOPE_PATTERN.search(recent_context))
+    # Planning is a supported use of this finance-only advisor. Let Finn use
+    # the recorded financial snapshot or ask a clarifying question when needed.
+    if _PLANNING_FOLLOW_UP_PATTERN.search(text):
+        return True
     # In a topic-specific thread, short follow-ups can refer to the prior financial context.
     if topic in {"budget", "goals"} and len(text.split()) <= 3:
         return True
@@ -456,10 +469,11 @@ async def _set_contextual_title_if_needed(user_id: str, conversation: dict) -> N
 async def _get_or_create_conversation(user_id: str, topic: str) -> dict:
     now = datetime.now(timezone.utc)
     await db.advisor_conversations.update_one(
-        {"user_id": user_id, "topic": topic},
+        {"user_id": user_id, "topic": topic, "is_proactive_thread": True},
         {"$setOnInsert": {
             "user_id": user_id,
             "topic": topic,
+            "is_proactive_thread": True,
             "title": TOPIC_TITLES[topic],
             "title_contextual": False,
             "created_at": now,
@@ -490,6 +504,9 @@ async def _save_thread_message(
         "source": source,
         "created_at": now,
     }
+    # Proactive financial events are unread until the user opens their thread.
+    if sender == "ai" and message_type == "planning_insight" and event_key and not event_key.startswith("checkin:"):
+        message["is_read"] = False
     if event_key:
         message["event_key"] = event_key
     if message_type:
@@ -963,17 +980,37 @@ async def list_advisor_conversations(current_user: dict = Depends(get_current_us
     ).sort([("updated_at", -1), ("_id", -1)]).to_list(length=50)
     for item in conversations:
         await _set_contextual_title_if_needed(current_user["id"], item)
+        item["unread_count"] = await db.advisor_messages.count_documents({
+            "user_id": current_user["id"],
+            "conversation_id": str(item["_id"]),
+            "is_read": False,
+        })
         item["id"] = str(item.pop("_id"))
     return conversations
 
 
 @router.post("/conversations")
-async def create_or_get_advisor_conversation(
+async def create_advisor_conversation(
     payload: ConversationCreate,
     current_user: dict = Depends(get_current_user),
 ):
-    conversation = await _get_or_create_conversation(current_user["id"], payload.topic)
-    conversation["id"] = str(conversation.pop("_id"))
+    # A user-initiated chat is always a distinct thread. Proactive events can
+    # still reuse their dedicated topic thread through _get_or_create_conversation.
+    now = datetime.now(timezone.utc)
+    conversation = {
+        "user_id": current_user["id"],
+        "topic": payload.topic,
+        "is_proactive_thread": False,
+        "title": TOPIC_TITLES[payload.topic],
+        "title_contextual": False,
+        "created_at": now,
+        "updated_at": now,
+        "last_message": "",
+        "last_message_at": now,
+    }
+    result = await db.advisor_conversations.insert_one(conversation)
+    conversation["id"] = str(result.inserted_id)
+    conversation.pop("_id", None)
     return conversation
 
 
@@ -997,6 +1034,13 @@ async def list_advisor_messages(
     messages = await db.advisor_messages.find(
         {"user_id": user_id, "conversation_id": conversation_id}
     ).sort([("created_at", 1), ("_id", 1)]).to_list(length=limit)
+    await db.advisor_messages.update_many(
+        {"user_id": user_id, "conversation_id": conversation_id, "is_read": False},
+        {"$set": {"is_read": True, "read_at": datetime.now(timezone.utc)}},
+    )
+    for item in messages:
+        if item.get("is_read") is False:
+            item["is_read"] = True
     conversation["id"] = str(conversation.pop("_id"))
     for item in messages:
         item["id"] = str(item.pop("_id"))
@@ -1263,13 +1307,69 @@ def _period_analytics(daily: dict, today: date) -> dict:
     return result
 
 
+async def _recorded_wallet_balance_total(user_id: str) -> float:
+    """Compute the user's combined recorded wallet balance with one transaction scan."""
+    accounts = await db.accounts.find({
+        "is_archived": {"$ne": True},
+        "$or": [{"account_role": "admin"}, {"account_role": "user", "user_id": user_id}],
+    }).to_list(length=200)
+    if not accounts:
+        return 0.0
+
+    accounts_by_id: dict[str, list[dict]] = {}
+    accounts_by_name: dict[str, list[dict]] = {}
+    account_ids = []
+    account_names = set()
+    total = 0.0
+    for account in accounts:
+        account_id = account.get("_id")
+        account_key = str(account_id)
+        account_name = account.get("name", "")
+        accounts_by_id.setdefault(account_key, []).append(account)
+        accounts_by_name.setdefault(account_name, []).append(account)
+        account_ids.extend([account_id, account_key])
+        account_names.add(account_name)
+        total += float(account.get("initial_balance", 0) or 0)
+
+    account_match = [
+        {"account_id": {"$in": account_ids}},
+        {"to_account_id": {"$in": account_ids}},
+        {"account_id": {"$in": [None, ""]}, "account": {"$in": list(account_names)}},
+        {"to_account_id": {"$in": [None, ""]}, "to_account": {"$in": list(account_names)}},
+    ]
+    async for txn in db.expenses.find({
+        "user_id": user_id, "is_archived": {"$ne": True}, "$or": account_match,
+    }):
+        source_id = txn.get("account_id")
+        target_id = txn.get("to_account_id")
+        source_accounts = (
+            accounts_by_id.get(str(source_id), []) if source_id not in (None, "")
+            else accounts_by_name.get(txn.get("account", ""), [])
+        )
+        target_accounts = (
+            accounts_by_id.get(str(target_id), []) if target_id not in (None, "")
+            else accounts_by_name.get(txn.get("to_account", ""), [])
+        )
+        amount = float(txn.get("amount", 0) or 0)
+        kind = str(txn.get("type", "")).capitalize()
+        if kind in {"Income", "Goal withdrawal"}:
+            total += amount * len(source_accounts)
+        elif kind in {"Expense", "Contribution"}:
+            total -= amount * len(source_accounts)
+        elif kind == "Transfer":
+            total += amount * (len(target_accounts) - len(source_accounts))
+    return round(total, 2)
+
+
 def _rule_based_chat_reply(message: str, analytics: dict) -> str:
     """Answer common advisor intents from computed records instead of reusing one generic tip."""
     text = message.lower()
     periods = analytics.get("period_totals_and_comparisons", {})
     budgets = analytics.get("budgets_and_current_pace_forecasts", [])
     goals = analytics.get("goals_and_required_savings_pace", [])
+    scheduled_bills = analytics.get("scheduled_bills", {})
     expenses = analytics.get("expense_by_category_90d", {})
+    safe_to_spend = analytics.get("safe_to_spend", {})
     currency = lambda value: f"PHP {float(value or 0):,.2f}"
 
     requested_period = None
@@ -1289,6 +1389,48 @@ def _rule_based_chat_reply(message: str, analytics: dict) -> str:
         matches = [name for name in names if name and name.lower() in text]
         return max(matches, key=len) if matches else None
 
+    safe_spend_intent = any(phrase in text for phrase in (
+        "safe to spend", "how much can i spend", "how much may i spend",
+        "how much should i spend", "how much can i afford to spend",
+        "magkano pwede kong gastusin", "magkano ang pwede kong gastusin",
+        "magkano lang pwede kong gastusin", "pwede ko gastusin",
+    )) or ("spend" in text and any(word in text for word in ("today", "this week", "this month"))
+          and any(word in text for word in ("can i", "should i", "how much")))
+    safe_spend_intent = safe_spend_intent or (
+        "gastusin" in text and "pwede" in text and "magkano" in text
+    )
+
+    if safe_spend_intent:
+        category = matching_category(
+            [item.get("category", "") for item in budgets] + list(expenses.keys())
+        )
+        period_label = "this week" if "week" in text else "today"
+        if category:
+            category_budgets = [
+                item for item in budgets
+                if item.get("category", "").lower() == category.lower()
+                and item.get("period") == "monthly"
+            ]
+            if category_budgets:
+                budget = max(category_budgets, key=lambda item: item.get("percentage_used", 0))
+                allowance = budget.get("daily_allowance_including_today", 0)
+                return (
+                    f"For {category}, the recorded monthly budget has about {currency(max(float(budget.get('limit', 0)) - float(budget.get('spent', 0)), 0))} left. "
+                    f"Divided across the remaining days including today, that is about {currency(allowance)} per day as a planning guide. "
+                    "It is based on recorded spending and is not a guarantee of your actual wallet balance."
+                )
+            global_amount = safe_to_spend.get("safe_this_week" if period_label == "this week" else "safe_today", 0)
+            return (
+                f"I don’t see an active monthly limit for {category}, so I can’t calculate a food-specific daily allowance. "
+                f"Your category-agnostic recorded-data estimate is about {currency(global_amount)} for {period_label}; "
+                "treat it as a planning guide, not a guaranteed available balance."
+            )
+        amount = safe_to_spend.get("safe_this_week" if period_label == "this week" else "safe_today", 0)
+        return (
+            f"Based on {safe_to_spend.get('basis', 'recorded data')}, your estimated flexible amount is about "
+            f"{currency(amount)} for {period_label}. This is a planning estimate, not a guarantee of your actual wallet balance."
+        )
+
     goal_intent = any(word in text for word in ("goal", "saving", "savings", "save", "ipon"))
     if goal_intent:
         goal = matching_category([item.get("target", "") for item in goals])
@@ -1307,6 +1449,26 @@ def _rule_based_chat_reply(message: str, analytics: dict) -> str:
         net = periods.get("this_month", {}).get("net", 0)
         return (f"I don’t see a savings goal recorded yet. Your recorded net cash flow this month is {currency(net)}; "
                 "that figure may be incomplete. You can create a goal with a target and date, then compare its suggested pace with your budget.")
+
+    if any(word in text for word in ("bill", "bills", "due", "utility", "utilities")):
+        upcoming = scheduled_bills.get("upcoming_unpaid_next_30_days", [])
+        if upcoming:
+            details = "; ".join(
+                f"{item.get('name', 'Bill')} ({currency(item.get('amount'))}, due {item.get('due_date')})"
+                for item in upcoming[:3]
+            )
+            return (
+                f"Your next unpaid scheduled bills are: {details}. Unpaid scheduled bills due this month total "
+                f"{currency(scheduled_bills.get('unpaid_due_this_month_total'))}. These are saved reminders; "
+                "check the actual amount before paying."
+            )
+        if scheduled_bills.get("active_count", 0):
+            return (
+                "I don’t see any unpaid scheduled bills due in the next 30 days. You have "
+                f"{scheduled_bills.get('active_count')} active monthly reminder(s), totaling about "
+                f"{currency(scheduled_bills.get('monthly_scheduled_total'))} per month."
+            )
+        return "I don’t see any active scheduled bills saved in FinAI yet. Add a bill reminder to track its due date and amount."
 
     category = matching_category(
         [item.get("category", "") for item in budgets] + list(expenses.keys())
@@ -1330,8 +1492,12 @@ def _rule_based_chat_reply(message: str, analytics: dict) -> str:
                 f"and {currency(totals.get('income'))} in income {label}. These totals include only transactions recorded in FinAI.")
 
     if "balance" in text and not any(word in text for word in ("budget balance", "remaining budget", "cash flow")):
-        return ("I can summarize recorded income and expenses, but current account balances are not included in this advisor snapshot. "
-                "Check My Wallets for the latest account balances.")
+        recorded_balance = analytics.get("current_wallet_balance_total_recorded")
+        if recorded_balance is not None:
+            return (
+                f"Your recorded total wallet balance is {currency(recorded_balance)}. "
+                "It is calculated from saved account balances and recorded transactions, so check My Wallets and your actual accounts before relying on it."
+            )
 
     budget_intent = any(word in text for word in ("budget", "limit", "left", "remain", "pace", "afford", "manage"))
     wants_plan = any(word in text for word in ("should", "plan", "manage", "advice", "recommend", "track", "on track"))
@@ -1383,6 +1549,7 @@ def _rule_based_chat_reply(message: str, analytics: dict) -> str:
 
 @router.post("/chat")
 async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_current_user)):
+    await enforce_user_feature_rate_limit(current_user["id"], "advisor_chat", max_requests=60)
     if not req.message.strip():
         raise HTTPException(status_code=422, detail="Message cannot be empty.")
 
@@ -1563,10 +1730,105 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
             "projection_elapsed_days": elapsed_days,
             "days_remaining": remaining_days,
             "daily_remaining_allowance": round(max(effective_limit - item["spent"], 0) / max(remaining_days, 1), 2),
+            "daily_allowance_including_today": round(
+                max(effective_limit - item["spent"], 0) / max((end - today).days + 1, 1), 2
+            ),
         })
 
     goals = await db.goals.find({"user_id": user_id, "is_archived": {"$ne": True}}).to_list(length=50)
     goal_summary = [_goal_projection(goal, today, monthly_available_amount) for goal in goals]
+
+    # Scheduled bills are separate from transactions. Pass a compact summary to
+    # chat so bill questions can use saved due dates without sending raw records.
+    from routers.bills import _due_date, _public_bill
+    fixed_bill_rows = await db.fixed_bills.find(
+        {"user_id": user_id, "is_active": True}
+    ).sort("due_day", 1).to_list(length=200)
+    next_month = (today.replace(day=28) + timedelta(days=4)).replace(day=1)
+    month_end = next_month - timedelta(days=1)
+    period_keys = [f"{today.year:04d}-{today.month:02d}"]
+    bill_periods = [(today.year, today.month)]
+    if next_month <= today + timedelta(days=30):
+        period_keys.append(f"{next_month.year:04d}-{next_month.month:02d}")
+        bill_periods.append((next_month.year, next_month.month))
+    bill_ids = [str(bill["_id"]) for bill in fixed_bill_rows]
+    occurrence_rows = await db.bill_occurrences.find({
+        "user_id": user_id, "bill_id": {"$in": bill_ids}, "period_key": {"$in": period_keys},
+    }).to_list(length=max(len(bill_ids) * len(period_keys), 1)) if bill_ids else []
+    occurrences_by_key = {
+        (row.get("bill_id"), row.get("period_key")): row for row in occurrence_rows
+    }
+    bill_occurrences = []
+    for bill in fixed_bill_rows:
+        for year, month in bill_periods:
+            period_key = f"{year:04d}-{month:02d}"
+            occurrence = occurrences_by_key.get((str(bill["_id"]), period_key)) or {
+                "period_key": period_key,
+                "due_date": _due_date(year, month, int(bill["due_day"])),
+                "status": "unpaid",
+            }
+            bill_occurrences.append(_public_bill(bill, occurrence))
+    unpaid_due_this_month = [
+        bill for bill in bill_occurrences
+        if bill["status"] == "unpaid" and today_key <= bill["due_date"] <= month_end.isoformat()
+    ]
+    upcoming_unpaid = sorted(
+        [bill for bill in bill_occurrences
+         if bill["status"] == "unpaid"
+         and today_key <= bill["due_date"] <= (today + timedelta(days=30)).isoformat()],
+        key=lambda bill: bill["due_date"],
+    )
+    scheduled_bills = {
+        "as_of_date": today_key,
+        "active_count": len(fixed_bill_rows),
+        "monthly_scheduled_total": round(sum(float(bill.get("amount", 0) or 0) for bill in fixed_bill_rows), 2),
+        "unpaid_due_this_month_count": len(unpaid_due_this_month),
+        "unpaid_due_this_month_total": round(sum(float(bill.get("amount", 0) or 0) for bill in unpaid_due_this_month), 2),
+        "upcoming_unpaid_next_30_days": [
+            {"name": bill.get("name", "Bill"), "category": bill.get("category", "Uncategorized"),
+             "amount": round(float(bill.get("amount", 0) or 0), 2), "due_date": bill.get("due_date"),
+             "status": bill.get("status", "unpaid")}
+            for bill in upcoming_unpaid[:10]
+        ],
+        "upcoming_list_truncated": len(upcoming_unpaid) > 10,
+    }
+
+    # Reuse the same deterministic definition as Plan Ahead. Keep the wallet
+    # balance as a separate context value; do not let it silently alter the
+    # category-agnostic budget allowance.
+    scheduled_bill_category_ids = {
+        str(bill.get("category_id", ""))
+        for bill in unpaid_due_this_month if bill.get("category_id")
+    }
+    variable_monthly_budgets = [
+        item for item in budget_usage
+        if item.get("period_type") == "monthly"
+        and item.get("budget_kind", "variable") == "variable"
+        and str(item.get("category_id", "")) not in scheduled_bill_category_ids
+    ]
+    goal_contributions_due = round(sum(
+        max(float(goal.get("suggested_monthly_saving") or 0), 0)
+        for goal in goal_summary if float(goal.get("remaining") or 0) > 0
+    ), 2)
+    month_end = next_month - timedelta(days=1)
+    week_end = today + timedelta(days=6 - today.weekday())
+    current_month = period_totals["this_month"]
+    expected_income = monthly_available_amount if monthly_available_amount > 0 else float(current_month.get("income", 0) or 0)
+    safe_to_spend = compute_safe_to_spend(
+        variable_budget_remaining=(
+            max(float(item.get("available_limit", item.get("amount", 0)) or 0) - float(item.get("spent", 0) or 0), 0)
+            for item in variable_monthly_budgets
+        ),
+        has_variable_budgets=bool(variable_monthly_budgets),
+        unpaid_bills=scheduled_bills["unpaid_due_this_month_total"],
+        goal_contributions=goal_contributions_due,
+        spent_so_far=float(current_month.get("expense", 0) or 0),
+        expected_income=expected_income,
+        days_remaining_in_month=max((month_end - today).days + 1, 1),
+        days_remaining_in_week=max((week_end - today).days + 1, 1),
+    )
+
+    wallet_balance_total = await _recorded_wallet_balance_total(user_id)
 
     budget_suggestions = []
     for budget in budget_summary:
@@ -1620,9 +1882,13 @@ async def chat_with_advisor(req: ChatRequest, current_user: dict = Depends(get_c
         "recorded_income_minus_expenses_90d": round(total_income - total_expense, 2),
         "savings_rate_percent_90d": savings_rate,
         "user_reported_monthly_available_amount": round(monthly_available_amount, 2),
+        "current_wallet_balance_total_recorded": wallet_balance_total,
+        "wallet_balance_note": "Calculated from active account opening balances and recorded income, expenses, contributions, goal withdrawals, and transfers; unrecorded activity can make it differ from actual funds.",
         "expense_by_category_90d": category_totals,
         "budgets_and_current_pace_forecasts": budget_summary,
         "goals_and_required_savings_pace": goal_summary,
+        "scheduled_bills": scheduled_bills,
+        "safe_to_spend": safe_to_spend,
         "actionable_suggestions": (budget_suggestions + goal_suggestions)[:8],
         "recent_transactions": [
             {"date": item.get("date"), "category": item.get("category"),
@@ -1667,12 +1933,27 @@ Guidance rules:
 - For budget outlook, explain actual spent, projected period-end spending, and remaining
   daily allowance where relevant. Never claim the user is on track if the projection
   exceeds the limit.
+- `safe_to_spend.safe_today` and `safe_this_week` are category-agnostic planning estimates
+  based on remaining flexible monthly limits (or expected income after recorded spending),
+  unpaid scheduled bills, and goal contributions. They are not wallet balances or guarantees.
+  For a category-specific daily amount, use that category's active monthly budget and
+  `daily_allowance_including_today`; if no such budget exists, do not assign the overall
+  amount to that category.
+- The recorded wallet total is calculated from saved opening balances and recorded money
+  movements. Describe it as a recorded balance, mention that missing activity can make it
+  differ from actual funds, and do not use it to claim a bill is definitely affordable.
+- Scheduled bills are user-entered reminders. Use their saved due dates and amounts, but
+  remind the user to confirm the actual bill amount when payment is relevant.
 - For savings goals, compare the remaining amount and target date with the suggested
   monthly saving pace. The optional monthly money baseline may include wages, allowance,
   or support; if it is missing or zero, do not assume the user has no resources. Mention
   when a target date has passed or data is incomplete.
-- Give at most three concrete, affordable next steps tied to their numbers. Prefer
-  small adjustments, prioritization, and trade-offs; do not shame or pressure them.
+- After answering, give up to five concise, concrete next steps as a short bulleted list
+  only when they are genuinely useful and supported by the user's question and snapshot.
+  Use fewer when fewer are relevant; do not pad with generic or repeated suggestions.
+  Prefer small adjustments, prioritization, and trade-offs; do not shame or pressure them.
+  If no useful action is supported, answer without a suggestions list. These are suggestions
+  only; never claim to have changed a budget, goal, or financial record.
 - Ask a brief follow-up if an important fact is missing. Do not invent bills, income,
   debts, account balances, transactions, or certainty about future outcomes.
 - Do not present yourself as a licensed financial adviser or give investment/tax/legal
@@ -1723,6 +2004,19 @@ Guidance rules:
         except Exception as exc:
             print(f"[Groq][advisor_chat] unavailable ({type(exc).__name__}); using recorded-data fallback.")
 
+    if not reply and is_vertex_configured():
+        try:
+            response, _model = await asyncio.wait_for(asyncio.to_thread(
+                generate_vertex_response,
+                contents,
+                types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.35),
+                operation="advisor_chat",
+            ), timeout=VERTEX_AI_TIMEOUT_SECONDS + 1.0)
+            reply = response.text.strip()
+            source = "vertex"
+        except Exception as exc:
+            print(f"[Vertex AI][advisor_chat] unavailable ({type(exc).__name__}); using recorded-data fallback.")
+
     if not reply:
         source = "rule_based"
         reply = _rule_based_chat_reply(req.message, analytics)
@@ -1746,6 +2040,7 @@ Guidance rules:
 @router.get("/planning")
 async def get_automatic_planning(current_user: dict = Depends(get_current_user)):
     """Return an automatically generated, user-scoped planning snapshot."""
+    await enforce_user_feature_rate_limit(current_user["id"], "advisor_planning", max_requests=120)
     planning_build_started_at = time.perf_counter()
     user_id = current_user["id"]
     today = ph_today()
@@ -2261,11 +2556,20 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             recommendations.append(insight)
 
     current_month = period_totals["this_month"]
-    # Safe-to-spend is deterministic and separate from the forecast. Flexible
-    # monthly limits and unpaid scheduled bills are counted independently.
+    # Safe-to-spend is deterministic and separate from the forecast. A category
+    # with an unpaid scheduled bill is treated as a fixed obligation category:
+    # its remaining limit must not inflate the flexible-spending pool while the
+    # same bill is also reserved below. Category limits remain visible and keep
+    # tracking spending in Insights; this only changes the safe-to-spend estimate.
+    scheduled_bill_category_ids = {
+        str(bill.get("category_id", ""))
+        for bill in unpaid_bills_due_this_month
+        if bill.get("category_id")
+    }
     variable_monthly_budgets = [
         item for item in active_budgets
         if item.get("period_type") == "monthly" and item.get("budget_kind", "variable") == "variable"
+        and str(item.get("category_id", "")) not in scheduled_bill_category_ids
     ]
     goal_contributions_due = round(sum(
         max(float(goal.get("suggested_monthly_saving") or 0), 0)
@@ -2299,18 +2603,68 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         recommendations.append(insight)
 
     for forecast_item in category_forecasts:
-        if forecast_item["type"] != "expense":
-            continue
-        monthly_forecast = forecast_item["monthly"]
-        insight = sma_category_insight(forecast_item["category"], monthly_forecast)
+        if forecast_item["type"] == "income":
+            insight = income_stability_insight(forecast_item["category"], forecast_item["monthly"])
+        else:
+            insight = sma_category_insight(forecast_item["category"], forecast_item["monthly"])
         if insight:
             recommendations.append(insight)
+    income_period_count = min(
+        (item["monthly"].get("period_count", 0) for item in category_forecasts),
+        default=0,
+    )
+    projected_income = sum(float(item["monthly"].get("forecast", 0) or 0) for item in category_forecasts if item["type"] == "income")
+    projected_expense = sum(float(item["monthly"].get("forecast", 0) or 0) for item in category_forecasts if item["type"] == "expense")
+    income_capacity = income_capacity_insight(projected_income, projected_expense, income_period_count)
+    if income_capacity:
+        recommendations.append(income_capacity)
+    if income_capacity:
+        for goal in goal_plans:
+            insight = income_goal_funding_insight(goal, projected_income - projected_expense)
+            if insight:
+                recommendations.append(insight)
+                break
+    # One short weekly briefing, only when there are five consecutive full
+    # weeks with recorded transactions to compare. Missing weeks are not zeroes.
+    weekly_totals = []
+    for start, end in weekly_periods:
+        has_records = any((start + timedelta(days=offset)).isoformat() in daily for offset in range(7))
+        if not has_records:
+            weekly_totals.append(None)
+            continue
+        amount = sum(
+            float(daily.get((start + timedelta(days=offset)).isoformat(), {}).get("expense", 0) or 0)
+            for offset in range(7)
+        )
+        weekly_totals.append({"label": f"{start.isoformat()} to {end.isoformat()}", "amount": round(amount, 2)})
+    recent_weeks = weekly_totals[-5:]
+    weekly_briefing = None
+    if len(recent_weeks) == 5 and all(recent_weeks):
+        last_week = float(recent_weeks[-1]["amount"])
+        prior_average = sum(float(item["amount"]) for item in recent_weeks[:-1]) / 4
+        delta = last_week - prior_average
+        change_pct = delta / prior_average * 100 if prior_average > 0 else 0
+        if abs(delta) >= 150 and abs(change_pct) >= 30:
+            weekly_briefing = {
+                "kind": "weekly_briefing", "priority": "medium",
+                "title": "Your spending changed this week",
+                "message": f"Last week's recorded spending was {abs(change_pct):.0f}% {'higher' if delta > 0 else 'lower'} than the previous four-week average.",
+                "evidence": {"last_week_spending": round(last_week, 2), "previous_weekly_average": round(prior_average, 2),
+                             "change_amount": round(delta, 2), "change_percent": round(change_pct, 1),
+                             "window": recent_weeks, "comparison_period": "previous 4 consecutive recorded weeks",
+                             "confidence": "medium"},
+                "action": "Review the week's transactions and check whether this change fits your plans.",
+                "how_calculated": f"Last full week PHP {last_week:,.2f} vs prior-four-week average PHP {prior_average:,.2f}.",
+            }
+            recommendations.append(weekly_briefing)
     for bill in upcoming_bills[:3]:
         recommendations.append(upcoming_bill_insight(bill))
 
     priority_order = {"high": 0, "medium": 1, "goal": 2}
     recommendations.sort(key=lambda item: priority_order.get(item["priority"], 3))
-    recommendations = recommendations[:10]
+    # Keep the full set of rule-supported planning candidates. The UI presents
+    # the highest priorities first and lets users expand the complete list.
+    rule_recommendations = list(recommendations)
 
     metrics = {
         "as_of_date": today_key,
@@ -2408,7 +2762,7 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
 
     summary = fallback_summary
     analysis_provider = None
-    if ai_client or GROQ_API_KEY:
+    if ai_client or GROQ_API_KEY or is_vertex_configured():
         prompt_data = {
             "metrics": metrics,
             "category_forecasts": category_forecasts,
@@ -2442,8 +2796,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "planning feature. Analyze the aggregated metrics, active budget forecasts, goal "
             "paces, same-period category comparisons, seasonal comparisons when available, and "
             "(when available) 12-month cash-flow "
-            "scenarios. Identify up to 3 useful personalized recommendations, prioritizing "
-            "concrete opportunities or risks over generic praise. Each recommendation MUST cite "
+            "scenarios. Identify every distinct, useful personalized recommendation supported by the evidence. "
+            "Cover each separate actionable risk or opportunity; do not omit a valid issue to meet an arbitrary count. "
+            "Prioritize concrete opportunities or risks over generic praise, and avoid duplicate recommendations. Each recommendation MUST cite "
             "exactly one evidence_id from evidence_catalog. Use only cited evidence; do not invent "
             "amounts, dates, bills, income, causes, or facts. "
             "STRICT FIELD LIMITS: title max 6 words, message max 90 characters (direct headline with key number, no paragraph), "
@@ -2458,11 +2813,11 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             "Mention estimates use recorded data and can be incomplete. Avoid claiming certainty or licensed-adviser status. "
             "For long-term outlook, describe scenarios as recorded-net cash-flow scenarios, not projected account balances or guaranteed outcomes. "
             "Return JSON only with this shape: "
-            "{\"overview\": \"string (max 120 chars, one sentence status)\", "
-            "\"recommendations\": [{\"evidence_id\": \"string\", \"priority\": \"high|medium|goal\", "
-            "\"title\": \"string (max 6 words)\", \"message\": \"string (max 90 chars direct headline)\", "
-            "\"actions\": [\"string\"], \"how_calculated\": \"string (max 120 chars formula)\", "
-            "\"context_question\": \"string|null (max 80 chars, two button labels split by | e.g. Extend date|Lower target)\"}]}. "
+            "{\"overview\":\"one sentence, max 120 chars\",\"recommendations\":["
+            "{\"evidence_id\":\"string\",\"priority\":\"high|medium|goal\","
+            "\"finding\":{\"headline\":\"max 8 words\",\"key_number\":null},"
+            "\"why\":\"one short sentence, max 150 chars\","
+            "\"nextStep\":{\"label\":\"one concrete next step, max 80 chars\"} or null}]}. "
             "JSON data: " + prompt_json
         )
         response = None
@@ -2551,8 +2906,8 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 groq_planning_prompt = (
                     "You are FinAI's proactive budget and savings analyst. Review the supplied current "
                     "cash flow, recent trend, budget forecasts, goal plans, category comparisons, seasonal comparisons, and "
-                    "long-term cash-flow scenarios together. Identify up to three specific, useful "
-                    "insights across budgets, goals, and cash flow; include predictive risks or "
+                    "long-term cash-flow scenarios together. Identify every distinct, specific, useful "
+                    "insight across budgets, goals, and cash flow when evidence supports it; do not omit a valid issue to meet an arbitrary count. Include predictive risks or "
                     "opportunities only when the supplied forecast evidence supports them. You may "
                     "recommend only insights backed by an evidence_catalog item, and each recommendation "
                     "must cite exactly one matching evidence_id. Use only the cited item's facts; do not "
@@ -2563,10 +2918,9 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                     "return an empty recommendations list and say so briefly. Return JSON only: "
                     "{\"overview\":\"one sentence, max 120 chars\",\"recommendations\":["
                     "{\"evidence_id\":\"id\",\"priority\":\"high|medium|goal\","
-                    "\"title\":\"max 6 words\",\"message\":\"max 90 chars\","
-                    "\"actions\":[\"max 2 actions, each max 80 chars\"],"
-                    "\"how_calculated\":\"max 120 chars\","
-                    "\"context_question\":\"string or null\"}]}. Data: " + groq_prompt_data
+                    "\"finding\":{\"headline\":\"max 8 words\",\"key_number\":null},"
+                    "\"why\":\"one short sentence, max 150 chars\","
+                    "\"nextStep\":{\"label\":\"one concrete step, max 80 chars\"} or null}]}. Data: " + groq_prompt_data
                 )
                 response, _model = await asyncio.wait_for(asyncio.to_thread(
                     generate_groq_response,
@@ -2601,7 +2955,23 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
             except Exception as backup_exc:
                 print(
                     f"[Gemini][plan_ahead:{plan_call_id}] backup failed: "
-                    f"{_provider_failure_summary(backup_exc)}; keeping recorded-data guidance."
+                    f"{_provider_failure_summary(backup_exc)}; trying Vertex AI if configured."
+                )
+
+        if response is None and is_vertex_configured():
+            try:
+                response, _model = await asyncio.wait_for(asyncio.to_thread(
+                    generate_vertex_response,
+                    planning_contents,
+                    planning_config,
+                    validate=_validate_planning_response,
+                    operation=f"plan_ahead:{plan_call_id}",
+                ), timeout=VERTEX_AI_TIMEOUT_SECONDS + 1.0)
+                analysis_provider = "vertex"
+            except Exception as vertex_exc:
+                print(
+                    f"[Vertex AI][plan_ahead:{plan_call_id}] failed: "
+                    f"{_provider_failure_summary(vertex_exc)}; keeping recorded-data guidance."
                 )
 
         if response is not None:
@@ -2627,7 +2997,22 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                     # Keep the deterministic plan if the AI output fails validation;
                     # otherwise AI-authored content becomes the displayed advice.
                     if validated or not recommendations:
-                        recommendations = validated
+                        # AI selects and writes the lead recommendations. Preserve
+                        # other deterministic candidates so a short model response
+                        # cannot hide a separate, evidence-backed planning issue.
+                        ai_evidence = {
+                            json.dumps(item.get("evidence", {}).get("values", {}), sort_keys=True, default=str)
+                            for item in validated
+                        }
+                        remaining_rules = []
+                        for rule_index, rule_item in enumerate(rule_recommendations):
+                            rule_evidence_key = json.dumps(rule_item.get("evidence", {}), sort_keys=True, default=str)
+                            if rule_evidence_key in ai_evidence:
+                                continue
+                            normalized = normalize_rule_insight(rule_item)
+                            normalized["id"] = f"rule:{rule_item.get('kind', 'planning')}:{rule_index}"
+                            remaining_rules.append(normalized)
+                        recommendations = [*validated, *remaining_rules]
                         recommendation_source = "ai"
                         summary_source = "ai"
         except Exception as exc:
@@ -2641,6 +3026,36 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 f"analysis unavailable after {round((time.perf_counter() - planning_started_at) * 1000)}ms; "
                 "keeping recorded-data guidance."
             )
+
+    if recommendation_source == "ai" and weekly_briefing and not any(
+        item.get("nextStep", {}).get("params", {}).get("kind") == "weekly_briefing"
+        for item in recommendations
+    ):
+        recommendations.append(normalize_rule_insight(weekly_briefing))
+    # Current wallet balances are deliberately used only in this deterministic
+    # local calculation; they are not added to the Gemini/Groq evidence payload.
+    try:
+        from routers.accounts import calculate_account_balance
+        user_accounts = await db.accounts.find({
+            "is_archived": {"$ne": True},
+            "$or": [{"account_role": "admin"}, {"account_role": "user", "user_id": user_id}],
+        }).to_list(length=200)
+        current_wallet_balance = sum(
+            awaitable_balance for awaitable_balance in await asyncio.gather(*[
+                calculate_account_balance(account.get("name", ""), user_id,
+                                          float(account.get("initial_balance", 0) or 0),
+                                          account_id=account.get("_id"))
+                for account in user_accounts
+            ])
+        )
+        if income_period_count >= 3:
+            cushion = income_cushion_insight(current_wallet_balance, projected_expense)
+            if cushion:
+                recommendations.append(
+                    normalize_rule_insight(cushion) if recommendation_source == "ai" else cushion
+                )
+    except Exception as exc:
+        print(f"Planning wallet cushion insight unavailable ({type(exc).__name__}).")
 
     # A score is only shown when at least two areas have usable evidence.
     # Missing data must not earn a perfect score by default.
@@ -2719,6 +3134,27 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
                 "period": tightest["period"],
             }
 
+    if recommendation_source != "ai":
+        recommendations = [normalize_rule_insight(item) for item in recommendations]
+    # Keep the prose count aligned with the final list after AI validation,
+    # deterministic fallback merging, and any late-added planning findings.
+    if re.search(r"\b\d+\s+planning point(?:s|\(s\))?", summary, re.IGNORECASE):
+        summary = (
+            f"I found {len(recommendations)} planning point(s) from your active budgets and goals. "
+            "Forecasts are estimates based on recorded activity and may change as you log more transactions."
+            if recommendations else
+            "There are no immediate budget or goal flags in the available records. Unrecorded activity can still change the outlook."
+        )
+    insufficient_insight_data = not (
+        any(
+            int(item.get("monthly", {}).get("period_count", 0) or 0) >= 3
+            and any(float(point.get("actual", 0) or 0) > 0 for point in item.get("monthly", {}).get("periods", []))
+            for item in category_forecasts
+        )
+        or any(float(item.get("spent", 0) or 0) > 0 and item.get("confidence") != "low" for item in budget_forecasts)
+        or any(float(item.get("remaining", 0) or 0) > 0 and item.get("days_to_target") is not None for item in goal_plans)
+    )
+
     return {
         "status": "Success",
         "health_score": {
@@ -2744,6 +3180,7 @@ async def get_automatic_planning(current_user: dict = Depends(get_current_user))
         "positive_reinforcement": positive_reinforcement,
         "goal_plans": goal_plans,
         "recommendations": recommendations,
+        "insufficient_insight_data": insufficient_insight_data,
         "forecast_method": "Short-term budget estimates blend current-period pace with the trailing 28-day category average. Long-term scenarios multiply observed completed-month net cash-flow percentiles by 12; they are not projected account balances.",
-        "data_note": "Analysis uses active recorded transactions, budgets, and goals for the authenticated account. An aggregated financial summary (without transaction notes or descriptions) may be sent to Gemini or Groq to generate recommendations. Missing or unrecorded activity can make results incomplete.",
+        "data_note": "Analysis uses active recorded transactions, budgets, and goals for the authenticated account. An aggregated financial summary (without transaction notes or descriptions) may be sent to Gemini, Groq, or Vertex AI to generate recommendations. Missing or unrecorded activity can make results incomplete.",
     }

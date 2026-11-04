@@ -20,6 +20,7 @@ import { API_URL } from '../config';
 import { getGoalEmoji } from '../utils/goalEmoji'; // 👈 IMPORT NATIN YUNG EMOJI HELPER
 import { getDisplayEmoji } from '../components/EmojiPicker';
 import { hasSubCentPrecision } from '../utils/money';
+import { logUnexpectedError, userFacingError } from '../utils/userFacingError';
 
 const FINAI_DEEP_GREEN = '#0D5C3A';
 const FINAI_BG = '#F4F7F5';
@@ -57,11 +58,9 @@ export default function CreateGoal() {
         if (res.ok) {
           const data: GoalType[] = await res.json();
           setGoalTypes(data);
-        } else {
-          console.error("Failed to fetch goal types status:", res.status);
         }
       } catch (error) {
-        console.error("Error fetching goal types:", error);
+        logUnexpectedError('Goal type refresh failed unexpectedly:', error);
       }
     };
     fetchTypes();
@@ -130,7 +129,7 @@ export default function CreateGoal() {
 
     try {
       if (isEditMode) {
-        await updateGoal(
+        const synced = await updateGoal(
           String(params.id),
           name,
           parsedAmount,
@@ -138,16 +137,16 @@ export default function CreateGoal() {
           selectedType.id,
           currentSavings
         );
-        Alert.alert("Success 🎉", "Your goal has been updated.");
+        Alert.alert(synced ? "Goal updated" : "Goal saved on this device", synced ? "Your goal has been updated." : "Your goal changes will sync when you are online.");
       } else {
-        await addGoal(name, parsedAmount, formattedDate, selectedType.id);
-        Alert.alert("Success 🎉", "Your new goal has been saved.");
+        const synced = await addGoal(name, parsedAmount, formattedDate, selectedType.id);
+        Alert.alert(synced ? "Goal saved" : "Goal saved on this device", synced ? "Your new goal has been saved." : "Your goal will sync when you are online.");
       }
       router.back();
     } catch (error) {
       Alert.alert(
         isEditMode ? 'Could not update goal' : 'Could not save goal',
-        error instanceof Error ? error.message : 'We couldn’t save the goal. Check your connection and try again.'
+        userFacingError(error, 'We couldn’t save the goal. Check your connection and try again.')
       );
     }
   };

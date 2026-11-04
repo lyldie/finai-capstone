@@ -1,16 +1,18 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, LogBox, Image, TextInput, ScrollView, Animated, Easing, Linking } from 'react-native';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, Image, TextInput, ScrollView, Animated, Easing, Linking } from 'react-native';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_URL } from '../config';
 import { getSecureItem } from '../utils/secureStorage';
 import QuickAddCategoryModal from './QuickAddCategoryModal';
+import { useNetworkStatus } from '../context/NetworkStatusContext';
+import { isExpectedNetworkError } from '../utils/userFacingError';
 
 
-LogBox.ignoreLogs(['Camera Capture / OCR Error:', 'Invalid receipt']);
 
 interface ReceiptScannerModalProps {
   visible: boolean;
@@ -51,6 +53,8 @@ export default function ReceiptScannerModal({
   userId,
   onCategoryCreated,
 }: ReceiptScannerModalProps) {
+  const insets = useSafeAreaInsets();
+  const { isOnline } = useNetworkStatus();
   const [permission, requestPermission] = useCameraPermissions();
   
   const [capturedPhotos, setCapturedPhotos] = useState<string[]>([]);
@@ -137,12 +141,15 @@ export default function ReceiptScannerModal({
       );
       return cropped.uri;
     } catch (error) {
-      console.log('Guide crop fallback:', error);
       return uri;
     }
   };
 
   const submitPhotosToBackend = async (photos: string[]) => {
+    if (isOnline === false) {
+      Alert.alert('Receipt scanning needs internet', 'You can still save this purchase by entering the amount, category, date, and description manually.');
+      return;
+    }
     if (!photos || photos.length === 0) {
       Alert.alert("FinAI Scanner", "No image was received. Please capture the receipt again.");
       return;
@@ -222,7 +229,7 @@ export default function ReceiptScannerModal({
         needsReview: payload.needs_review || []
       });
     } catch (error: any) {
-      console.log("OCR Handled Error:", error?.message || error);
+      if (!isExpectedNetworkError(error)) console.error('Receipt scan failed; showing the manual-entry option.', error);
       const message = receiptScanErrorMessage(error);
       Alert.alert('Receipt scan unavailable', message, [
         { text: 'Enter manually', style: 'cancel', onPress: onClose },
@@ -252,7 +259,6 @@ export default function ReceiptScannerModal({
       setIsPreviewing(true);
 
     } catch (error: any) {
-      console.log("Capture Error:", error);
       Alert.alert('Camera error', 'The photo could not be captured. Try again.');
     }
   };
@@ -301,7 +307,6 @@ export default function ReceiptScannerModal({
       setCapturedPhotos(nextPhotos);
       setIsPreviewing(true);
     } catch (error: any) {
-      console.log('Gallery receipt selection error:', error?.message || error);
       Alert.alert('Could not open photos', 'Please try choosing the receipt photo again.');
     }
   };
@@ -369,7 +374,7 @@ export default function ReceiptScannerModal({
     return (
       <>
       <Modal visible={visible} animationType="slide" transparent={false}>
-        <View style={styles.reviewContainer}>
+        <View style={[styles.reviewContainer, { paddingTop: Math.max(54, insets.top + 24), paddingBottom: Math.max(28, insets.bottom + 20) }]}>
           <View style={styles.reviewHeader}>
             <TouchableOpacity onPress={handleResetAll} style={styles.reviewCloseButton}>
               <Ionicons name="arrow-back" size={22} color="#142D2A" />
@@ -522,7 +527,7 @@ export default function ReceiptScannerModal({
           </View>
 
           {/* Footer Controls & Actions */}
-          <View style={styles.overlayFooter}>
+          <View style={[styles.overlayFooter, { paddingBottom: Math.max(56, insets.bottom + 24) }]}>
             
             {isPreviewing ? (
               <View style={styles.previewActionsContainer}>

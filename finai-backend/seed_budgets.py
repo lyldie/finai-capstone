@@ -18,18 +18,20 @@ STAGING_DB_NAME = "FinAI_Staging"
 USER_ID = os.getenv("DEMO_USER_ID", "").strip()
 SEED_TAG = "finai-defense-demo-2026-01-10-v1"
 LIMITS = {
-    "Groceries": 7000,
-    "Food": 3000,
-    "Transportation": 3000,
-    "Utilities": 5000,
-    "Rent": 6000,
+    "Groceries": 6500,
+    "Food": 2500,
+    "Transportation": 3500,
+    "Utilities": 5500,
+    "Rent": 12500,
     "Leisure": 2000,
-    "Health": 1500,
+    "Health": 2000,
+    "Shopping": 1800,
+    "Others": 1500,
 }
 MONTHS = tuple(f"2026-{month:02d}" for month in range(1, 11))
 ALIASES = {"transportation": ("transport", "transpo", "commute", "transportation & fuel"), "leisure": ("entertainment", "dining", "food and dining"),
            "health": ("medical", "healthcare"), "groceries": ("food", "food and groceries"),
-           "rent": ("housing",), "utilities": ("bills",)}
+           "rent": ("housing", "bills"), "utilities": ("bills",)}
 
 
 def main() -> None:
@@ -67,6 +69,7 @@ def main() -> None:
         ))
         prepared, missing = [], []
         now = datetime.utcnow()
+        seen_category_ids = set()
         for name, amount in LIMITS.items():
             category = expense_categories.get(name.lower())
             if not category:
@@ -75,6 +78,10 @@ def main() -> None:
                 missing.append(name)
                 continue
             category_id = str(category["_id"])
+            if category_id in seen_category_ids:
+                missing.append(f"{name} (shares the {category.get('name')} category; skipped duplicate budget)")
+                continue
+            seen_category_ids.add(category_id)
             for month in MONTHS:
                 key = {"user_id": USER_ID, "category_id": category_id, "period_type": "monthly", "period_key": month}
                 document = {**key, "amount": float(amount), "month_year": None, "rollover_enabled": False,

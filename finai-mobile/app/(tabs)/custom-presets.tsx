@@ -8,6 +8,7 @@ import { API_URL } from '../../config';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 import { getSecureItem } from '../../utils/secureStorage';
+import { logUnexpectedError } from '../../utils/userFacingError';
 
 
 const GREEN = '#144A3D';
@@ -64,7 +65,7 @@ export default function CustomPresetsScreen() {
       setCategories(userCategories);
 
     } catch (error) {
-      console.error(error);
+      logUnexpectedError('Custom preset refresh failed unexpectedly:', error);
       Alert.alert('Could not load custom presets', 'Please check your connection and try again.');
     } finally {
       if (!isSilent) setIsLoading(false); 
@@ -209,7 +210,7 @@ export default function CustomPresetsScreen() {
       <StatusBar barStyle="dark-content" backgroundColor="#F7F9F8" />
       
       <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+        <TouchableOpacity onPress={() => router.replace('/(tabs)/profile' as never)} style={styles.backButton}>
           <Ionicons name="arrow-back" size={24} color="#142D2A" />
         </TouchableOpacity>
         <Text style={styles.headerTitle}>Custom Categories</Text>

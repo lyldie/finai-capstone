@@ -1,17 +1,19 @@
-from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends
+from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 from fastapi.middleware.cors import CORSMiddleware
-from typing import Optional, List
+from typing import Optional, List, Literal
 from decimal import Decimal, InvalidOperation
 from passlib.context import CryptContext
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 import secrets
 import string
+import hashlib
+import hmac
 import os
 import base64
 import cv2
@@ -29,12 +31,14 @@ load_dotenv()
 
 # I-IMPORT ANG DB MULA SA DATABASE.PY
 from database import db, ensure_indexes
-from email_utils import send_otp_email
+from email_utils import send_otp_email, send_password_reset_otp_email
 from schemas.money import require_cent_precision
+from google.auth.transport import requests as google_auth_requests
+from google.oauth2 import id_token as google_id_token
 
 # JWT session creation for user and admin authentication.
 from auth import create_access_token, get_current_user
-from security import enforce_auth_rate_limit, clear_auth_rate_limit
+from security import enforce_auth_rate_limit, clear_auth_rate_limit, enforce_user_feature_rate_limit
 
 # I-IMPORT ANG ROUTERS
 from routers import budgets, categories, accounts, goal_types, goals, notifications,users,logs,advisor,export,bills
@@ -53,6 +57,7 @@ from services.groq_service import (
     GROQ_TIMEOUT_SECONDS,
     generate_groq_response,
 )
+from services.google_vision_ocr import extract_text_from_images
 
 app = FastAPI(title="FinAi Backend", version="1.0")
 
@@ -102,12 +107,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 # 2. CORS Middleware
+_cors_origins = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:8081,http://127.0.0.1:8081",
+    ).split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-Requested-With"],
 )
 
 
@@ -956,8 +969,28 @@ class OTPVerify(BaseModel):
     otp: str = Field(..., min_length=6, max_length=6)
 
 
+class RegistrationResendRequest(BaseModel):
+    email: EmailStr
+
+
+class GoogleSignInRequest(BaseModel):
+    id_token: str = Field(..., min_length=20, max_length=10000)
+    flow: Literal["login", "signup"] = "login"
+
+
+class PasswordResetRequest(BaseModel):
+    email: EmailStr
+
+
+class PasswordResetComplete(BaseModel):
+    email: EmailStr
+    otp: str = Field(..., min_length=6, max_length=6)
+    new_password: str = Field(..., min_length=10, max_length=72)
+
+
 class TransactionSchema(BaseModel):
     user_id: str
+    client_request_id: Optional[str] = Field(None, min_length=1, max_length=100)
     amount: float = Field(..., gt=0, allow_inf_nan=False)
     category: str
     title: Optional[str] = None
@@ -971,6 +1004,8 @@ class TransactionSchema(BaseModel):
     category_id: Optional[str] = None
     date: Optional[str] = None
     goal_id: Optional[str] = None
+    scheduled_bill_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    scheduled_bill_period_key: Optional[str] = Field(None, pattern=r"^\d{4}-\d{2}$")
 
     @field_validator("amount", mode="before")
     @classmethod
@@ -1177,6 +1212,236 @@ async def verify_otp(data: OTPVerify, request: Request):
     raise HTTPException(status_code=400, detail="The verification code is incorrect.")
 
 
+@app.post("/resend-registration-code")
+async def resend_registration_code(data: RegistrationResendRequest, request: Request):
+    clean_email = data.email.lower().strip()
+    await enforce_auth_rate_limit(
+        request,
+        "registration_resend",
+        clean_email,
+        max_attempts=3,
+        ip_max_attempts=20,
+        window_seconds=900,
+    )
+
+    pending = await db.pending_signups.find_one({"email": clean_email})
+    if not pending:
+        raise HTTPException(
+            status_code=400,
+            detail="No pending registration was found. Return to sign up and request a new code.",
+        )
+
+    otp_code = "".join(secrets.choice(string.digits) for _ in range(6))
+    if not send_otp_email(clean_email, otp_code):
+        raise HTTPException(status_code=500, detail="Could not send a new verification code. Please try again shortly.")
+
+    await db.pending_signups.update_one(
+        {"_id": pending["_id"]},
+        {"$set": {"otp": otp_code, "timestamp": datetime.utcnow()}},
+    )
+    return {"status": "Success", "message": "A new verification code was sent."}
+
+
+@app.post("/google-signin")
+async def google_signin(data: GoogleSignInRequest, request: Request):
+    """Verify a Google token and apply the requested login or signup behavior."""
+    await enforce_auth_rate_limit(
+        request, "google_signin_token", hashlib.sha256(data.id_token.encode("utf-8")).hexdigest(),
+        max_attempts=30, ip_max_attempts=30, window_seconds=900,
+    )
+    audiences = {
+        value.strip()
+        for value in os.getenv("GOOGLE_OAUTH_CLIENT_IDS", "").split(",")
+        if value.strip()
+    }
+    if not audiences:
+        raise HTTPException(status_code=503, detail="Google sign-in is not configured yet.")
+
+    try:
+        claims = await asyncio.to_thread(
+            google_id_token.verify_oauth2_token,
+            data.id_token,
+            google_auth_requests.Request(),
+            audience=list(audiences),
+        )
+    except Exception:
+        raise HTTPException(status_code=401, detail="Google sign-in could not be verified. Please try again.")
+
+    email = str(claims.get("email", "")).strip().lower()
+    google_subject = str(claims.get("sub", "")).strip()
+    if not email or not google_subject or claims.get("email_verified") is not True:
+        raise HTTPException(status_code=401, detail="Use a Google account with a verified email address.")
+    await enforce_auth_rate_limit(
+        request, "google_signin_email", email,
+        max_attempts=20, ip_max_attempts=30, window_seconds=900,
+    )
+
+    user = await db.users.find_one({"google_sub": google_subject})
+    if user and str(user.get("email", "")).strip().lower() != email:
+        raise HTTPException(status_code=409, detail="This Google account is linked to a different FinAI account.")
+    if not user:
+        user = await db.users.find_one({"email": email})
+
+    if user:
+        if user.get("role", "user") == "admin":
+            raise HTTPException(status_code=403, detail="Administrators must sign in with their administrator credentials.")
+        if user.get("is_archived"):
+            raise HTTPException(status_code=403, detail="This account has been archived. Please contact an administrator.")
+        raw_linked_subject = user.get("google_sub")
+        linked_subject = raw_linked_subject.strip() if isinstance(raw_linked_subject, str) else ""
+        if linked_subject and linked_subject != google_subject:
+            raise HTTPException(status_code=409, detail="A different Google account is already linked to this email.")
+        if data.flow == "signup":
+            raise HTTPException(status_code=409, detail="A FinAI account already uses this Google account. Please log in instead.")
+        if not linked_subject:
+            # Google's verified email is authoritative for Gmail and Workspace.
+            # For other email providers, require the user to authenticate using
+            # their existing FinAI method before linking a Google identity.
+            google_authoritative = email.endswith("@gmail.com") or bool(claims.get("hd"))
+            if not google_authoritative:
+                raise HTTPException(
+                    status_code=409,
+                    detail="A FinAI account already uses this email. Sign in with your existing method before linking Google.",
+                )
+            linked = await db.users.update_one(
+                {
+                    "_id": user["_id"],
+                    "$or": [
+                        {"google_sub": {"$exists": False}},
+                        {"google_sub": None},
+                        {"google_sub": ""},
+                    ],
+                },
+                {"$set": {
+                    "google_sub": google_subject,
+                    "auth_providers": (["password", "google"] if user.get("password") else ["google"]),
+                }},
+            )
+            user = await db.users.find_one({"_id": user["_id"]})
+            if not linked.matched_count or not user or user.get("google_sub") != google_subject:
+                raise HTTPException(status_code=409, detail="This email could not be linked to that Google account.")
+    else:
+        if data.flow == "login":
+            raise HTTPException(
+                status_code=404,
+                detail="No FinAI account is linked to this Google account. Please sign up first.",
+            )
+
+        name = str(claims.get("name") or email.partition("@")[0]).strip()[:100]
+        new_user = {
+            "name": name or "FinAI user",
+            "email": email,
+            "email_key": email.casefold(),
+            "google_sub": google_subject,
+            "auth_providers": ["google"],
+            "password": None,
+            "role": "user",
+            "onboarding_completed": False,
+            "token_version": 0,
+            "created_at": datetime.now(timezone.utc),
+        }
+        try:
+            inserted = await db.users.insert_one(new_user)
+            user = {**new_user, "_id": inserted.inserted_id}
+            await db.pending_signups.delete_one({"email": email})
+        except DuplicateKeyError:
+            raise HTTPException(
+                status_code=409,
+                detail="A FinAI account with this email was just created. Please log in instead.",
+            )
+
+    role = user.get("role", "user")
+    return {
+        "status": "Success",
+        "user_id": str(user["_id"]),
+        "name": user.get("name", "FinAI user"),
+        "email": email,
+        "role": role,
+        "onboarding_completed": user.get("onboarding_completed", False),
+        "has_pin": bool(user.get("pin")),
+        "token": create_access_token(
+            user_id=str(user["_id"]), role=role,
+            token_version=int(user.get("token_version", 0)),
+        ),
+    }
+
+
+@app.post("/forgot-password")
+async def forgot_password(data: PasswordResetRequest, request: Request, background_tasks: BackgroundTasks):
+    """Queue a reset code only for an account, with an enumeration-safe response."""
+    clean_email = data.email.lower().strip()
+    await enforce_auth_rate_limit(
+        request, "password_reset_request", clean_email,
+        max_attempts=3, ip_max_attempts=20, window_seconds=900,
+    )
+
+    account = await db.users.find_one({"email": clean_email, "is_archived": {"$ne": True}}, {"_id": 1})
+    if account:
+        code = "".join(secrets.choice(string.digits) for _ in range(6))
+        code_hash = hashlib.sha256(code.encode("ascii")).hexdigest()
+        expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        await db.password_resets.update_one(
+            {"email": clean_email},
+            {"$set": {"email": clean_email, "code_hash": code_hash, "expires_at": expires_at}},
+            upsert=True,
+        )
+        # SMTP runs after the same neutral API response for known and unknown emails.
+        background_tasks.add_task(send_password_reset_otp_email, clean_email, code)
+
+    return {"status": "ok", "message": "If an account uses that email, a password reset code will be sent."}
+
+
+@app.post("/reset-password")
+async def reset_password(data: PasswordResetComplete, request: Request):
+    clean_email = data.email.lower().strip()
+    code = data.otp.strip()
+    password = data.new_password
+    await enforce_auth_rate_limit(
+        request, "password_reset_verify", clean_email,
+        max_attempts=5, ip_max_attempts=30, window_seconds=900,
+    )
+
+    if len(password.encode("utf-8")) > 72 or not (
+        re.search(r"[a-z]", password) and re.search(r"[A-Z]", password) and re.search(r"\d", password)
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="Use at least 10 characters, including uppercase and lowercase letters and a number.",
+        )
+
+    now = datetime.now(timezone.utc)
+    code_hash = hashlib.sha256(code.encode("ascii", errors="ignore")).hexdigest()
+    reset = await db.password_resets.find_one({"email": clean_email})
+    expires_at = reset.get("expires_at") if reset else None
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    valid = bool(
+        reset
+        and isinstance(expires_at, datetime)
+        and expires_at > now
+        and hmac.compare_digest(str(reset.get("code_hash", "")), code_hash)
+    )
+    if not valid:
+        raise HTTPException(status_code=400, detail="The reset code is invalid or expired. Request a new code and try again.")
+
+    # Atomically consume the code before changing the password, so it cannot be reused.
+    consumed = await db.password_resets.delete_one({
+        "_id": reset["_id"], "code_hash": code_hash, "expires_at": {"$gt": now},
+    })
+    if not consumed.deleted_count:
+        raise HTTPException(status_code=400, detail="The reset code is invalid or expired. Request a new code and try again.")
+
+    result = await db.users.update_one(
+        {"email": clean_email, "is_archived": {"$ne": True}},
+        {"$set": {"password": pwd_context.hash(password)}, "$inc": {"token_version": 1}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=400, detail="The reset code is invalid or expired. Request a new code and try again.")
+
+    await clear_auth_rate_limit(request, "password_reset_verify", clean_email)
+    return {"status": "ok", "message": "Password updated. Sign in with your new password."}
+
+
 @app.post("/login")
 async def login(user: UserLogin, request: Request):
     clean_email = user.email.lower().strip()
@@ -1185,6 +1450,9 @@ async def login(user: UserLogin, request: Request):
 
     if not db_user:
         raise HTTPException(status_code=400, detail="The email or password is incorrect.")
+
+    if not isinstance(db_user.get("password"), str) or not db_user.get("password"):
+        raise HTTPException(status_code=400, detail="The email or password is incorrect. If you use Google sign-in, choose Continue with Google.")
 
     # ðŸ‘‡ Inayos natin ang spacing dito para pumantay sa taas
     password_to_verify = user.password[:72]
@@ -1279,6 +1547,7 @@ async def ocr_scan(
     current_user: dict = Depends(get_current_user),
 ):
     try:
+        await enforce_user_feature_rate_limit(current_user["id"], "ocr", max_requests=20)
         if not files or len(files) == 0:
             raise HTTPException(status_code=400, detail="No receipt images were provided.")
         if len(files) > 4:
@@ -1330,11 +1599,11 @@ async def ocr_scan(
             except Exception as e:
                 print(f"Could not fetch user categories: {e}")
 
-        if not ai_client and not GROQ_API_KEY:
-            raise HTTPException(
-                status_code=503,
-                detail="Receipt scanning is not configured right now. Please enter the details manually.",
-            )
+        # Run independent OCR alongside Gemini/Groq to avoid adding its latency
+        # to the existing extraction path. Failures remain non-fatal.
+        vision_task = asyncio.create_task(
+            asyncio.to_thread(extract_text_from_images, processed_images_bytes, 18)
+        )
 
         extraction_result = None
         provider = None
@@ -1378,6 +1647,45 @@ async def ocr_scan(
                 error_code = getattr(groq_err, "status_code", None)
                 print(f"[OCR] Groq receipt fallback failed ({type(groq_err).__name__}; code={error_code}).")
 
+        local_result = None
+        try:
+            raw_vision_text = await asyncio.wait_for(vision_task, timeout=20)
+            if raw_vision_text:
+                vision_lines = [line.strip() for line in raw_vision_text.splitlines() if line.strip()]
+                vision_amount = extract_total_amount(vision_lines)
+                vision_merchant, merchant_is_fallback = pick_merchant_line(vision_lines)
+                vision_date = sanitize_and_parse_date(vision_lines)
+                _, vision_category, _ = match_merchant_and_category(
+                    raw_vision_text, vision_lines, user_categories
+                )
+                local_result = {
+                    "amount": f"{vision_amount:.2f}" if vision_amount is not None else None,
+                    "merchant": vision_merchant if not merchant_is_fallback else None,
+                    "date": vision_date,
+                    "category": vision_category,
+                    "amount_is_fallback": vision_amount is None,
+                    "merchant_is_fallback": merchant_is_fallback,
+                    "date_is_fallback": vision_date is None,
+                }
+                print(f"[OCR] Google Vision read text from {len(vision_lines)} receipt line(s).")
+            else:
+                print("[OCR] Google Vision returned no readable text.")
+        except asyncio.TimeoutError:
+            print("[OCR] Google Vision exceeded its deadline; continuing without its transcript.")
+        except Exception as vision_err:
+            error_code = getattr(vision_err, "status_code", None)
+            print(f"[OCR] Google Vision unavailable ({type(vision_err).__name__}; code={error_code}).")
+
+        # If both AI providers are unavailable, retain the independently parsed
+        # Vision fields as review-required suggestions instead of dropping the scan.
+        if extraction_result is None and local_result:
+            final_result = reconcile_receipt_fields(local_result, None, user_categories)
+            final_result["raw_text"] = ""
+            final_result["amount_is_fallback"] = final_result["amount"] is None
+            final_result["merchant_is_fallback"] = final_result["merchant"] is None
+            final_result["date_is_fallback"] = final_result["date"] is None
+            return {"status": "Success", "engine": "Google Vision OCR", "data": final_result}
+
         if extraction_result is None:
             if timed_out:
                 raise HTTPException(
@@ -1391,7 +1699,7 @@ async def ocr_scan(
 
         extracted_fields = [field for field in ("merchant", "date", "amount", "category") if extraction_result.get(field) is not None]
         print(f"[OCR] {provider} extraction completed. Read fields: {', '.join(extracted_fields) or 'none'}.")
-        final_result = reconcile_receipt_fields(None, extraction_result, user_categories, ai_provider=provider)
+        final_result = reconcile_receipt_fields(local_result, extraction_result, user_categories, ai_provider=provider)
         final_result["raw_text"] = ""
         final_result["amount_is_fallback"] = final_result["amount"] is None
         final_result["merchant_is_fallback"] = final_result["merchant"] is None
@@ -1402,7 +1710,9 @@ async def ocr_scan(
     except HTTPException as http_ex:
         raise http_ex
     except Exception as err:
-        print(f"Scan API Fatal Error -> {err}")
+        # Provider/HTTP exceptions can contain request URLs or sensitive
+        # integration details. Log the class, while returning a safe message.
+        print(f"Scan API failed ({type(err).__name__}).")
         raise HTTPException(
             status_code=500,
             detail="We couldn't read the receipt. Please make sure the image is clear and try again."
@@ -1481,10 +1791,40 @@ async def add_goal_contribution(transaction: TransactionSchema, current_user: di
 @app.post("/add-expense")
 async def add_expense(transaction: TransactionSchema, current_user: dict = Depends(get_current_user)):
     transaction.user_id = current_user["id"]
+    if transaction.client_request_id:
+        existing = await db.expenses.find_one({
+            "user_id": current_user["id"],
+            "client_request_id": transaction.client_request_id,
+        })
+        if existing:
+            return {"status": "Success", "id": str(existing["_id"]), "notifications": [], "duplicate": True}
     if transaction.goal_id:
         raise HTTPException(status_code=422, detail="Use the savings goal contribution flow to link a transaction to a goal.")
     validate_transaction_for_storage(transaction)
     await validate_transaction_references(transaction, current_user["id"])
+    linked_bill = None
+    linked_bill_occurrence = None
+    if transaction.scheduled_bill_id or transaction.scheduled_bill_period_key:
+        if not transaction.scheduled_bill_id or not transaction.scheduled_bill_period_key or transaction.type.lower() != "expense":
+            raise HTTPException(status_code=422, detail="A scheduled bill payment must be a complete expense record.")
+        try:
+            bill_oid = ObjectId(transaction.scheduled_bill_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail="This scheduled bill is invalid. Refresh your bills and try again.") from exc
+        linked_bill = await db.fixed_bills.find_one({
+            "_id": bill_oid, "user_id": current_user["id"], "is_active": True,
+        })
+        if not linked_bill:
+            raise HTTPException(status_code=404, detail="This scheduled bill is no longer available.")
+        if str(linked_bill.get("category_id", "")) != str(transaction.category_id or ""):
+            raise HTTPException(status_code=409, detail="Choose the scheduled bill's expense category to record its payment.")
+        linked_bill_occurrence = await db.bill_occurrences.find_one({
+            "user_id": current_user["id"],
+            "bill_id": str(bill_oid),
+            "period_key": transaction.scheduled_bill_period_key,
+        })
+        if not linked_bill_occurrence or linked_bill_occurrence.get("status") != "unpaid":
+            raise HTTPException(status_code=409, detail="This bill is already paid or its monthly reminder has changed.")
     transaction_dict = transaction.model_dump()
     transaction_dict["created_at"] = datetime.now(timezone.utc)
     if transaction.type.lower() in {"income", "expense", "transfer"}:
@@ -1520,6 +1860,18 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
                         detail="This transaction is more than the available balance in the selected account.",
                     )
             result = await db.expenses.insert_one(transaction_dict, session=session)
+            if linked_bill_occurrence:
+                paid_result = await db.bill_occurrences.update_one(
+                    {"_id": linked_bill_occurrence["_id"], "status": "unpaid"},
+                    {"$set": {
+                        "status": "paid",
+                        "paid_at": datetime.now(timezone.utc),
+                        "payment_transaction_id": str(result.inserted_id),
+                    }},
+                    session=session,
+                )
+                if paid_result.modified_count != 1:
+                    raise HTTPException(status_code=409, detail="This bill was already marked paid. Refresh your bills before trying again.")
             return result.inserted_id
         try:
             async with await db.client.start_session() as session:
@@ -1562,14 +1914,11 @@ async def add_expense(transaction: TransactionSchema, current_user: dict = Depen
 
 
 @app.put("/update-expense/{expense_id}")
-async def update_expense(expense_id: str, transaction: TransactionSchema, current_user: dict = Depends(get_current_user)):
+@app.put("/update-contribution/{expense_id}")
+async def update_expense(expense_id: str, transaction: TransactionSchema, request: Request, current_user: dict = Depends(get_current_user)):
     transaction.user_id = current_user["id"]
-    if transaction.goal_id:
-        raise HTTPException(status_code=422, detail="Goal links can only be changed through the savings goal flow.")
     validate_transaction_for_storage(transaction)
     await validate_transaction_references(transaction, current_user["id"])
-    if transaction.goal_id:
-        transaction.goal_id = str(transaction.goal_id)
 
     # 1. Kunin ang lumang transaction para may pagbasehan ng computation
     try:
@@ -1579,38 +1928,36 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
     old_txn = await db.expenses.find_one({"_id": expense_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}})
     if not old_txn:
         raise HTTPException(status_code=404, detail="Transaction not found")
-    if old_txn.get("goal_id"):
-        raise HTTPException(status_code=409, detail="Goal contributions must be changed from the goal so savings stay accurate.")
+    old_goal = str(old_txn.get("goal_id") or "")
+    new_goal = str(transaction.goal_id or "")
+    old_type = str(old_txn.get("type", "")).strip().lower()
+    if old_goal or transaction.type == "Contribution":
+        if not request.url.path.startswith("/update-contribution/"):
+            raise HTTPException(status_code=409, detail="Use Edit contribution to safely update this savings record.")
+        if old_type != "contribution" or transaction.type != "Contribution" or not old_goal or new_goal != old_goal:
+            raise HTTPException(status_code=409, detail="Goal contributions can only be edited as contributions to the same goal.")
+        try:
+            contribution_goal_oid = ObjectId(old_goal)
+        except Exception as exc:
+            raise HTTPException(status_code=409, detail="This contribution's goal link is invalid. Refresh your goals and try again.") from exc
+        contribution_goal = await db.goals.find_one({"_id": contribution_goal_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}})
+        if not contribution_goal:
+            raise HTTPException(status_code=409, detail="This contribution's goal is unavailable, so it cannot be edited safely.")
+        transaction.goal_id = old_goal
+        transaction.category = "Goal Contribution"
+        transaction.to_account = None
+    elif transaction.goal_id:
+        raise HTTPException(status_code=422, detail="Goal links can only be changed through the savings goal flow.")
 
     # FIX: verify ownership before allowing the update. Previously any expense_id could
     # be edited regardless of who submitted the request -- same gap fixed for budgets.
     if str(old_txn.get("user_id", "")) != str(transaction.user_id):
         raise HTTPException(status_code=403, detail="You don't have permission to edit this transaction.")
 
-    old_goal = old_txn.get("goal_id")
-    new_goal = transaction.goal_id
     old_amount = float(old_txn.get("amount", 0))
     new_amount = float(transaction.amount)
-
-    # 2. Mag-compute at mag-adjust ng ipon sa db.goals
-    if old_goal == new_goal and old_goal:
-        # Same goal, nag-iba lang ng amount (e.g. 500 naging 1000)
-        difference = new_amount - old_amount
-        if difference != 0:
-            await db.goals.update_one(
-                {"_id": ObjectId(old_goal)},
-                {"$inc": {"current_savings": difference}}
-            )
-    elif old_goal != new_goal:
-        # Nilipat sa ibang goal, o kaya tinanggalan ng goal
-        if old_goal:
-            # Bawiin yung pera mula sa lumang target
-            await db.goals.update_one({"_id": ObjectId(old_goal)}, {"$inc": {"current_savings": -old_amount}})
-        if new_goal:
-            # Ipasok yung pera sa bagong target
-            await db.goals.update_one({"_id": ObjectId(new_goal)}, {"$inc": {"current_savings": new_amount}})
-
-    # 3. I-save yung bagong transaction data
+    # Save the transaction, account balance movement, and contribution savings
+    # adjustment together below so a failed edit cannot leave goal totals stale.
     update_query = {"_id": expense_oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}
     update_data = {"$set": {**transaction.model_dump(), "updated_at": datetime.now(timezone.utc)}}
     async def load_account(account_id: Optional[str], name: Optional[str]):
@@ -1700,6 +2047,17 @@ async def update_expense(expense_id: str, transaction: TransactionSchema, curren
             )
             if current_balance + delta < -0.005:
                 raise HTTPException(status_code=409, detail="This change is more than the available balance in an affected account.")
+        if old_goal and old_type == "contribution":
+            savings_delta = new_amount - old_amount
+            if savings_delta:
+                goal_filter = {"_id": contribution_goal_oid, "user_id": current_user["id"]}
+                if savings_delta < 0:
+                    goal_filter["current_savings"] = {"$gte": -savings_delta}
+                goal_result = await db.goals.update_one(
+                    goal_filter, {"$inc": {"current_savings": savings_delta}}, session=session,
+                )
+                if not goal_result.matched_count:
+                    raise HTTPException(status_code=409, detail="Goal savings changed and cannot be adjusted safely. Refresh and try again.")
         return await db.expenses.update_one(update_query, update_data, session=session)
 
     try:
@@ -1794,6 +2152,10 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
     transaction_query = {"_id": expense_oid, "user_id": user_id, **state_query}
     transaction = await db.expenses.find_one(transaction_query)
     if not transaction:
+        if action == "archive":
+            already_archived = await db.expenses.find_one({"_id": expense_oid, "user_id": user_id, "is_archived": True}, {"_id": 1})
+            if already_archived:
+                return None
         label = "Archived transaction" if was_archived else "Transaction"
         raise HTTPException(status_code=404, detail=f"{label} not found.")
 
@@ -1835,11 +2197,13 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
         if _transaction_lifecycle_signature(current) != expected_signature:
             raise HTTPException(status_code=409, detail="This transaction changed. Reload and try again.")
 
-        direction = 1 if action == "restore" else (0 if action == "permanent_delete" else -1)
+        direction = 1 if action == "restore" else (-1 if action == "permanent_delete" and transaction_type == "goal withdrawal" else (0 if action == "permanent_delete" else -1))
         deltas = {account_id: 0.0 for account_id in affected_accounts}
         source_id = str(source_account["_id"])
         destination_id = str(destination_account["_id"]) if destination_account else None
         if transaction_type == "income":
+            deltas[source_id] += direction * amount
+        elif transaction_type == "goal withdrawal":
             deltas[source_id] += direction * amount
         elif transaction_type in {"expense", "contribution"}:
             deltas[source_id] -= direction * amount
@@ -1872,7 +2236,13 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
 
         if action == "archive":
             values = {"is_archived": True, "archived_at": datetime.now(timezone.utc)}
-            if goal_oid and not current.get("goal_contribution_reversed"):
+            if goal_oid and transaction_type == "goal withdrawal" and not current.get("goal_withdrawal_reversed"):
+                await db.goals.update_one(
+                    {"_id": goal_oid, "user_id": user_id},
+                    {"$inc": {"current_savings": amount}}, session=session,
+                )
+                values["goal_withdrawal_reversed"] = True
+            elif goal_oid and transaction_type == "contribution" and not current.get("goal_contribution_reversed"):
                 goal_result = await db.goals.update_one(
                     {"_id": goal_oid, "user_id": user_id, "current_savings": {"$gte": amount}},
                     {"$inc": {"current_savings": -amount}}, session=session,
@@ -1886,31 +2256,40 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
             return changed
 
         if action == "restore":
-            if goal_oid and current.get("goal_contribution_reversed"):
+            if goal_oid and (current.get("goal_contribution_reversed") or current.get("goal_withdrawal_reversed")):
                 active_goal = await db.goals.find_one(
                     {"_id": goal_oid, "user_id": user_id, "is_archived": {"$ne": True}},
                     session=session,
                 )
                 if not active_goal:
-                    raise HTTPException(status_code=409, detail="Restore the linked savings goal first, then restore this contribution.")
+                    raise HTTPException(status_code=409, detail="Restore the linked savings goal first, then restore this savings movement.")
+                if current.get("goal_withdrawal_reversed") and float(active_goal.get("current_savings", 0) or 0) < amount:
+                    raise HTTPException(status_code=409, detail="The goal no longer has enough savings to restore this withdrawal.")
             changed = await db.expenses.update_one(
                 transaction_query, {"$set": {"is_archived": False}, "$unset": {"archived_at": ""}}, session=session
             )
-            if changed.matched_count and goal_oid and current.get("goal_contribution_reversed"):
-                goal_result = await db.goals.update_one(
-                    {"_id": goal_oid, "user_id": user_id}, {"$inc": {"current_savings": amount}}, session=session
-                )
+            if changed.matched_count and goal_oid and (current.get("goal_contribution_reversed") or current.get("goal_withdrawal_reversed")):
+                savings_delta = -amount if current.get("goal_withdrawal_reversed") else amount
+                savings_query = {"_id": goal_oid, "user_id": user_id}
+                if savings_delta < 0:
+                    savings_query["current_savings"] = {"$gte": amount}
+                goal_result = await db.goals.update_one(savings_query, {"$inc": {"current_savings": savings_delta}}, session=session)
                 if not goal_result.matched_count:
-                    raise HTTPException(status_code=409, detail="The linked goal is unavailable; transaction was not restored.")
+                    raise HTTPException(status_code=409, detail="The linked goal balance changed; transaction was not restored.")
                 marker = await db.expenses.update_one(
-                    {"_id": expense_oid, "user_id": user_id}, {"$unset": {"goal_contribution_reversed": ""}}, session=session
+                    {"_id": expense_oid, "user_id": user_id}, {"$unset": {"goal_contribution_reversed": "", "goal_withdrawal_reversed": ""}}, session=session
                 )
                 if not marker.matched_count:
                     raise HTTPException(status_code=409, detail="The linked goal update could not be completed safely.")
             return changed
 
         if action in {"delete", "permanent_delete"}:
-            if goal_oid and not current.get("goal_contribution_reversed"):
+            if goal_oid and transaction_type == "goal withdrawal" and not current.get("goal_withdrawal_reversed"):
+                await db.goals.update_one(
+                    {"_id": goal_oid, "user_id": user_id},
+                    {"$inc": {"current_savings": amount}}, session=session,
+                )
+            elif goal_oid and transaction_type == "contribution" and not current.get("goal_contribution_reversed"):
                 goal_result = await db.goals.update_one(
                     {"_id": goal_oid, "user_id": user_id, "current_savings": {"$gte": amount}},
                     {"$inc": {"current_savings": -amount}}, session=session,

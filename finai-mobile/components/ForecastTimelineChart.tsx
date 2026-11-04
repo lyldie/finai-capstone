@@ -8,6 +8,7 @@ const GOLD = '#EDB232';
 const MUTED = '#7C9A95';
 const EXPENSE = '#C96B65';
 const EXPENSE_TINT = '#F3DEDA';
+const EXPENSE_RANGE = '#FAF0EE';
 
 export type ChartPoint = { label: string; value: number };
 
@@ -20,12 +21,13 @@ type Props = {
   forecastPeriods?: number;
   futureLabels?: string[];
   showLegend?: boolean;
+  showValueLabels?: boolean;
   colorMode?: 'income' | 'expense' | 'neutral';
   accessibilityLabel: string;
   height?: number;
 };
 
-export default function ForecastTimelineChart({ actual, forecast, rangeLow, rangeHigh, limit, forecastPeriods = 1, futureLabels = [], showLegend = false, colorMode = 'neutral', accessibilityLabel, height = 190 }: Props) {
+export default function ForecastTimelineChart({ actual, forecast, rangeLow, rangeHigh, limit, forecastPeriods = 1, futureLabels = [], showLegend = false, showValueLabels = false, colorMode = 'neutral', accessibilityLabel, height = 190 }: Props) {
   const seriesColor = colorMode === 'expense' ? EXPENSE : TEAL;
   const forecastTint = colorMode === 'expense' ? EXPENSE_TINT : '#D8E8DF';
   const width = 330;
@@ -54,6 +56,7 @@ export default function ForecastTimelineChart({ actual, forecast, rangeLow, rang
     ? `M ${center(lastIndex)} ${y(points[lastIndex].value)} ${Array.from({ length: projectionCount }, (_, index) => `L ${center(points.length + index)} ${y(Number(forecast))}`).join(' ')}`
     : '';
   const formatTick = (v: number) => Math.abs(v) >= 1000 ? `${Math.round(v / 1000)}k` : `${Math.round(v)}`;
+  const formatValue = (v: number) => `₱${Math.abs(v) >= 10000 ? `${(v / 1000).toFixed(0)}k` : Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(1)}k` : Math.round(v)}`;
 
   return <View accessible accessibilityRole="image" accessibilityLabel={accessibilityLabel}>
     <Svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`}>
@@ -67,6 +70,7 @@ export default function ForecastTimelineChart({ actual, forecast, rangeLow, rang
       </>}
       {points.map((point, index) => <React.Fragment key={`${point.label}-${index}`}>
         <Rect x={x(index)} y={Math.min(y(point.value), y(0))} width={barWidth} height={Math.max(1, Math.abs(y(point.value) - y(0)))} rx={4} fill={seriesColor} />
+        {showValueLabels && <SvgText x={center(index)} y={Math.max(9, y(point.value) - 4)} fill={seriesColor} fontSize={7} fontWeight="bold" textAnchor="middle">{formatValue(point.value)}</SvgText>}
         <SvgText x={center(index)} y={height - 10} fill={MUTED} fontSize={8} textAnchor="middle">{point.label.slice(0, 7)}</SvgText>
       </React.Fragment>)}
       {forecastPath && <Path d={forecastPath} fill="none" stroke={seriesColor} strokeWidth={1.5} strokeDasharray="4 4" />}
@@ -80,18 +84,19 @@ export default function ForecastTimelineChart({ actual, forecast, rangeLow, rang
         const bandBottom = hasRange ? y(Number(rangeLow)) : 0;
         const label = futureLabels[index] || `+${index + 1}`;
         return <React.Fragment key={`projection-${index}`}>
-          {hasRange && <Rect x={center(pointIndex) - 8} y={bandTop} width={16} height={Math.max(2, bandBottom - bandTop)} rx={5} fill="#E7F1EB" />}
+          {hasRange && <Rect x={center(pointIndex) - 8} y={bandTop} width={16} height={Math.max(2, bandBottom - bandTop)} rx={5} fill={colorMode === 'expense' ? EXPENSE_RANGE : '#E7F1EB'} />}
           <Rect x={x(pointIndex)} y={barY} width={barWidth} height={barHeight} rx={4} fill={forecastTint} stroke={seriesColor} strokeWidth={1.3} strokeDasharray="4 3" />
           <Circle cx={center(pointIndex)} cy={forecastY} r={3} fill={GOLD} stroke="#fff" strokeWidth={1} />
+          {showValueLabels && <SvgText x={center(pointIndex)} y={Math.max(9, forecastY - 5)} fill={seriesColor} fontSize={7} fontWeight="bold" textAnchor="middle">{formatValue(Number(forecast))}</SvgText>}
           <SvgText x={center(pointIndex)} y={height - 10} fill={GREEN} fontSize={8} fontWeight="bold" textAnchor="middle">{label.slice(0, 7)}</SvgText>
         </React.Fragment>;
       })}
     </Svg>
     {showLegend && <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 12, paddingTop: 4 }}>
-      <Legend color={TEAL} label="Recorded" />
-      {hasForecast && <Legend color={GOLD} label="SMA forecast" />}
+      <Legend color={seriesColor} label="Recorded" />
+      {hasForecast && <Legend color={seriesColor} label="Estimate" dashed />}
       {Number.isFinite(Number(limit)) && Number(limit) > 0 && <Legend color={GOLD} label="Budget limit (dashed)" dashed />}
-      {hasRange && <Legend color="#B7D8C8" label="Forecast range" />}
+      {hasRange && <Legend color={colorMode === 'expense' ? EXPENSE_RANGE : '#B7D8C8'} label="Forecast range" />}
     </View>}
   </View>;
 }

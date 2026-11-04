@@ -1,16 +1,23 @@
 # finai-backend/routers/logs.py
+import asyncio
+import logging
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 from database import db
 from typing import List
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from pymongo import WriteConcern
+from pymongo.errors import PyMongoError
 
 from auth import get_current_admin
 
 router = APIRouter(prefix="/api/logs", tags=["Audit Logs"])
 
 PH_TZ = ZoneInfo("Asia/Manila")
+logger = logging.getLogger(__name__)
 
 
 # Schema natin para sa UI
@@ -33,17 +40,35 @@ async def log_action(admin_name: str, action: str) -> None:
     endpoint calls it directly instead of going through an extra HTTP round
     trip to POST /api/logs/.
 
-    Never raises: a logging failure should never block or fail the admin
-    action that triggered it.
+    Retry transient Mongo failures with an idempotent event ID and majority
+    write concern. The admin action remains successful if logging is still
+    unavailable after retries; the final failure is visible in Cloud Run logs.
     """
-    try:
-        await db.audit_logs.insert_one({
-            "admin_name": admin_name,
-            "action": action,
-            "timestamp": datetime.now(PH_TZ).isoformat(),
-        })
-    except Exception as e:
-        print(f"[AuditLog] Failed to record action '{action}': {e}")
+    event_id = str(uuid4())
+    event = {
+        "_id": event_id,
+        "admin_name": admin_name,
+        "action": action,
+        "timestamp": datetime.now(PH_TZ).isoformat(),
+    }
+    durable_logs = db.audit_logs.with_options(
+        write_concern=WriteConcern(w="majority", wtimeout=5000)
+    )
+    for attempt in range(3):
+        try:
+            await durable_logs.update_one(
+                {"_id": event_id}, {"$setOnInsert": event}, upsert=True,
+            )
+            return
+        except PyMongoError as exc:
+            if attempt == 2:
+                logger.error(
+                    "Audit event %s could not be persisted after retries (%s).",
+                    event_id,
+                    type(exc).__name__,
+                )
+                return
+            await asyncio.sleep(0.15 * (2 ** attempt))
 
 
 @router.get("/", response_model=List[LogResponse], dependencies=[Depends(get_current_admin)])
@@ -68,7 +93,9 @@ class LogCreate(BaseModel):
     action: str
     admin_name: str
 
-@router.post("/", dependencies=[Depends(get_current_admin)])
-async def create_test_log(log: LogCreate):
-    await log_action(log.admin_name, log.action)
+@router.post("/")
+async def create_test_log(log: LogCreate, admin: dict = Depends(get_current_admin)):
+    # Attribute test/manual entries to the authenticated actor; never trust a
+    # caller-supplied admin_name in an audit record.
+    await log_action(admin["name"], log.action)
     return {"status": "Success", "message": "Log recorded!"}

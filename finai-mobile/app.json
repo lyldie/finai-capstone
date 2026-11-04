@@ -11,16 +11,17 @@
     "splash": {
       "image": "./assets/images/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#ffffff"
+      "backgroundColor": "#1c3c36"
     },
     "ios": {
       "supportsTablet": true
     },
     "android": {
       "package": "com.finai.mobile",
+      "softwareKeyboardLayoutMode": "resize",
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
-        "backgroundColor": "#ffffff"
+        "backgroundColor": "#1c3c36"
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false

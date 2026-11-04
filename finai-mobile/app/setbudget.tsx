@@ -3,12 +3,10 @@ import { StyleSheet, Text, View, TextInput, TouchableOpacity, Alert, ActivityInd
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useTransactions } from '../context/TransactionContext'; 
-import { API_URL } from '../config';
 import QuickAddCategoryModal from '../components/QuickAddCategoryModal';
-import { getSecureItem } from '../utils/secureStorage';
 import { hasSubCentPrecision } from '../utils/money';
+import { userFacingError } from '../utils/userFacingError';
 
 
 const FINAI_DEEP_GREEN = '#144A3D';
@@ -27,7 +25,7 @@ export default function SetBudgetScreen() {
   const router = useRouter();
   const { id, amount: initialAmount, categoryName, category_id, period_type } = useLocalSearchParams();
   
-  const { categories, budgets, fetchTransactions, updateBudget, showTransactionToast } = useTransactions();
+  const { categories, budgets, fetchTransactions, setBudget, updateBudget, showTransactionToast } = useTransactions();
   
   const expenseCategories = categories?.filter((c: any) => c.type === 'expense') || [];
 
@@ -87,45 +85,23 @@ export default function SetBudgetScreen() {
     setLoading(true);
     try {
       const numericAmount = parseFloat(amount);
-      if (id) {
-        await updateBudget(id as string, numericAmount, rolloverEnabled);
-      } else {
-        const userId = await AsyncStorage.getItem('user_id');
-        const token = await getSecureItem('user_token');
-        if (!userId || !token) throw new Error('Your session has expired. Please log in again.');
-        const payload = {
-          user_id: userId,
-          category_id: selectedCategory.id,
-          amount: numericAmount,
-          period_type: selectedPeriod,
-          rollover_enabled: rolloverEnabled,
-        };
-
-        const response = await fetch(`${API_URL}/api/budgets/set-limit`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify(payload),
-        });
-        if (!response.ok) {
-          const body = await response.json().catch(() => ({}));
-          throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not save this budget. Please try again.');
-        }
-        void fetchTransactions(false);
-      }
+      const synced = id
+        ? await updateBudget(id as string, numericAmount, rolloverEnabled)
+        : await setBudget(selectedCategory.id, numericAmount, selectedPeriod, rolloverEnabled);
 
       const formattedAmount = `${PESO}${numericAmount.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
       const periodLabel = selectedPeriod;
       showTransactionToast({
         kind: 'success',
-        title: id || samePeriodBudget ? 'Budget updated' : 'Budget saved',
-        messages: [`${selectedCategory.name} ${periodLabel} limit is ${formattedAmount}.`],
+        title: !synced ? 'Budget saved on this device' : id || samePeriodBudget ? 'Budget updated' : 'Budget saved',
+        messages: [!synced
+          ? `${selectedCategory.name} ${periodLabel} limit is ${formattedAmount}. It will sync when you are online.`
+          : `${selectedCategory.name} ${periodLabel} limit is ${formattedAmount}.`],
       });
       if (router.canGoBack()) router.back();
       else router.replace('/(tabs)/insights' as never);
     } catch (error) {
-      Alert.alert('Could not save budget', error instanceof Error
-        ? error.message
-        : "We couldn't save this limit. Check your connection and try again.");
+      Alert.alert('Could not save budget', userFacingError(error, "We couldn't save this limit. Check your connection and try again."));
     } finally {
       setLoading(false);
     }
@@ -137,19 +113,11 @@ export default function SetBudgetScreen() {
         <TouchableOpacity style={styles.backButton} onPress={() => router.back()}>
           <Ionicons name="arrow-back" size={22} color={FINAI_DEEP_GREEN} />
         </TouchableOpacity>
-        <Text style={styles.appBarTitle}>{id ? 'Edit budget' : 'Set a budget limit'}</Text>
+        <Text style={styles.appBarTitle}>{id ? 'Edit limit' : 'Set a budget limit'}</Text>
         <View style={{ width: 40 }} />
       </View>
 
       <ScrollView contentContainerStyle={styles.scrollContent}>
-        <TouchableOpacity style={styles.fixedBillsLink} accessibilityRole="button" onPress={() => router.push('/fixed-bills' as never)}>
-          <Ionicons name="calendar-outline" size={19} color={FINAI_DEEP_GREEN} />
-          <View style={{ flex: 1 }}>
-            <Text style={styles.fixedBillsLinkTitle}>Scheduled bills</Text>
-            <Text style={styles.fixedBillsLinkCopy}>Add recurring payments and due dates separately</Text>
-          </View>
-          <Ionicons name="chevron-forward" size={18} color={FINAI_SAGE} />
-        </TouchableOpacity>
         <View style={styles.welcomeSection}>
           <Text style={styles.title}>{id ? 'Edit your limit' : 'Set a spending limit'}</Text>
         </View>
@@ -213,7 +181,7 @@ export default function SetBudgetScreen() {
             <TextInput style={styles.input} keyboardType="decimal-pad" value={amount} onChangeText={setAmount} placeholder="0.00" placeholderTextColor={FINAI_SAGE} />
           </View>
           <Text style={styles.helperText}>
-            Enter the maximum amount for each {selectedPeriod.replace('annual', 'year').replace('monthly', 'month').replace('weekly', 'week')}. {id ? 'Change it here to update this limit.' : 'You can change it later with Edit budget.'}
+            Enter the maximum amount for each {selectedPeriod.replace('annual', 'year').replace('monthly', 'month').replace('weekly', 'week')}. {id ? 'Change it here to update this limit.' : 'You can change it later with Edit limit.'}
           </Text>
         </View>
 
@@ -254,9 +222,6 @@ const styles = StyleSheet.create({
   backButton: { padding: 8, borderRadius: 8, backgroundColor: '#F0F4F2' },
   appBarTitle: { fontSize: 16, fontWeight: '700', color: FINAI_DEEP_GREEN },
   scrollContent: { paddingBottom: 40, paddingHorizontal: 20 },
-  fixedBillsLink: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#EAF4EF', borderRadius: 14, padding: 13, marginTop: 14 },
-  fixedBillsLinkTitle: { color: FINAI_DEEP_GREEN, fontSize: 13, fontWeight: '800' },
-  fixedBillsLinkCopy: { color: FINAI_SAGE, fontSize: 11, marginTop: 2 },
   welcomeSection: { marginVertical: 20 },
   title: { fontSize: 24, fontWeight: '800', color: FINAI_DEEP_GREEN, marginBottom: 6 },
   formCard: { backgroundColor: FINAI_CARD_BG, borderRadius: 16, padding: 16, borderWidth: 1, borderColor: '#EBF0EE', marginBottom: 16, elevation: 2 },

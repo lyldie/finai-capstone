@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { API_URL } from '../config';
 import { useTransactions } from '../context/TransactionContext';
 import { getSecureItem } from '../utils/secureStorage';
+import { userFacingError } from '../utils/userFacingError';
 
 const GREEN = '#1c3c36';
 const CREAM = '#FAF7F2';
@@ -55,7 +56,7 @@ export default function BulkSetBudgetScreen() {
       await fetchTransactions(false);
       Alert.alert('Limits saved', `${rows.length} category ${rows.length === 1 ? 'limit is' : 'limits are'} ready.`, [{ text: 'Done', onPress: () => router.back() }]);
     } catch (error) {
-      Alert.alert('Could not save limits', error instanceof Error ? error.message : 'Check your connection and try again.');
+      Alert.alert('Could not save limits', userFacingError(error, 'Check your connection and try again.'));
     } finally {
       setSaving(false);
     }

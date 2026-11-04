@@ -8,6 +8,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
+import { logUnexpectedError, userFacingError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 import { getAccountDisplayEmoji, getAccountEmoji } from '../../utils/accountEmoji';
 import EmojiPicker from '../../components/EmojiPicker';
@@ -23,7 +24,7 @@ const ACCOUNT_TINT = '#FFF9E6';
 
 const getResponseDetail = async (response: Response, fallback: string) => {
   const data = await response.json().catch(() => ({}));
-  return typeof data?.detail === 'string' ? data.detail : fallback;
+  return userFacingError(data?.detail, fallback);
 };
 
 interface Account {
@@ -62,7 +63,7 @@ export default function AccountsScreen() {
       const data = await response.json();
       setAccounts(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Error fetching accounts:", error);
+      logUnexpectedError('Admin account list failed unexpectedly:', error);
     } finally {
       setLoading(false);
     }
@@ -120,7 +121,7 @@ export default function AccountsScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert('Could not delete account', data.detail || 'Active transactions still use this account.');
+                  Alert.alert('Could not delete account', userFacingError(data.detail, 'Active transactions still use this account.'));
                 }
               }
             } catch (error) {

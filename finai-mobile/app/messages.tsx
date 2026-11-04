@@ -5,8 +5,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFocusEffect, usePathname, useRouter } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
+import { useNetworkStatus } from '../context/NetworkStatusContext';
 import { API_URL } from '../config';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import FinnPortrait from '../components/FinnPortrait';
+import { isExpectedNetworkError } from '../utils/userFacingError';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -25,17 +28,28 @@ type Conversation = {
   title: string;
   last_message?: string;
   updated_at?: string;
+  unread_count?: number;
 };
+
+const startNewChat = (router: ReturnType<typeof useRouter>) => router.push('/chat' as never);
 
 export default function MessagesScreen() {
   const router = useRouter();
   const isAiTab = usePathname().endsWith('/ai');
   const { user } = useAuth();
+  const { isOnline } = useNetworkStatus();
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadConversations = useCallback(async () => {
     if (!user?.token) { setLoading(false); return; }
+    const cacheKey = `@offline_${user.id}_advisor_conversations`;
+    if (isOnline === false) {
+      const cached = await AsyncStorage.getItem(cacheKey).catch(() => null);
+      try { setConversations(cached ? JSON.parse(cached) : []); } catch { setConversations([]); }
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const response = await fetch(`${API_URL}/advisor/conversations`, {
@@ -43,13 +57,17 @@ export default function MessagesScreen() {
       });
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || 'Could not load your conversations.');
-      setConversations(Array.isArray(payload) ? payload : []);
+      const rows = Array.isArray(payload) ? payload : [];
+      setConversations(rows);
+      await AsyncStorage.setItem(cacheKey, JSON.stringify(rows));
     } catch (error) {
-      console.warn('Could not load advisor conversations:', error);
+      if (!isExpectedNetworkError(error)) console.error('Could not refresh advisor conversations; using saved list.', error);
+      const cached = await AsyncStorage.getItem(cacheKey).catch(() => null);
+      try { setConversations(cached ? JSON.parse(cached) : []); } catch { setConversations([]); }
     } finally {
       setLoading(false);
     }
-  }, [user?.token]);
+  }, [user?.id, user?.token, isOnline]);
 
   useFocusEffect(useCallback(() => {
     void loadConversations();
@@ -67,13 +85,18 @@ export default function MessagesScreen() {
         <View style={styles.threadCopy}>
           <View style={styles.threadTitleRow}>
             <Text style={styles.threadTitle}>{item.title}</Text>
-            <Text style={styles.threadDate}>{item.updated_at ? new Date(item.updated_at).toLocaleDateString() : ''}</Text>
+            {item.unread_count ? <Text style={styles.unreadBadge}>NEW</Text> : <Text style={styles.threadDate}>{item.updated_at ? new Date(item.updated_at).toLocaleDateString() : ''}</Text>}
           </View>
           <Text style={styles.threadPreview} numberOfLines={2}>{formatFinnPreview(item.last_message || 'Open to continue this conversation.')}</Text>
         </View>
         <Ionicons name="chevron-forward" size={18} color={SAGE} />
       </TouchableOpacity>
     );
+  };
+
+  const startChat = () => {
+    if (isOnline === false) return;
+    startNewChat(router);
   };
 
   return (
@@ -86,9 +109,7 @@ export default function MessagesScreen() {
           <View pointerEvents="none" style={styles.heroOrbLarge} />
           <View pointerEvents="none" style={styles.heroOrbSmall} />
           <View style={styles.header}>
-            {isAiTab ? (
-              <View style={styles.iconButton}><Ionicons name="sparkles" size={20} color="#F5D27C" /></View>
-            ) : (
+            {!isAiTab && (
               <TouchableOpacity onPress={() => router.back()} style={styles.iconButton} accessibilityLabel="Go back">
                 <Ionicons name="arrow-back" size={21} color="#FFFFFF" />
               </TouchableOpacity>
@@ -118,11 +139,11 @@ export default function MessagesScreen() {
               <Text style={styles.sectionSubtitle}>Ask about spending, budgets, savings, or your next money decision.</Text>
             </View>
           </View>
-          <TouchableOpacity onPress={() => router.push('/chat' as never)} activeOpacity={0.86} accessibilityRole="button" accessibilityLabel="Start a new chat with Finn">
+          <TouchableOpacity onPress={startChat} disabled={isOnline === false} activeOpacity={0.86} accessibilityRole="button" accessibilityLabel="Start a new chat with Finn">
             <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.startChatButton}>
               <View style={styles.startChatIcon}><Ionicons name="chatbubble-ellipses" size={18} color={DEEP_GREEN} /></View>
-              <Text style={styles.startChatText}>Start a chat</Text>
-              <Ionicons name="arrow-forward" size={18} color="#FFFFFF" />
+              <Text style={styles.startChatText}>{isOnline === false ? 'Available when online' : 'Start a chat'}</Text>
+              <Ionicons name={isOnline === false ? 'cloud-offline-outline' : 'arrow-forward'} size={18} color="#FFFFFF" />
             </LinearGradient>
           </TouchableOpacity>
         </View>
@@ -200,6 +221,7 @@ const styles = StyleSheet.create({
   threadTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
   threadTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '900', flex: 1 },
   threadDate: { color: SAGE, fontSize: 9, fontWeight: '700' },
+  unreadBadge: { color: '#FFFFFF', backgroundColor: TEAL, overflow: 'hidden', borderRadius: 10, paddingHorizontal: 8, paddingVertical: 3, fontSize: 9, fontWeight: '900' },
   threadPreview: { color: '#657B75', fontSize: 11, lineHeight: 16, marginTop: 5 },
   center: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   loadingText: { color: SAGE, fontSize: 12, fontWeight: '600', marginTop: 10 },

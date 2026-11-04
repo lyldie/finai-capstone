@@ -1,18 +1,20 @@
-import React, { useState, useMemo } from 'react';
-import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, useWindowDimensions, Modal, Platform } from 'react-native';
+import React, { useState, useMemo, useCallback } from 'react';
+import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, Modal, Platform } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import { useTransactions } from '../../context/TransactionContext';
 import DepositModal from '../../components/DepositModal';
-import { BarChart, PieChart } from 'react-native-gifted-charts';
+import { PieChart } from 'react-native-gifted-charts';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getGoalEmoji } from '../../utils/goalEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 import { getBudgetStatusColor } from '../../utils/budgetThresholdColors';
+import { API_URL } from '../../config';
+import { getSecureItem } from '../../utils/secureStorage';
 
 // ---------------------------------------------------------------------------
 // Design tokens (same FinAI palette)
@@ -55,13 +57,6 @@ type IconName = React.ComponentProps<typeof Ionicons>['name'];
 const formatCurrency = (amount: number) =>
   String.fromCharCode(0x20b1) + Number(amount || 0).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
 
-const formatCompact = (value: number) => {
-  const n = Number(value) || 0;
-  if (n >= 1000000) return `${+(n / 1000000).toFixed(1)}M`;
-  if (n >= 1000) return `${+(n / 1000).toFixed(1)}k`;
-  return `${Math.round(n)}`;
-};
-
 const parseTransactionDate = (value: string) => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value || '');
   return match ? new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3])) : new Date(value);
@@ -80,15 +75,6 @@ const localDateKey = (value: Date) => {
   }).formatToParts(value);
   const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
   return `${part('year')}-${part('month')}-${part('day')}`;
-};
-
-const getNiceChartMax = (value: number, sections = 4) => {
-  const safeMax = Math.max(Number.isFinite(value) ? value : 0, 100);
-  const rawStep = safeMax / sections;
-  const magnitude = 10 ** Math.floor(Math.log10(rawStep));
-  const normalizedStep = rawStep / magnitude;
-  const niceMultiplier = [1, 2, 2.5, 5, 10].find((step) => step >= normalizedStep) || 10;
-  return Math.max(100, niceMultiplier * magnitude * sections);
 };
 
 // ---------------------------------------------------------------------------
@@ -213,9 +199,10 @@ function Segmented<T extends string>({ options, value, onChange, variant = 'subt
 // ---------------------------------------------------------------------------
 export default function InsightsScreen() {
   const router = useRouter();
-  const { width: screenWidth } = useWindowDimensions();
+  const [scheduledBillsSummary, setScheduledBillsSummary] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'Stats' | 'Budget'>('Stats');
   const [timeframe, setTimeframe] = useState<'Week' | 'Month' | 'Year'>('Month');
+  const [periodOffset, setPeriodOffset] = useState(0);
   const [budgetTimeframe, setBudgetTimeframe] = useState<'Week' | 'Month' | 'Year'>('Month');
   const [subTab, setSubTab] = useState<'Income' | 'Expense'>('Expense');
   const [showAllCategories, setShowAllCategories] = useState(false);
@@ -227,6 +214,34 @@ export default function InsightsScreen() {
   const [datePickerTarget, setDatePickerTarget] = useState<'start' | 'end' | null>(null);
   const [selectedBudgetIds, setSelectedBudgetIds] = useState<string[]>([]);
   const [selectedGoalIds, setSelectedGoalIds] = useState<string[]>([]);
+
+  useFocusEffect(useCallback(() => {
+    let active = true;
+    const loadScheduledBillsSummary = async () => {
+      try {
+        const token = await getSecureItem('user_token');
+        if (!token) return;
+        const response = await fetch(`${API_URL}/api/bills`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const bills = Array.isArray(payload.bills) ? payload.bills : [];
+        const unpaidBills = bills
+          .filter((bill: any) => bill.status === 'unpaid' && bill.due_date)
+          .sort((a: any, b: any) => String(a.due_date).localeCompare(String(b.due_date)));
+        const nextDue = unpaidBills[0]?.due_date;
+        const summary = bills.length
+          ? `${bills.length} scheduled · ${nextDue ? `Next due ${formatShortDate(nextDue)}` : 'All paid this month'}`
+          : null;
+        if (active) setScheduledBillsSummary(summary);
+      } catch {
+        // The scheduled bills entry remains usable if its optional summary is unavailable.
+      }
+    };
+    void loadScheduledBillsSummary();
+    return () => { active = false; };
+  }, []));
 
   const transactionContext = useTransactions();
   const {
@@ -247,8 +262,43 @@ export default function InsightsScreen() {
   const todayKey = localDateKey(new Date());
   const today = parseTransactionDate(todayKey);
   const headerSubtitle = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
-  const periodLower = timeframe.toLowerCase();
   const hasCustomRange = Boolean(customStart && customEnd);
+
+  const selectedPeriod = useMemo(() => {
+    if (timeframe === 'Year') {
+      const year = today.getFullYear() + periodOffset;
+      return { start: new Date(year, 0, 1), end: new Date(year, 11, 31) };
+    }
+    if (timeframe === 'Month') {
+      const first = new Date(today.getFullYear(), today.getMonth() + periodOffset, 1);
+      return { start: first, end: new Date(first.getFullYear(), first.getMonth() + 1, 0) };
+    }
+    const start = new Date(today);
+    start.setDate(today.getDate() - ((today.getDay() + 6) % 7) + periodOffset * 7);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    return { start, end };
+  }, [todayKey, timeframe, periodOffset]);
+
+  const selectedStartKey = hasCustomRange ? customStart : localDateKey(selectedPeriod.start);
+  const selectedEndKey = hasCustomRange ? customEnd : localDateKey(selectedPeriod.end);
+  const selectedPeriodLabel = (() => {
+    const start = parseTransactionDate(selectedStartKey);
+    const end = parseTransactionDate(selectedEndKey);
+    if (!hasCustomRange && timeframe === 'Month') return start.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+    if (!hasCustomRange && timeframe === 'Year') return start.toLocaleDateString('en-US', { year: 'numeric' });
+    const startMonth = start.toLocaleDateString('en-US', { month: 'short' });
+    const endMonth = end.toLocaleDateString('en-US', { month: 'short' });
+    if (start.getFullYear() === end.getFullYear() && start.getMonth() === end.getMonth()) {
+      return `${startMonth} ${start.getDate()}–${end.getDate()}, ${end.getFullYear()}`;
+    }
+    const startText = `${startMonth} ${start.getDate()}`;
+    const endText = `${endMonth} ${end.getDate()}`;
+    if (start.getFullYear() === end.getFullYear()) return `${startText} – ${endText}, ${end.getFullYear()}`;
+    return `${startText}, ${start.getFullYear()} – ${endText}, ${end.getFullYear()}`;
+  })();
+  const nextPeriodDisabled = hasCustomRange ? selectedEndKey >= todayKey : periodOffset >= 0;
 
   const activeBudgets = useMemo(() => budgets.filter((budget) =>
     budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey
@@ -276,26 +326,24 @@ export default function InsightsScreen() {
 
   const goalTypes = (transactionContext as any).goalTypes || (transactionContext as any).goal_types || [];
 
-  // Shared time-window predicate so stats, bar chart and category chart agree.
+  // Shared date window so cash flow, charts, and category breakdowns stay in sync.
   const isInSelectedWindow = (dateString: string) => {
-    if (hasCustomRange) return dateString >= customStart && dateString <= customEnd;
-    const d = parseTransactionDate(dateString);
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth();
-    if (timeframe === 'Year') return d.getFullYear() === currentYear && d <= today;
-    if (timeframe === 'Month') return d.getFullYear() === currentYear && d.getMonth() === currentMonth && d <= today;
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-    startOfWeek.setHours(0, 0, 0, 0);
-    const startOfNextWeek = new Date(startOfWeek);
-    startOfNextWeek.setDate(startOfWeek.getDate() + 7);
-    return d >= startOfWeek && d < startOfNextWeek;
+    const windowEndKey = selectedEndKey > todayKey ? todayKey : selectedEndKey;
+    const dateKey = String(dateString || '').slice(0, 10);
+    return dateKey >= selectedStartKey && dateKey <= windowEndKey;
   };
 
+  const budgetsForInsightsPeriod = useMemo(() => budgets.filter((budget) => {
+    if (!budget.start_date || !budget.end_date) return false;
+    if (hasCustomRange) return budget.start_date === selectedStartKey && budget.end_date === selectedEndKey;
+    return budget.period_type === selectedPeriodType
+      && budget.start_date === selectedStartKey
+      && budget.end_date === selectedEndKey;
+  }), [budgets, hasCustomRange, selectedPeriodType, selectedStartKey, selectedEndKey]);
+
   const stats = useMemo(() => {
-    const relevantBudgets = activeBudgets.filter((budget) => budget.period_type === selectedPeriodType);
-    const totalBudget = relevantBudgets.reduce((acc, b) => acc + (Number(b.available_limit ?? b.amount) || 0), 0);
-    const totalSpent = relevantBudgets.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
+    const totalBudget = budgetsForInsightsPeriod.reduce((acc, b) => acc + (Number(b.available_limit ?? b.amount) || 0), 0);
+    const totalSpent = budgetsForInsightsPeriod.reduce((acc, b) => acc + (Number(b.spent) || 0), 0);
     const usage = totalBudget > 0 ? (totalSpent / totalBudget) * 100 : 0;
 
     const safeGoals = goals || [];
@@ -304,91 +352,17 @@ export default function InsightsScreen() {
     const overallGoalProgress = totalTarget > 0 ? (totalSavings / totalTarget) * 100 : 0;
 
     return { totalBudget, totalSpent, usage, totalTarget, totalSavings, overallGoalProgress };
-  }, [activeBudgets, selectedPeriodType, goals]);
+  }, [budgetsForInsightsPeriod, goals]);
 
-  const chartData = useMemo(() => {
-    const data: any[] = [];
-    const currentYear = today.getFullYear();
-    const currentMonth = today.getMonth();
-    const barColor = subTab === 'Income' ? TEAL : CRITICAL_RED;
-    const gradientTop = subTab === 'Income' ? '#9AD3C4' : '#FFB8B2';
-    const labelStyle = (width: number) => ({ color: SAGE, fontSize: TYPE.micro, textAlign: 'center', width });
-
-    if (hasCustomRange) {
-      const start = parseTransactionDate(customStart);
-      const end = parseTransactionDate(customEnd);
-      const days = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
-      const bucketDays = days <= 14 ? 1 : 7;
-      const bucketCount = Math.ceil(days / bucketDays);
-      const totals = new Array(bucketCount).fill(0);
-      transactions.forEach((t) => {
-        if (t.type !== subTab || (subTab === 'Expense' && Boolean(t.goal_id)) || !isInSelectedWindow(t.date)) return;
-        const offset = Math.floor((parseTransactionDate(t.date).getTime() - start.getTime()) / 86400000);
-        totals[Math.min(Math.floor(offset / bucketDays), bucketCount - 1)] += Number(t.amount) || 0;
-      });
-      totals.forEach((value, index) => {
-        const bucketStart = new Date(start);
-        bucketStart.setDate(start.getDate() + index * bucketDays);
-        data.push({ value, label: bucketDays === 1 ? `${bucketStart.getDate()}` : `${bucketStart.getDate()}/${bucketStart.getMonth() + 1}`, frontColor: barColor, gradientColor: gradientTop, labelTextStyle: labelStyle(30) });
-      });
-    } else if (timeframe === 'Year') {
-      const months = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
-      const monthlyTotals = new Array(12).fill(0);
-      transactions.forEach(t => {
-        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
-          const d = parseTransactionDate(t.date);
-          if (d.getFullYear() === currentYear && d <= today) monthlyTotals[d.getMonth()] += Number(t.amount) || 0;
-        }
-      });
-      months.forEach((m, index) => {
-        data.push({ value: monthlyTotals[index], label: m, frontColor: barColor, gradientColor: gradientTop, labelTextStyle: labelStyle(20) });
-      });
-    } else if (timeframe === 'Month') {
-      const firstDayOffset = (new Date(currentYear, currentMonth, 1).getDay() + 6) % 7;
-      const weeklyTotals = new Array(6).fill(0);
-      transactions.forEach(t => {
-        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
-          const d = parseTransactionDate(t.date);
-          if (d.getFullYear() === currentYear && d.getMonth() === currentMonth && d <= today) {
-            const weekIndex = Math.floor((d.getDate() - 1 + firstDayOffset) / 7);
-            weeklyTotals[weekIndex] += Number(t.amount) || 0;
-          }
-        }
-      });
-      weeklyTotals.forEach((value, index) => {
-        data.push({ value, label: `W${index + 1}`, frontColor: barColor, gradientColor: gradientTop, labelTextStyle: labelStyle(24) });
-      });
-    } else {
-      const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-      const dailyTotals = new Array(7).fill(0);
-      const startOfWeek = new Date(today);
-      startOfWeek.setDate(today.getDate() - ((today.getDay() + 6) % 7));
-      startOfWeek.setHours(0, 0, 0, 0);
-      const startOfNextWeek = new Date(startOfWeek);
-      startOfNextWeek.setDate(startOfWeek.getDate() + 7);
-      transactions.forEach(t => {
-        if (t.type === subTab && (subTab !== 'Expense' || !t.goal_id)) {
-          const d = parseTransactionDate(t.date);
-          if (d >= startOfWeek && d < startOfNextWeek) dailyTotals[(d.getDay() + 6) % 7] += Number(t.amount) || 0;
-        }
-      });
-      days.forEach((d, index) => {
-        data.push({ value: dailyTotals[index], label: d, frontColor: barColor, gradientColor: gradientTop, labelTextStyle: labelStyle(30) });
-      });
-    }
-    return data;
-  }, [transactions, timeframe, subTab, hasCustomRange, customStart, customEnd]);
-
-  const chartMaxValue = getNiceChartMax(Math.max(...chartData.map((item) => Number(item.value) || 0), 0));
-  const chartStepValue = chartMaxValue / 4;
-  const chartTotal = chartData.reduce((sum, item) => sum + (Number(item.value) || 0), 0);
-
-  // screen padding (20*2) + card padding (20*2) + y-axis labels
-  const Y_LABEL_WIDTH = 44;
-  const chartInnerWidth = screenWidth - SCREEN_PAD * 2 - 40 - Y_LABEL_WIDTH;
-  const barWidth = chartData.length > 14 ? 12 : chartData.length > 8 ? 16 : timeframe === 'Year' ? 12 : timeframe === 'Week' ? 22 : 28;
-  const barSpacing = Math.max(4, Math.floor((chartInnerWidth - 16 - chartData.length * barWidth) / Math.max(chartData.length, 1)));
-
+  const cashFlowTotals = transactions.reduce((totals, transaction) => {
+    if (!isInSelectedWindow(transaction.date)) return totals;
+    const amount = Number(transaction.amount) || 0;
+    if (transaction.type === 'Income') totals.income += amount;
+    else if (transaction.type === 'Expense' && !transaction.goal_id) totals.expenses += amount;
+    return totals;
+  }, { income: 0, expenses: 0 });
+  const cashFlow = cashFlowTotals.income - cashFlowTotals.expenses;
+  const cashFlowTone: Tone = cashFlow > 0 ? 'success' : cashFlow < 0 ? 'danger' : 'neutral';
   const categoryChartData = useMemo(() => {
     const totals: { [key: string]: number } = {};
     transactions.forEach(t => {
@@ -411,7 +385,7 @@ export default function InsightsScreen() {
       percentage: total > 0 ? (value / total) * 100 : 0,
       color: CATEGORY_PALETTE[index % CATEGORY_PALETTE.length],
     }));
-  }, [transactions, timeframe, subTab, categories, hasCustomRange, customStart, customEnd]);
+  }, [transactions, timeframe, subTab, categories, hasCustomRange, customStart, customEnd, selectedStartKey, selectedEndKey]);
 
   const merchantBreakdown = useMemo(() => {
     if (subTab !== 'Expense') return [];
@@ -427,8 +401,11 @@ export default function InsightsScreen() {
       if (current === undefined) totals.set(key, { name: merchant, value: Number(t.amount) || 0 });
       else current.value += Number(t.amount) || 0;
     });
-    return Array.from(totals.values()).sort((a, b) => b.value - a.value).slice(0, 8);
-  }, [transactions, subTab, hasCustomRange, customStart, customEnd, timeframe]);
+    return Array.from(totals.values())
+      .filter((item) => item.value > 0)
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 8);
+  }, [transactions, subTab, hasCustomRange, customStart, customEnd, timeframe, selectedStartKey, selectedEndKey]);
 
   const categoryChartTotal = useMemo(() => categoryChartData.reduce((sum, d) => sum + d.value, 0), [categoryChartData]);
   const visibleCategories = showAllCategories ? categoryChartData : categoryChartData.slice(0, VISIBLE_CATEGORIES);
@@ -452,20 +429,12 @@ export default function InsightsScreen() {
   const hasBudgetForPeriod = stats.totalBudget > 0;
   const budgetTone: Tone = hasBudgetForPeriod ? toneForPercent(stats.usage) : 'neutral';
   const budgetBadge = !hasBudgetForPeriod
-    ? 'No limits set'
+    ? hasCustomRange ? 'Full period needed' : 'No budget set'
     : stats.usage > 100 ? 'Over budget'
     : stats.usage >= 100 ? 'Limit reached'
     : stats.usage >= 70 ? 'Watch spending'
     : 'On track';
   const remainingBudget = stats.totalBudget - stats.totalSpent;
-  const remainingBudgetTone: Tone = !hasBudgetForPeriod ? 'neutral' : remainingBudget < 0 ? 'danger' : 'success';
-  const remainingBudgetBadge = !hasBudgetForPeriod
-    ? 'No limits'
-    : remainingBudget < 0
-      ? 'Over budget'
-      : remainingBudget === 0
-        ? 'Limit reached'
-        : 'Available';
   const heroAccent = budgetPool.usage >= 70 ? getBudgetStatusColor(budgetPool.usage) : '#5FE3B3';
   const budgetPeriodNoun = budgetTimeframe === 'Week' ? 'week' : budgetTimeframe === 'Month' ? 'month' : 'year';
   const budgetPeriodAdj = budgetTimeframe === 'Week' ? 'Weekly' : budgetTimeframe === 'Month' ? 'Monthly' : 'Annual';
@@ -482,11 +451,38 @@ export default function InsightsScreen() {
     if (target === 'start') {
       setCustomStart(key);
       if (customEnd && key > customEnd) setCustomEnd(key);
+      setDraftDate(customEnd && customEnd >= key ? parseTransactionDate(customEnd) : value);
+      setDatePickerTarget('end');
     } else {
+      if (customStart && key < customStart) {
+        setDatePickerTarget(null);
+        Alert.alert('Invalid date range', 'The end date must be on or after the start date.');
+        return;
+      }
       setCustomEnd(key);
-      if (customStart && key < customStart) setCustomStart(key);
+      setDatePickerTarget(null);
     }
-    setDatePickerTarget(null);
+  };
+  const selectTimeframe = (next: 'Week' | 'Month' | 'Year') => {
+    setTimeframe(next);
+    setPeriodOffset(0);
+    setCustomStart('');
+    setCustomEnd('');
+  };
+  const navigatePeriod = (direction: -1 | 1) => {
+    if (hasCustomRange) {
+      const start = parseTransactionDate(customStart);
+      const end = parseTransactionDate(customEnd);
+      const duration = Math.max(1, Math.round((end.getTime() - start.getTime()) / 86400000) + 1);
+      start.setDate(start.getDate() + direction * duration);
+      end.setDate(end.getDate() + direction * duration);
+      if (direction > 0 && localDateKey(end) > todayKey) return;
+      setCustomStart(localDateKey(start));
+      setCustomEnd(localDateKey(end));
+      return;
+    }
+    if (direction > 0 && periodOffset >= 0) return;
+    setPeriodOffset((current) => current + direction);
   };
 
   return (
@@ -522,7 +518,125 @@ export default function InsightsScreen() {
       >
         {activeTab === 'Stats' ? (
           <View style={styles.viewContainer}>
-            {/* ---------------- Savings (all-time) ---------------- */}
+            {/* ---------------- Period controls ---------------- */}
+            <SectionHeader title="Activity overview" subtitle="Cash flow and charts follow the selected dates." />
+            <View style={styles.controlStack}>
+              <Segmented
+                variant="subtle"
+                value={timeframe}
+                onChange={selectTimeframe}
+                options={[
+                  { key: 'Week', label: 'Week' },
+                  { key: 'Month', label: 'Month' },
+                  { key: 'Year', label: 'Year' },
+                ]}
+              />
+              <View style={styles.periodNavigator}>
+                <TouchableOpacity
+                  style={styles.periodArrow}
+                  onPress={() => navigatePeriod(-1)}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show previous period"
+                >
+                  <Ionicons name="chevron-back" size={20} color={DEEP_GREEN} />
+                </TouchableOpacity>
+                <Text style={styles.periodLabel} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                  {selectedPeriodLabel}
+                </Text>
+                <TouchableOpacity
+                  style={[styles.periodArrow, nextPeriodDisabled && styles.periodArrowDisabled]}
+                  onPress={() => navigatePeriod(1)}
+                  disabled={nextPeriodDisabled}
+                  accessibilityRole="button"
+                  accessibilityLabel="Show next period"
+                >
+                  <Ionicons name="chevron-forward" size={20} color={nextPeriodDisabled ? '#B7C3C0' : DEEP_GREEN} />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.calendarButton}
+                  onPress={() => openDatePicker('start')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Choose a custom date range"
+                >
+                  <Ionicons name="calendar-outline" size={18} color={DEEP_GREEN} />
+                  <Text style={styles.calendarButtonText}>Dates</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {hasCustomRange ? (
+              <View style={styles.customRangeNotice}>
+                <Text style={styles.customRangeText} numberOfLines={1}>Custom dates · {selectedPeriodLabel}</Text>
+                <TouchableOpacity
+                  onPress={() => { setCustomStart(''); setCustomEnd(''); }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear custom date range"
+                  hitSlop={8}
+                >
+                  <Ionicons name="close-circle" size={19} color={SAGE} />
+                </TouchableOpacity>
+              </View>
+            ) : null}
+            {datePickerTarget && Platform.OS === 'ios' ? (
+              <Modal transparent animationType="fade" visible onRequestClose={() => setDatePickerTarget(null)}>
+                <View style={styles.datePickerOverlay}>
+                  <View style={styles.datePickerCard}>
+                    <View style={styles.datePickerHeader}>
+                      <TouchableOpacity onPress={() => setDatePickerTarget(null)}><Text style={styles.datePickerAction}>Cancel</Text></TouchableOpacity>
+                      <Text style={styles.datePickerTitle}>Choose {datePickerTarget} date</Text>
+                      <TouchableOpacity onPress={() => applyDate(datePickerTarget, draftDate)}><Text style={styles.datePickerAction}>Done</Text></TouchableOpacity>
+                    </View>
+                    <DateTimePicker value={draftDate} mode="date" display="spinner" themeVariant="light" minimumDate={datePickerTarget === 'end' && customStart ? parseTransactionDate(customStart) : undefined} maximumDate={today} onChange={(_event: DateTimePickerEvent, value?: Date) => { if (value) setDraftDate(value); }} />
+                  </View>
+                </View>
+              </Modal>
+            ) : datePickerTarget ? (
+              <DateTimePicker key={datePickerTarget} value={draftDate} mode="date" display="default" minimumDate={datePickerTarget === 'end' && customStart ? parseTransactionDate(customStart) : undefined} maximumDate={today} onChange={(event: DateTimePickerEvent, value?: Date) => { if (event.type === 'set' && value) applyDate(datePickerTarget, value); else setDatePickerTarget(null); }} />
+            ) : null}
+
+            {/* ---------------- Summary: one card, two columns ---------------- */}
+            <View style={[styles.card, styles.summaryCard]}>
+              <View style={styles.summaryCol}>
+                <View style={styles.rowCenter}>
+                  <Ionicons name="swap-vertical-outline" size={15} color={SAGE} />
+                  <Text style={styles.summaryLabel}>Cash flow</Text>
+                </View>
+                <Text style={[styles.summaryValue, { color: TONES[cashFlowTone].fg }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
+                  {formatCurrency(cashFlow)}
+                </Text>
+                <Text style={styles.caption} numberOfLines={3}>
+                  Income {formatCurrency(cashFlowTotals.income)} · Expenses {formatCurrency(cashFlowTotals.expenses)}
+                </Text>
+                <View style={styles.summaryBadge}>
+                  <Badge label={cashFlow > 0 ? 'More income' : cashFlow < 0 ? 'More spending' : 'Even'} tone={cashFlowTone} dot />
+                </View>
+              </View>
+
+              <View style={styles.summaryDivider} />
+
+              <View style={styles.summaryCol}>
+                <View style={styles.rowCenter}>
+                  <Ionicons name="shield-checkmark-outline" size={15} color={SAGE} />
+                  <Text style={styles.summaryLabel}>Budget adherence</Text>
+                </View>
+                <Text style={[styles.summaryValue, { color: hasBudgetForPeriod ? TONES[budgetTone].fg : SAGE }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
+                  {hasBudgetForPeriod ? `${stats.usage.toFixed(0)}%` : '—'}
+                </Text>
+                <Text style={styles.caption} numberOfLines={2}>
+                  {hasBudgetForPeriod
+                    ? `${formatCurrency(stats.totalSpent)} of ${formatCurrency(stats.totalBudget)}`
+                    : hasCustomRange ? 'Select a full budget period' : 'No saved limit for this period'}
+                </Text>
+                {hasBudgetForPeriod ? <Text style={styles.caption} numberOfLines={1}>
+                  {remainingBudget < 0 ? `${formatCurrency(Math.abs(remainingBudget))} over` : `${formatCurrency(remainingBudget)} remaining`}
+                </Text> : null}
+                <View style={styles.summaryBadge}>
+                  <Badge label={budgetBadge} tone={budgetTone} dot />
+                </View>
+              </View>
+            </View>
+
+            {/* Savings goal progress is a running total, independent of the activity date filter. */}
             <View style={styles.card}>
               <View style={styles.rowBetween}>
                 <View style={styles.rowCenter}>
@@ -530,8 +644,8 @@ export default function InsightsScreen() {
                     <Ionicons name="flag-outline" size={18} color={GOLD} />
                   </View>
                   <View style={{ marginLeft: 12 }}>
-                    <Text style={styles.cardTitle}>Savings goals</Text>
-                    <Text style={styles.caption}>All goals, any time period</Text>
+                    <Text style={styles.cardTitle}>Savings progress</Text>
+                    <Text style={styles.caption}>All-time across your goals</Text>
                   </View>
                 </View>
                 <Badge label={`${stats.overallGoalProgress.toFixed(0)}%`} tone="success" />
@@ -546,19 +660,7 @@ export default function InsightsScreen() {
               <Text style={[styles.caption, { marginTop: 8 }]}>{formatCurrency(Math.max(stats.totalTarget - stats.totalSavings, 0))} to go</Text>
             </View>
 
-            {/* ---------------- Period controls ---------------- */}
-            <SectionHeader title={hasCustomRange ? 'Custom date range' : `This ${periodLower}`} subtitle="Charts and breakdowns follow your selected dates." />
-            <View style={styles.controlStack}>
-              <Segmented
-                variant="subtle"
-                value={timeframe}
-                onChange={setTimeframe}
-                options={[
-                  { key: 'Week', label: 'Week' },
-                  { key: 'Month', label: 'Month' },
-                  { key: 'Year', label: 'Year' },
-                ]}
-              />
+            <View style={styles.chartTypeControl}>
               <Segmented
                 variant="solid"
                 activeColor={typeAccent}
@@ -571,126 +673,6 @@ export default function InsightsScreen() {
               />
             </View>
 
-            <View style={styles.dateRangeCard}>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.dateRangeTitle}>Custom date range</Text>
-                <Text style={styles.dateRangeSubtitle}>{hasCustomRange ? `${customStart} to ${customEnd}` : 'Optional · filter the charts and breakdowns'}</Text>
-              </View>
-              <TouchableOpacity style={styles.dateRangeButton} onPress={() => openDatePicker('start')} accessibilityRole="button" accessibilityLabel="Choose start date">
-                <Ionicons name="calendar-outline" size={16} color={DEEP_GREEN} />
-                <Text style={styles.dateRangeButtonText}>{customStart || 'Start'}</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.dateRangeButton} onPress={() => openDatePicker('end')} accessibilityRole="button" accessibilityLabel="Choose end date">
-                <Ionicons name="calendar-outline" size={16} color={DEEP_GREEN} />
-                <Text style={styles.dateRangeButtonText}>{customEnd || 'End'}</Text>
-              </TouchableOpacity>
-              {hasCustomRange ? <TouchableOpacity onPress={() => { setCustomStart(''); setCustomEnd(''); }} accessibilityRole="button" accessibilityLabel="Clear custom dates"><Ionicons name="close-circle" size={20} color={SAGE} /></TouchableOpacity> : null}
-            </View>
-            {datePickerTarget && Platform.OS === 'ios' ? (
-              <Modal transparent animationType="fade" visible onRequestClose={() => setDatePickerTarget(null)}>
-                <View style={styles.datePickerOverlay}>
-                  <View style={styles.datePickerCard}>
-                    <View style={styles.datePickerHeader}>
-                      <TouchableOpacity onPress={() => setDatePickerTarget(null)}><Text style={styles.datePickerAction}>Cancel</Text></TouchableOpacity>
-                      <Text style={styles.datePickerTitle}>Choose {datePickerTarget} date</Text>
-                      <TouchableOpacity onPress={() => applyDate(datePickerTarget, draftDate)}><Text style={styles.datePickerAction}>Done</Text></TouchableOpacity>
-                    </View>
-                    <DateTimePicker value={draftDate} mode="date" display="spinner" themeVariant="light" maximumDate={today} onChange={(_event: DateTimePickerEvent, value?: Date) => { if (value) setDraftDate(value); }} />
-                  </View>
-                </View>
-              </Modal>
-            ) : datePickerTarget ? (
-              <DateTimePicker value={draftDate} mode="date" display="default" maximumDate={today} onChange={(event: DateTimePickerEvent, value?: Date) => { if (event.type === 'set' && value) applyDate(datePickerTarget, value); else setDatePickerTarget(null); }} />
-            ) : null}
-
-            {/* ---------------- Summary: one card, two columns ---------------- */}
-            <View style={[styles.card, styles.summaryCard]}>
-              <View style={styles.summaryCol}>
-                <View style={styles.rowCenter}>
-                  <Ionicons name="shield-checkmark-outline" size={15} color={SAGE} />
-                  <Text style={styles.summaryLabel}>Budget used</Text>
-                </View>
-                <Text style={[styles.summaryValue, { color: hasBudgetForPeriod ? TONES[budgetTone].fg : SAGE }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-                  {hasBudgetForPeriod ? `${stats.usage.toFixed(0)}%` : '—'}
-                </Text>
-                <Text style={styles.caption} numberOfLines={2}>
-                  {hasBudgetForPeriod ? `${formatCurrency(stats.totalSpent)} of ${formatCurrency(stats.totalBudget)}` : 'Set a limit to track this'}
-                </Text>
-                <View style={styles.summaryBadge}>
-                  <Badge label={budgetBadge} tone={budgetTone} dot />
-                </View>
-              </View>
-
-              <View style={styles.summaryDivider} />
-
-              <View style={styles.summaryCol}>
-                <View style={styles.rowCenter}>
-                  <Ionicons name="wallet-outline" size={15} color={SAGE} />
-                  <Text style={styles.summaryLabel}>Remaining budget</Text>
-                </View>
-                <Text style={[styles.summaryValue, { color: TONES[remainingBudgetTone].fg }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6}>
-                  {hasBudgetForPeriod ? `${remainingBudget < 0 ? '−' : ''}${formatCurrency(Math.abs(remainingBudget))}` : '—'}
-                </Text>
-                <Text style={styles.caption} numberOfLines={2}>
-                  {hasBudgetForPeriod ? 'Active limits minus spending' : 'Set a limit to see what remains'}
-                </Text>
-                <View style={styles.summaryBadge}>
-                  <Badge label={remainingBudgetBadge} tone={remainingBudgetTone} dot />
-                </View>
-              </View>
-            </View>
-
-            {/* ---------------- Trend chart ---------------- */}
-            <View style={styles.card}>
-              <View style={styles.rowBetween}>
-                <View style={{ flex: 1, marginRight: 12 }}>
-                  <Text style={styles.cardTitle}>{subTab === 'Income' ? 'Income' : 'Spending'} trend</Text>
-                  <Text style={styles.caption}>{hasCustomRange ? 'Within selected dates' : `By ${timeframe === 'Year' ? 'month' : timeframe === 'Month' ? 'week' : 'day'}`}</Text>
-                </View>
-                <View style={styles.totalWrap}>
-                  <Text style={styles.caption}>Total</Text>
-                  <Text style={[styles.totalValue, { color: typeAccent }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
-                    {formatCurrency(chartTotal)}
-                  </Text>
-                </View>
-              </View>
-
-              <View style={styles.chartArea}>
-                <BarChart
-                  data={chartData}
-                  barWidth={barWidth}
-                  spacing={barSpacing}
-                  roundedTop
-                  barBorderRadius={6}
-                  rulesType="dashed"
-                  rulesColor="rgba(28, 60, 54, 0.10)"
-                  dashWidth={4}
-                  dashGap={5}
-                  xAxisThickness={1}
-                  xAxisColor="rgba(28, 60, 54, 0.12)"
-                  yAxisThickness={0}
-                  yAxisTextStyle={{ color: SAGE, fontSize: TYPE.micro }}
-                  noOfSections={4}
-                  maxValue={chartMaxValue}
-                  stepValue={chartStepValue}
-                  roundToDigits={0}
-                  showFractionalValues={false}
-                  yAxisLabelPrefix={String.fromCharCode(0x20B1)}
-                  yAxisLabelWidth={Y_LABEL_WIDTH}
-                  formatYLabel={(label) => formatCompact(Number(label) || 0)}
-                  isAnimated={false}
-                  showGradient
-                  initialSpacing={8}
-                  endSpacing={0}
-                  width={chartInnerWidth}
-                  height={170}
-                />
-              </View>
-              {chartTotal === 0 && (
-                <Text style={styles.emptyHint}>No {subTab.toLowerCase()} recorded this {periodLower} yet.</Text>
-              )}
-            </View>
-
             {subTab === 'Expense' ? (
               <View style={styles.card}>
                 <View style={styles.rowBetween}>
@@ -700,15 +682,21 @@ export default function InsightsScreen() {
                   </View>
                   <Ionicons name="storefront-outline" size={18} color={TEAL} />
                 </View>
-                {merchantBreakdown.length ? merchantBreakdown.map((item, index) => (
-                  <View key={item.name.toLocaleLowerCase()}>
-                    {index > 0 ? <View style={styles.divider} /> : null}
-                    <View style={styles.rowBetween}>
-                      <Text style={[styles.rowTitle, { flex: 1, marginRight: 12 }]} numberOfLines={1}>{item.name}</Text>
-                      <Text style={styles.rowAmount}>{formatCurrency(item.value)}</Text>
+                {merchantBreakdown.length ? merchantBreakdown.map((item) => {
+                  const maxSpend = merchantBreakdown[0]?.value || 1;
+                  const barWidth = `${Math.max((item.value / maxSpend) * 100, 2)}%` as `${number}%`;
+                  return (
+                    <View key={item.name.toLocaleLowerCase()} style={styles.merchantChartRow}>
+                      <View style={styles.rowBetween}>
+                        <Text style={[styles.rowTitle, { flex: 1, marginRight: 12 }]} numberOfLines={1}>{item.name}</Text>
+                        <Text style={styles.rowAmount}>{formatCurrency(item.value)}</Text>
+                      </View>
+                      <View style={styles.merchantBarTrack}>
+                        <View style={[styles.merchantBar, { width: barWidth }]} />
+                      </View>
                     </View>
-                  </View>
-                )) : <Text style={[styles.emptyHint, { textAlign: 'left', paddingHorizontal: 0 }]}>No merchant names found in receipts for this period.</Text>}
+                  );
+                }) : <Text style={[styles.emptyHint, { textAlign: 'left', paddingHorizontal: 0 }]}>No merchant names found in receipts for this period.</Text>}
               </View>
             ) : null}
 
@@ -717,7 +705,7 @@ export default function InsightsScreen() {
               <View style={styles.rowBetween}>
                 <View style={{ flex: 1, marginRight: 12 }}>
                   <Text style={styles.cardTitle}>{subTab === 'Income' ? 'Income' : 'Spending'} by category</Text>
-                  <Text style={styles.caption}>Where it came from {hasCustomRange ? 'in this date range' : `this ${periodLower}`}</Text>
+                  <Text style={styles.caption}>Category totals for the selected dates</Text>
                 </View>
                 <View style={[styles.iconTile, styles.iconTileSm, { backgroundColor: 'rgba(237, 178, 50, 0.16)' }]}>
                   <Ionicons name="pie-chart" size={15} color={GOLD} />
@@ -729,7 +717,7 @@ export default function InsightsScreen() {
                   <View style={styles.emptyIcon}>
                     <Ionicons name="pie-chart-outline" size={24} color={SAGE} />
                   </View>
-                  <Text style={styles.emptyText}>No {subTab.toLowerCase()} records for this {periodLower}.</Text>
+                  <Text style={styles.emptyText}>No {subTab === 'Income' ? 'income' : 'spending'} records in this period.</Text>
                 </View>
               ) : (
                 <View>
@@ -832,7 +820,7 @@ export default function InsightsScreen() {
 
                 <View style={styles.heroFooter}>
                   <View style={styles.heroStat}>
-                    <Text style={styles.heroStatLabel}>Spent</Text>
+                    <Text style={styles.heroStatLabel}>Used so far</Text>
                     <Text style={styles.heroStatValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>{formatCurrency(budgetPool.totalSpent)}</Text>
                   </View>
                   <View style={styles.heroStatDivider} />
@@ -844,12 +832,46 @@ export default function InsightsScreen() {
               </LinearGradient>
             </View>
 
+            <View style={styles.scheduledBillsEntry}>
+              <TouchableOpacity
+                style={styles.scheduledBillsMain}
+                onPress={() => router.push('/fixed-bills' as never)}
+                activeOpacity={0.82}
+                accessibilityRole="button"
+                accessibilityLabel="Open scheduled bills"
+              >
+                <View style={styles.scheduledBillsIcon}>
+                  <Ionicons name="calendar-outline" size={18} color={DEEP_GREEN} />
+                </View>
+                <View style={styles.scheduledBillsCopy}>
+                  <Text style={styles.scheduledBillsTitle}>Scheduled bills</Text>
+                  <Text style={styles.scheduledBillsCaption}>{scheduledBillsSummary || 'Manage recurring payments and due dates'}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color={TEAL} />
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.scheduledBillsAdd}
+                onPress={() => router.push({ pathname: '/fixed-bills', params: { openAdd: '1' } } as never)}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Add a scheduled bill"
+              ><Ionicons name="add" size={20} color="#FFFFFF" /></TouchableOpacity>
+            </View>
+
             {/* ---------------- Category limits: ONE card, divided rows ---------------- */}
             <View style={styles.bulkHeadingRow}>
-              <View style={{ flex: 1 }}><Text style={styles.sectionHeading}>{`${budgetPeriodAdj} limits`}</Text><Text style={styles.caption}>Tap to edit · Hold to select several</Text></View>
-              <TouchableOpacity style={styles.headingAction} onPress={() => router.push('/setbudget')}><Ionicons name="add" size={16} color={DEEP_GREEN} /><Text style={styles.headingActionText}>Set limit</Text></TouchableOpacity>
+              <View style={{ flex: 1 }}><Text style={styles.sectionHeading}>{`${budgetPeriodAdj} limits`}</Text><Text style={styles.caption}>Tap Edit limit · Hold to select several</Text></View>
+              <TouchableOpacity
+                style={styles.headingAction}
+                onPress={() => Alert.alert('Set limits', 'Do you want to set a limit for one category or several?', [
+                  { text: 'Cancel', style: 'cancel' },
+                  { text: 'One category', onPress: () => router.push('/setbudget') },
+                  { text: 'Multiple categories', onPress: () => router.push('/bulk-setbudget' as never) },
+                ])}
+                accessibilityRole="button"
+                accessibilityLabel="Choose to set a limit for one or multiple categories"
+              ><Ionicons name="add" size={16} color={DEEP_GREEN} /><Text style={styles.headingActionText}>Set limit</Text></TouchableOpacity>
             </View>
-            <TouchableOpacity style={styles.bulkBudgetsLink} onPress={() => router.push('/bulk-setbudget' as never)} accessibilityRole="button"><Ionicons name="layers-outline" size={16} color={DEEP_GREEN} /><Text style={styles.headingActionText}>Set different limits for multiple categories</Text></TouchableOpacity>
             {selectedBudgetIds.length > 0 ? <View style={styles.multiActionBar}><Text style={styles.multiActionLabel}>{selectedBudgetIds.length} selected</Text><TouchableOpacity onPress={() => setSelectedBudgetIds([])}><Text style={styles.multiActionCancel}>Cancel</Text></TouchableOpacity><TouchableOpacity style={styles.multiActionDelete} onPress={() => Alert.alert('Delete selected limits?', `${selectedBudgetIds.length} budget limits will be removed.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => { const ids = [...selectedBudgetIds]; for (const id of ids) await deleteBudget(id); setSelectedBudgetIds([]); } }])}><Ionicons name="trash-outline" size={15} color="#FFFFFF" /><Text style={styles.multiActionDeleteText}>Delete</Text></TouchableOpacity></View> : null}
 
             {isLoading ? (
@@ -887,10 +909,6 @@ export default function InsightsScreen() {
                         activeOpacity={0.8}
                         onPress={() => {
                           if (selectedBudgetIds.length > 0) { setSelectedBudgetIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id]); return; }
-                          router.push({
-                          pathname: '/setbudget',
-                          params: { id: item.id, category_id: item.category_id, amount: item.amount, period_type: item.period_type },
-                          });
                         }}
                         onLongPress={() => setSelectedBudgetIds((current) => current.includes(item.id) ? current : [...current, item.id])}
                       >
@@ -903,11 +921,32 @@ export default function InsightsScreen() {
                             <View style={{ flex: 1, minWidth: 0 }}>
                               <Text style={styles.rowTitle} numberOfLines={1} ellipsizeMode="tail">{categoryName}</Text>
                               <Text style={styles.caption} numberOfLines={1}>
-                                {formatCurrency(spent)} of {formatCurrency(limitAmount)}
+                                {formatCurrency(spent)} used of {formatCurrency(limitAmount)}
                               </Text>
                             </View>
                           </View>
-                          <Badge label={`${pct.toFixed(0)}%`} tone={tone} />
+                          <View style={styles.rowCenter}>
+                            <Badge label={`${pct.toFixed(0)}%`} tone={tone} />
+                            {selectedBudgetIds.length === 0 ? <>
+                              <TouchableOpacity
+                                style={[styles.actionBtn, { marginLeft: 8 }]}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Edit ${categoryName} limit`}
+                                onPress={() => router.push({ pathname: '/setbudget', params: { id: item.id, category_id: item.category_id, amount: item.amount, period_type: item.period_type } })}
+                              ><Ionicons name="pencil" size={14} color={DEEP_GREEN} /></TouchableOpacity>
+                              <TouchableOpacity
+                                style={[styles.actionBtn, { marginLeft: 6, backgroundColor: 'rgba(255, 98, 89, 0.12)' }]}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Delete ${categoryName} limit`}
+                                onPress={() => Alert.alert('Delete limit?', `Remove the ${categoryName} limit for this period?`, [
+                                  { text: 'Cancel', style: 'cancel' },
+                                  { text: 'Delete', style: 'destructive', onPress: () => deleteBudget(item.id) },
+                                ])}
+                              ><Ionicons name="trash-outline" size={14} color={CRITICAL_RED} /></TouchableOpacity>
+                            </> : null}
+                          </View>
                         </View>
 
                         <View style={{ marginTop: 12 }}>
@@ -1110,11 +1149,19 @@ const styles = StyleSheet.create({
   scrollContent: { paddingBottom: BOTTOM_NAV_CLEARANCE },
   viewContainer: { paddingHorizontal: SCREEN_PAD, paddingTop: GAP },
   controlStack: { gap: 10, marginBottom: 16 },
+  chartTypeControl: { marginBottom: 12 },
+  periodNavigator: { minHeight: 48, flexDirection: 'row', alignItems: 'center', backgroundColor: '#FFFFFF', borderRadius: 14, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.08)', paddingHorizontal: 5, gap: 3 },
+  periodArrow: { width: 36, height: 38, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  periodArrowDisabled: { backgroundColor: 'rgba(124, 154, 149, 0.08)' },
+  periodLabel: { flex: 1, minWidth: 0, textAlign: 'center', color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  calendarButton: { height: 38, borderRadius: 11, backgroundColor: CREAM, alignItems: 'center', justifyContent: 'center', flexDirection: 'row', gap: 4, paddingHorizontal: 9 },
+  calendarButtonText: { color: DEEP_GREEN, fontSize: 11, fontWeight: '800' },
+  customRangeNotice: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginTop: -7, marginBottom: 12, paddingHorizontal: 4 },
+  customRangeText: { flex: 1, color: TEAL, fontSize: 11, fontWeight: '700' },
   bulkHeadingRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, marginTop: 4 },
   sectionHeading: { color: DEEP_GREEN, fontSize: TYPE.section, fontWeight: '800' },
   headingAction: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 12, borderRadius: 20, backgroundColor: 'rgba(28, 60, 54, 0.07)' },
   headingActionText: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700' },
-  bulkBudgetsLink: { flexDirection: 'row', gap: 7, alignItems: 'center', minHeight: 36, alignSelf: 'flex-start', paddingHorizontal: 11, borderRadius: 12, backgroundColor: 'rgba(61, 125, 108, 0.10)', marginBottom: 10 },
   multiActionBar: { flexDirection: 'row', alignItems: 'center', gap: 12, padding: 10, backgroundColor: '#FFFFFF', borderRadius: 14, marginBottom: 10 },
   multiActionLabel: { flex: 1, color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
   multiActionCancel: { color: SAGE, fontSize: 12, fontWeight: '700' },
@@ -1122,16 +1169,11 @@ const styles = StyleSheet.create({
   multiActionDeleteText: { color: '#FFFFFF', fontSize: 12, fontWeight: '800' },
   multiCheck: { position: 'absolute', left: 15, top: 0, bottom: 0, justifyContent: 'center', zIndex: 2 },
   goalMultiCheck: { position: 'absolute', left: 14, top: 0, bottom: 0, justifyContent: 'center', zIndex: 3 },
-  dateRangeCard: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#FFFFFF', borderRadius: 16, padding: 12, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.08)' },
   datePickerOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(10, 25, 22, 0.38)' },
   datePickerCard: { backgroundColor: '#FFFFFF', borderTopLeftRadius: 22, borderTopRightRadius: 22, paddingHorizontal: 16, paddingTop: 14, paddingBottom: 28 },
   datePickerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', minHeight: 40 },
   datePickerTitle: { color: DEEP_GREEN, fontSize: 14, fontWeight: '800' },
   datePickerAction: { color: TEAL, fontSize: 14, fontWeight: '800', paddingHorizontal: 4 },
-  dateRangeTitle: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
-  dateRangeSubtitle: { color: '#60756F', fontSize: 10, marginTop: 3 },
-  dateRangeButton: { flexDirection: 'row', alignItems: 'center', gap: 4, minHeight: 36, paddingHorizontal: 7, borderRadius: 10, backgroundColor: CREAM },
-  dateRangeButtonText: { color: DEEP_GREEN, fontWeight: '700', fontSize: 11 },
 
   // Base card: one radius, one shadow, one border for everything
   card: { backgroundColor: CARD_BG, borderRadius: RADIUS, padding: 20, marginBottom: 16, borderWidth: 1, borderColor: 'rgba(28, 60, 54, 0.05)', ...CARD_SHADOW },
@@ -1143,6 +1185,9 @@ const styles = StyleSheet.create({
   caption: { fontSize: TYPE.caption, color: SAGE, fontWeight: '500', lineHeight: 17 },
   rowTitle: { fontSize: TYPE.cardTitle, fontWeight: '700', color: DEEP_GREEN, flexShrink: 1 },
   rowAmount: { fontSize: TYPE.body, fontWeight: '700', color: DEEP_GREEN, marginLeft: 8 },
+  merchantChartRow: { marginTop: 15 },
+  merchantBarTrack: { height: 8, borderRadius: 8, backgroundColor: '#E9F0ED', marginTop: 8, overflow: 'hidden' },
+  merchantBar: { height: '100%', borderRadius: 8, backgroundColor: TEAL },
   statusText: { fontSize: TYPE.caption, fontWeight: '700' },
 
   // Layout helpers
@@ -1168,10 +1213,6 @@ const styles = StyleSheet.create({
   summaryValue: { fontSize: 24, fontWeight: '800', letterSpacing: -0.5, marginTop: 8, marginBottom: 2 },
   summaryBadge: { marginTop: 10 },
 
-  // Chart
-  totalWrap: { alignItems: 'flex-end', maxWidth: '48%' },
-  totalValue: { fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
-  chartArea: { width: '100%', alignItems: 'flex-start', overflow: 'hidden', paddingTop: 20 },
   emptyHint: { textAlign: 'center', color: SAGE, fontSize: TYPE.caption, fontWeight: '600', marginTop: 12 },
 
   // Donut + list
@@ -1192,6 +1233,13 @@ const styles = StyleSheet.create({
   // Hero
   heroShadow: { borderRadius: 24, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 14, elevation: 5, marginBottom: 28 },
   heroCard: { borderRadius: 24, padding: 22, overflow: 'hidden' },
+  scheduledBillsEntry: { minHeight: 64, flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#FFFFFF', borderRadius: 17, paddingLeft: 13, paddingRight: 10, paddingVertical: 10, marginTop: -12, marginBottom: 17, borderWidth: 1, borderColor: 'rgba(28,60,54,0.08)', ...CARD_SHADOW },
+  scheduledBillsMain: { flex: 1, minWidth: 0, minHeight: 44, flexDirection: 'row', alignItems: 'center', gap: 11 },
+  scheduledBillsAdd: { width: 36, height: 36, borderRadius: 18, backgroundColor: DEEP_GREEN, alignItems: 'center', justifyContent: 'center' },
+  scheduledBillsIcon: { width: 39, height: 39, borderRadius: 13, backgroundColor: 'rgba(237,178,50,0.18)', alignItems: 'center', justifyContent: 'center' },
+  scheduledBillsCopy: { flex: 1, minWidth: 0 },
+  scheduledBillsTitle: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  scheduledBillsCaption: { color: SAGE, fontSize: 11, fontWeight: '500', marginTop: 3 },
   heroDecor: { position: 'absolute', width: 170, height: 170, borderRadius: 85, backgroundColor: 'rgba(255,255,255,0.06)', top: -60, right: -40 },
   heroMeta: { fontSize: TYPE.body, color: 'rgba(255,255,255,0.8)', fontWeight: '600' },
   heroAmount: { fontSize: 36, fontWeight: '800', color: '#FFFFFF', marginTop: 4, letterSpacing: -1 },

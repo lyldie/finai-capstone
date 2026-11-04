@@ -5,6 +5,7 @@ import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
+import { userFacingError } from '../utils/userFacingError';
 import { useAuth } from '../context/AuthContext';
 import { verifyOfflinePin } from '../utils/secureStorage';
 
@@ -72,7 +73,7 @@ export default function PinLoginScreen() {
             router.replace('/login?session=unavailable');
             return;
           }
-          Alert.alert('Incorrect PIN', data.detail || 'The PIN does not match.');
+          Alert.alert('Incorrect PIN', userFacingError(data.detail, 'The PIN does not match.'));
           setPin('');
           setLoading(false);
           return;

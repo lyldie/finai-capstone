@@ -10,6 +10,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getAccountEmoji } from '../../utils/accountEmoji';
+import { userFacingError } from '../../utils/userFacingError';
 import EmojiPicker from '../../components/EmojiPicker';
 
 const DEEP_GREEN = '#1c3c36';
@@ -60,9 +61,7 @@ export default function AddAccountScreen() {
         Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
       } else {
         const errorData = await response.json();
-        const message = typeof errorData?.detail === 'string'
-          ? errorData.detail
-          : 'Review the account name, then try again.';
+        const message = userFacingError(errorData?.detail, 'Review the account name, then try again.');
         Alert.alert('Could not add account', message);
       }
     } catch (error) {

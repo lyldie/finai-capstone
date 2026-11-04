@@ -15,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
 import { getCategoryEmoji } from '../utils/categoryEmoji';
+import { userFacingError } from '../utils/userFacingError';
 import EmojiPicker, { getDisplayEmoji } from './EmojiPicker';
 
 type CategoryKind = 'expense' | 'income';
@@ -68,7 +69,7 @@ export default function QuickAddCategoryModal({ visible, type, onClose, onCreate
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message = typeof result?.detail === 'string'
-          ? result.detail
+          ? userFacingError(result.detail, 'The category could not be created. Please try again.')
           : response.status === 409
             ? 'A category with this name already exists. Choose another name or select the existing category.'
             : 'The category could not be created. Please try again.';

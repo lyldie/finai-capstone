@@ -55,15 +55,40 @@ def _public_bill(bill: dict, occurrence: dict) -> dict:
 
 
 @router.get("")
-async def list_fixed_bills(current_user: dict = Depends(get_current_user)):
+async def list_fixed_bills(archived: bool = False, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     today = ph_today()
-    bills = await db.fixed_bills.find({"user_id": user_id, "is_active": True}).sort("due_day", 1).to_list(length=200)
+    is_active = not archived
+    bills = await db.fixed_bills.find({"user_id": user_id, "is_active": is_active}).sort("due_day", 1).to_list(length=200)
     result = []
     for bill in bills:
+        if archived:
+            occurrence = await db.bill_occurrences.find_one(
+                {"user_id": user_id, "bill_id": str(bill["_id"])},
+                sort=[("period_key", -1)],
+            )
+            if occurrence:
+                public_bill = _public_bill(bill, occurrence)
+            else:
+                public_bill = {
+                    "id": str(bill["_id"]),
+                    "name": bill["name"],
+                    "category_id": str(bill.get("category_id", "")),
+                    "category": bill.get("category") or "Uncategorized",
+                    "amount": round(float(bill.get("amount", 0) or 0), 2),
+                    "due_day": int(bill["due_day"]),
+                    "due_date": None,
+                    "period_key": None,
+                    "status": None,
+                    "is_active": False,
+                }
+            archived_at = bill.get("archived_at")
+            public_bill["archived_at"] = archived_at.isoformat() if hasattr(archived_at, "isoformat") else archived_at
+            result.append(public_bill)
+            continue
         occurrence = await _ensure_occurrence(user_id, bill, today.year, today.month)
         result.append(_public_bill(bill, occurrence))
-    return {"bills": result, "as_of_date": today.isoformat()}
+    return {"bills": result, "as_of_date": today.isoformat(), "archived": archived}
 
 
 @router.post("")
@@ -142,23 +167,11 @@ async def update_fixed_bill(bill_id: str, payload: FixedBillUpdate, current_user
 
 @router.post("/{bill_id}/paid")
 async def mark_fixed_bill_paid(bill_id: str, current_user: dict = Depends(get_current_user)):
-    """Mark this month's reminder as paid; this deliberately does not create a transaction."""
-    user_id = current_user["id"]
-    try:
-        oid = ObjectId(bill_id)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail="Invalid bill ID.") from exc
-    bill = await db.fixed_bills.find_one({"_id": oid, "user_id": user_id, "is_active": True})
-    if not bill:
-        raise HTTPException(status_code=404, detail="Active bill not found.")
-    today = ph_today()
-    occurrence = await _ensure_occurrence(user_id, bill, today.year, today.month)
-    await db.bill_occurrences.update_one(
-        {"_id": occurrence["_id"], "status": "unpaid"},
-        {"$set": {"status": "paid", "paid_at": datetime.utcnow()}},
+    """Block legacy mark-only clients; payments are now recorded with expenses atomically."""
+    raise HTTPException(
+        status_code=409,
+        detail="Update FinAI to record a bill payment as an expense. Use Record payment so the expense and bill status stay in sync.",
     )
-    updated = await db.bill_occurrences.find_one({"_id": occurrence["_id"]})
-    return {"status": "Success", "bill": _public_bill(bill, updated)}
 
 
 @router.delete("/{bill_id}")
@@ -170,8 +183,43 @@ async def archive_fixed_bill(bill_id: str, current_user: dict = Depends(get_curr
         raise HTTPException(status_code=400, detail="Invalid bill ID.") from exc
     result = await db.fixed_bills.update_one(
         {"_id": oid, "user_id": user_id, "is_active": True},
-        {"$set": {"is_active": False, "updated_at": datetime.utcnow()}},
+        {"$set": {"is_active": False, "archived_at": datetime.utcnow(), "updated_at": datetime.utcnow()}},
     )
     if not result.matched_count:
         raise HTTPException(status_code=404, detail="Active bill not found.")
     return {"status": "Success"}
+
+
+@router.patch("/{bill_id}/restore")
+async def restore_fixed_bill(bill_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    try:
+        oid = ObjectId(bill_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid bill ID.") from exc
+    result = await db.fixed_bills.update_one(
+        {"_id": oid, "user_id": user_id, "is_active": False},
+        {"$set": {"is_active": True, "updated_at": datetime.utcnow()}, "$unset": {"archived_at": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=404, detail="Archived bill not found.")
+    return {"status": "Success", "message": "Scheduled bill restored."}
+
+
+@router.delete("/{bill_id}/permanent")
+async def permanently_delete_fixed_bill(bill_id: str, current_user: dict = Depends(get_current_user)):
+    user_id = current_user["id"]
+    try:
+        oid = ObjectId(bill_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid bill ID.") from exc
+    bill_id_string = str(oid)
+    result = await db.fixed_bills.delete_one({"_id": oid, "user_id": user_id, "is_active": False})
+    if not result.deleted_count:
+        raise HTTPException(status_code=404, detail="Archived bill not found.")
+    await db.bill_occurrences.delete_many({"user_id": user_id, "bill_id": bill_id_string})
+    await db.expenses.update_many(
+        {"user_id": user_id, "scheduled_bill_id": bill_id_string},
+        {"$unset": {"scheduled_bill_id": "", "scheduled_bill_period_key": ""}},
+    )
+    return {"status": "Success", "message": "Scheduled bill permanently deleted."}

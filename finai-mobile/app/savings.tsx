@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -19,18 +19,20 @@ const money = (value: number) => `₱${(Number(value) || 0).toLocaleString('en-P
 
 export default function GoalSavingsScreen() {
   const router = useRouter();
-  const { goals = [], totalSavings = 0, transactions = [], goalTypes = [], accounts = [], getAccountBalance, depositToGoal } = useTransactions();
+  const { goals = [], totalSavings = 0, transactions = [], goalTypes = [], accounts = [], getAccountBalance, depositToGoal, withdrawFromGoal, archiveGoal } = useTransactions();
   const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null);
   const [depositGoal, setDepositGoal] = useState<Goal | null>(null);
   const [depositVisible, setDepositVisible] = useState(false);
+  const [movementMode, setMovementMode] = useState<'deposit' | 'withdraw'>('deposit');
   const activeSaved = goals.reduce((sum, goal) => sum + (Number(goal.current_savings) || 0), 0);
   const targetTotal = goals.reduce((sum, goal) => sum + (Number(goal.target_amount) || 0), 0);
   const progress = targetTotal > 0 ? Math.min((activeSaved / targetTotal) * 100, 100) : 0;
   const archivedSavings = Math.max(Number(totalSavings) - activeSaved, 0);
   const goalContributions = useMemo(() => transactions.filter((item) => item.type === 'Contribution' || item.goal_id), [transactions]);
 
-  const openDeposit = (goal: Goal) => {
+  const openMovement = (goal: Goal, mode: 'deposit' | 'withdraw') => {
     setDepositGoal(goal);
+    setMovementMode(mode);
     setDepositVisible(true);
   };
 
@@ -58,7 +60,7 @@ export default function GoalSavingsScreen() {
 
         {archivedSavings > 0 ? <View style={styles.archiveNote}><Ionicons name="archive-outline" size={16} color={TEAL} /><Text style={styles.archiveNoteText}>{money(archivedSavings)} retained from archived goals.</Text></View> : null}
 
-        <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>Your goals</Text><Text style={styles.sectionSubtitle}>{goals.length} active {goals.length === 1 ? 'goal' : 'goals'} · contributions shown per goal</Text></View><TouchableOpacity style={styles.newGoal} onPress={() => router.push('/create-goal' as never)}><Ionicons name="add" size={16} color={GREEN} /><Text style={styles.newGoalText}>New</Text></TouchableOpacity></View>
+        <View style={styles.sectionHeading}><View><Text style={styles.sectionTitle}>Your goals</Text><Text style={styles.sectionSubtitle}>{goals.length} active {goals.length === 1 ? 'goal' : 'goals'} · savings activity shown per goal</Text></View><TouchableOpacity style={styles.newGoal} onPress={() => router.push('/create-goal' as never)}><Ionicons name="add" size={16} color={GREEN} /><Text style={styles.newGoalText}>New</Text></TouchableOpacity></View>
 
         {goals.length ? goals.map((goal) => {
           const saved = Number(goal.current_savings) || 0;
@@ -76,17 +78,28 @@ export default function GoalSavingsScreen() {
               <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={SAGE} />
             </TouchableOpacity>
             <View style={styles.goalProgressTrack}><View style={[styles.goalProgressFill, { width: `${pct}%` }]} /></View>
-            <View style={styles.goalFooter}><Text style={styles.goalRemaining}>{money(Math.max(target - saved, 0))} to go</Text><TouchableOpacity style={styles.addContribution} onPress={() => openDeposit(goal)} accessibilityRole="button"><Ionicons name="add-circle-outline" size={16} color={TEAL} /><Text style={styles.addContributionText}>Add savings</Text></TouchableOpacity></View>
+            <View style={styles.goalFooter}>
+              <Text style={styles.goalRemaining}>{money(Math.max(target - saved, 0))} to go</Text>
+              <View style={styles.goalActions}>
+                <TouchableOpacity style={styles.goalIconAction} onPress={() => router.push({ pathname: '/create-goal', params: { id: goal.id, target_name: goal.target_name, target_amount: goal.target_amount, target_date: goal.target_date, current_savings: goal.current_savings, goal_type_id: (goal as any).goal_type_id || (goal as any).preset_id || (goal as any).goal_type } } as never)} accessibilityRole="button" accessibilityLabel={`Edit ${goal.target_name}`}><Ionicons name="pencil-outline" size={15} color={GREEN} /></TouchableOpacity>
+                <TouchableOpacity style={[styles.goalIconAction, styles.archiveGoalAction]} onPress={() => Alert.alert('Archive goal?', `Move “${goal.target_name}” to the archive? Its contribution history will be retained.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Archive', onPress: () => archiveGoal?.(goal.id) }])} accessibilityRole="button" accessibilityLabel={`Archive ${goal.target_name}`}><Ionicons name="archive-outline" size={15} color="#A33B34" /></TouchableOpacity>
+                <TouchableOpacity style={styles.addContribution} onPress={() => openMovement(goal, 'deposit')} accessibilityRole="button"><Ionicons name="add-circle-outline" size={16} color={TEAL} /><Text style={styles.addContributionText}>Add</Text></TouchableOpacity>
+                {saved > 0 ? <TouchableOpacity style={styles.addContribution} onPress={() => openMovement(goal, 'withdraw')} accessibilityRole="button"><Ionicons name="arrow-up-circle-outline" size={16} color={GREEN} /><Text style={styles.addContributionText}>Withdraw</Text></TouchableOpacity> : null}
+              </View>
+            </View>
             {expanded ? <View style={styles.contributionsBlock}>
-              <Text style={styles.contributionsTitle}>Contributions</Text>
-              {contributions.length ? contributions.map((item) => <View key={item.id} style={styles.contributionRow}><View style={styles.contributionIcon}><Ionicons name="arrow-down" size={14} color={TEAL} /></View><View style={styles.contributionCopy}><Text style={styles.contributionName} numberOfLines={1}>{item.note || `From ${item.account}`}</Text><Text style={styles.contributionMeta}>{item.date} · {item.account}</Text></View><Text style={styles.contributionAmount}>+{money(Number(item.amount) || 0)}</Text></View>) : <Text style={styles.emptyCopy}>No contribution records are linked to this goal yet.</Text>}
+              <Text style={styles.contributionsTitle}>Savings activity</Text>
+              {contributions.length ? contributions.map((item) => {
+                const withdrawal = item.type === 'Goal Withdrawal';
+                return <View key={item.id} style={styles.contributionRow}><View style={styles.contributionIcon}><Ionicons name={withdrawal ? 'arrow-up' : 'arrow-down'} size={14} color={withdrawal ? GREEN : TEAL} /></View><View style={styles.contributionCopy}><Text style={styles.contributionName} numberOfLines={1}>{item.note || `${withdrawal ? 'Returned to' : 'From'} ${item.account}`}</Text><Text style={styles.contributionMeta}>{item.date} · {item.account}</Text></View><Text style={[styles.contributionAmount, withdrawal && { color: GREEN }]}>{withdrawal ? '−' : '+'}{money(Number(item.amount) || 0)}</Text></View>;
+              }) : <Text style={styles.emptyCopy}>No savings activity is linked to this goal yet.</Text>}
             </View> : null}
           </View>;
         }) : <View style={styles.emptyCard}><View style={styles.piggyTile}><Text style={styles.piggy}>🐷</Text></View><Text style={styles.emptyTitle}>Start with a goal</Text><Text style={styles.emptyCopy}>Create a goal to give your savings a clear purpose.</Text><TouchableOpacity style={styles.emptyButton} onPress={() => router.push('/create-goal' as never)}><Text style={styles.emptyButtonText}>Create a goal</Text></TouchableOpacity></View>}
 
         <Text style={styles.disclaimer}>Goal savings are allocations of money already recorded in your wallets. Contributions reduce the source wallet balance; they are not expenses.</Text>
       </ScrollView>
-      <DepositModal visible={depositVisible} onClose={() => setDepositVisible(false)} selectedGoal={depositGoal} accounts={accounts} getAccountBalance={getAccountBalance} depositToGoal={depositToGoal} />
+      <DepositModal visible={depositVisible} onClose={() => setDepositVisible(false)} selectedGoal={depositGoal} accounts={accounts} getAccountBalance={getAccountBalance} depositToGoal={depositToGoal} withdrawFromGoal={withdrawFromGoal} mode={movementMode} />
     </SafeAreaView>
   );
 }
@@ -113,7 +126,7 @@ const styles = StyleSheet.create({
   goalTop: { flexDirection: 'row', alignItems: 'center', gap: 9 }, goalIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, goalEmoji: { fontSize: 21 },
   goalInfo: { flex: 1, minWidth: 0 }, goalName: { color: GREEN, fontSize: 14, fontWeight: '800' }, goalTarget: { color: SAGE, fontSize: 10, marginTop: 3 }, goalAmountWrap: { alignItems: 'flex-end' }, goalAmount: { color: GREEN, fontSize: 13, fontWeight: '900' }, goalPercent: { color: TEAL, fontSize: 10, fontWeight: '800', marginTop: 2 },
   goalProgressTrack: { height: 7, borderRadius: 4, backgroundColor: '#E9E7DF', overflow: 'hidden', marginTop: 13 }, goalProgressFill: { height: '100%', borderRadius: 4, backgroundColor: GOLD },
-  goalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }, goalRemaining: { color: SAGE, fontSize: 11, fontWeight: '600' }, addContribution: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 }, addContributionText: { color: TEAL, fontSize: 11, fontWeight: '800' },
+  goalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }, goalRemaining: { color: SAGE, fontSize: 11, fontWeight: '600' }, goalActions: { flexDirection: 'row', alignItems: 'center', gap: 5 }, goalIconAction: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, archiveGoalAction: { backgroundColor: 'rgba(255,98,89,0.12)' }, addContribution: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 }, addContributionText: { color: TEAL, fontSize: 11, fontWeight: '800' },
   contributionsBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E6EAE6', paddingTop: 12, marginTop: 10 }, contributionsTitle: { color: GREEN, fontSize: 12, fontWeight: '800', marginBottom: 7 },
   contributionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }, contributionIcon: { width: 29, height: 29, borderRadius: 10, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, contributionCopy: { flex: 1 }, contributionName: { color: GREEN, fontSize: 11, fontWeight: '700' }, contributionMeta: { color: SAGE, fontSize: 9, marginTop: 2 }, contributionAmount: { color: TEAL, fontSize: 11, fontWeight: '800' },
   emptyCard: { alignItems: 'center', padding: 24, backgroundColor: '#FFFFFF', borderRadius: 20 }, emptyTitle: { color: GREEN, fontSize: 16, fontWeight: '900', marginTop: 12 }, emptyCopy: { color: SAGE, fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 6 }, emptyButton: { backgroundColor: GREEN, borderRadius: 13, paddingHorizontal: 16, paddingVertical: 11, marginTop: 15 }, emptyButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 12 },

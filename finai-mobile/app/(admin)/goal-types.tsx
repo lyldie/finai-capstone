@@ -1,13 +1,14 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
+  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
+import { logUnexpectedError, userFacingError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 import { getGoalEmoji } from '../../utils/goalEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
@@ -55,7 +56,7 @@ export default function GoalTypesScreen() {
       const data = await response.json();
       setGoalTypes(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Error fetching goal types:", error);
+      logUnexpectedError('Admin goal-type fetch failed unexpectedly:', error);
     } finally {
       setLoading(false);
     }
@@ -111,7 +112,7 @@ export default function GoalTypesScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert('Could not delete goal type', data.detail || 'Active goals still use this goal type.');
+                  Alert.alert('Could not delete goal type', userFacingError(data.detail, 'Active goals still use this goal type.'));
                 }
               }
             } catch (error) {
@@ -245,7 +246,7 @@ export default function GoalTypesScreen() {
 
       {/* Edit Modal */}
       <Modal visible={modalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Goal Type</Text>
 
@@ -279,7 +280,7 @@ export default function GoalTypesScreen() {
               <Text style={{color: SAGE, textAlign: 'center', fontWeight: '700'}}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../config';
+import { logUnexpectedError, userFacingError } from '../utils/userFacingError';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getAccountDisplayEmoji } from '../utils/accountEmoji';
 import { getCategoryEmoji } from '../utils/categoryEmoji';
@@ -22,7 +23,7 @@ const CREAM = '#FAF7F2';
 const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
 
-type ArchiveTab = 'Transactions' | 'Accounts' | 'Goals';
+type ArchiveTab = 'Transactions' | 'Accounts' | 'Goals' | 'Bills';
 
 // Same peso formatter style as the other screens (sign is handled by the caller).
 const peso = (value: number, fixed = false) =>
@@ -67,6 +68,8 @@ export default function ArchiveScreen() {
         endpoint = `${API_URL}/api/accounts/user/${encodeURIComponent(userId)}?archived=true`;
       } else if (activeTab === 'Goals') {
         endpoint = `${API_URL}/api/goals/?user_id=${encodeURIComponent(userId)}&archived=true`;
+      } else if (activeTab === 'Bills') {
+        endpoint = `${API_URL}/api/bills?archived=true`;
       }
 
       let data: any;
@@ -78,7 +81,7 @@ export default function ArchiveScreen() {
           const page = await pageRes.json().catch(() => ({}));
           if (!pageRes.ok) {
             const detail = typeof page?.detail === 'string' ? page.detail : 'The server could not load archived transactions.';
-            throw new Error(`Request failed (${pageRes.status}): ${detail}`);
+            throw new Error(detail);
           }
           if (!Array.isArray(page.data)) throw new Error('Invalid archived transactions response.');
           all.push(...page.data);
@@ -91,16 +94,21 @@ export default function ArchiveScreen() {
         data = await res.json().catch(() => ({}));
         if (!res.ok) {
           const detail = typeof data?.detail === 'string' ? data.detail : `The server could not load archived ${activeTab.toLowerCase()}.`;
-          throw new Error(`Request failed (${res.status}): ${detail}`);
+          throw new Error(detail);
         }
       }
       if (data) {
         // Frontend filtering so only archived items are ever shown
-        const filtered = Array.isArray(data)
-          ? data.filter((item: any) => item.is_archived === true || item.archived === true)
-          : Array.isArray(data?.data)
-            ? data.data.filter((item: any) => item.is_archived === true || item.archived === true)
-            : [];
+        const sourceItems = activeTab === 'Bills'
+          ? (Array.isArray(data?.bills) ? data.bills : [])
+          : Array.isArray(data)
+            ? data
+            : Array.isArray(data?.data)
+              ? data.data
+              : [];
+        const filtered = activeTab === 'Bills'
+          ? sourceItems.filter((item: any) => item.is_active === false)
+          : sourceItems.filter((item: any) => item.is_archived === true || item.archived === true);
         const mapped = filtered.map((item: any) => ({ ...item, id: String(item.id ?? item._id ?? '') })).filter((item: any) => item.id);
         setArchivedData(mapped);
         setTabCounts((prev) => ({ ...prev, [activeTab]: mapped.length }));
@@ -109,9 +117,9 @@ export default function ArchiveScreen() {
         setTabCounts((prev) => ({ ...prev, [activeTab]: 0 }));
       }
     } catch (error) {
-      console.error(`Error fetching archived ${activeTab}:`, error);
+      logUnexpectedError(`Archived ${activeTab} fetch failed unexpectedly:`, error);
       setArchivedData([]);
-      setLoadError(error instanceof Error ? error.message : 'Could not load archived items. Check your connection and try again.');
+      setLoadError(userFacingError(error, 'Could not load archived items. Check your connection and try again.'));
     } finally {
       setIsLoading(false);
     }
@@ -131,15 +139,16 @@ export default function ArchiveScreen() {
       let endpoint = `${API_URL}/restore-expense/${id}`;
       if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/restore`;
       if (activeTab === 'Goals') endpoint = `${API_URL}/api/goals/${id}/restore`;
+      if (activeTab === 'Bills') endpoint = `${API_URL}/api/bills/${id}/restore`;
 
-      const method = activeTab === 'Accounts' || activeTab === 'Transactions' ? 'PATCH' : 'PUT';
+      const method = activeTab === 'Goals' ? 'PUT' : 'PATCH';
       const res = await fetch(endpoint, { method, headers: { Authorization: `Bearer ${token || ''}` } });
       const result = await res.json().catch(() => ({}));
       if (res.ok) {
         Alert.alert('Restored', 'The item is back in the active list.');
         fetchArchivedData();
       } else {
-        Alert.alert('Cannot restore item', result.detail || 'Please check its linked account and try again.');
+        Alert.alert('Cannot restore item', userFacingError(result.detail, 'Please check its linked account and try again.'));
       }
     } catch (error) {
       Alert.alert('Cannot restore item', 'Check your connection and try again.');
@@ -165,13 +174,14 @@ export default function ArchiveScreen() {
               let endpoint = `${API_URL}/permanent-delete-expense/${id}`;
               if (activeTab === 'Accounts') endpoint = `${API_URL}/api/accounts/${id}/permanent`;
               if (activeTab === 'Goals') endpoint = `${API_URL}/api/goals/${id}/permanent`;
+              if (activeTab === 'Bills') endpoint = `${API_URL}/api/bills/${id}/permanent`;
 
               const res = await fetch(endpoint, { method: 'DELETE', headers: { Authorization: `Bearer ${token || ''}` } });
               const result = await res.json().catch(() => ({}));
               if (res.ok) {
                 fetchArchivedData();
               } else {
-                Alert.alert('Cannot delete item', result.detail || 'Please try again.');
+                Alert.alert('Cannot delete item', userFacingError(result.detail, 'Please try again.'));
               }
             } catch (error) {
               Alert.alert('Cannot delete item', 'Check your connection and try again.');
@@ -187,7 +197,8 @@ export default function ArchiveScreen() {
   const emptyHint =
     activeTab === 'Transactions' ? 'Swipe a record on the Transactions tab and tap Archive to see it here.'
     : activeTab === 'Accounts' ? 'Archived accounts will show up here.'
-    : 'Archived goals will show up here.';
+    : activeTab === 'Goals' ? 'Archived goals will show up here.'
+    : 'Archived scheduled bills will show up here.';
 
   return (
     <View style={styles.container}>
@@ -206,9 +217,9 @@ export default function ArchiveScreen() {
           <View style={{ width: 40 }} />
         </View>
 
-        {/* Segmented tabs for Transactions, Accounts, Goals */}
+        {/* Segmented tabs for archived records */}
         <View style={styles.tabContainer}>
-          {(['Transactions', 'Accounts', 'Goals'] as const).map((tab) => {
+          {(['Transactions', 'Accounts', 'Goals', 'Bills'] as const).map((tab) => {
             const count = tabCounts[tab];
             const active = activeTab === tab;
             return (
@@ -266,13 +277,16 @@ export default function ArchiveScreen() {
           renderItem={({ item }) => {
             const isIncome = item.type === 'Income';
             const isNeutral = item.type === 'Transfer' || item.type === 'Contribution';
-            const color = isIncome ? INCOME : isNeutral ? TEAL : EXPENSE;
+            const color = activeTab === 'Bills' ? DEEP_GREEN : isIncome ? INCOME : isNeutral ? TEAL : EXPENSE;
             const iconTint =
               activeTab === 'Goals' ? 'rgba(237, 178, 50, 0.16)'
+              : activeTab === 'Bills' ? 'rgba(61, 125, 108, 0.12)'
               : activeTab === 'Accounts' || isNeutral ? 'rgba(61, 125, 108, 0.12)'
               : isIncome ? 'rgba(16, 185, 129, 0.12)'
               : 'rgba(255, 98, 89, 0.12)';
-            const itemEmoji = activeTab === 'Accounts'
+            const itemEmoji = activeTab === 'Bills'
+              ? '🧾'
+              : activeTab === 'Accounts'
               ? getAccountDisplayEmoji(item.icon, item.name || 'account')
               : activeTab === 'Goals'
                 ? getGoalEmoji(item.target_name || '')
@@ -281,7 +295,7 @@ export default function ArchiveScreen() {
                   : item.type === 'Transfer'
                     ? '🔄'
                     : getCategoryEmoji(item.category || '', String(item.type || 'Expense').toLowerCase());
-            const title = item.category || item.target_name || item.name || 'Untitled';
+            const title = activeTab === 'Bills' ? item.name || 'Scheduled bill' : item.category || item.target_name || item.name || 'Untitled';
             const busy = busyId === item.id;
 
             // Subtitle lines per kind of item
@@ -292,6 +306,9 @@ export default function ArchiveScreen() {
               metaLine = [formatDate(item.date), item.account].filter(Boolean).join(' · ');
             } else if (activeTab === 'Accounts') {
               primaryLine = `Initial balance ${peso(item.initial_balance || 0)}`;
+            } else if (activeTab === 'Bills') {
+              primaryLine = item.category || 'Scheduled bill';
+              metaLine = `Due day ${item.due_day} each month`;
             } else {
               primaryLine = `Target ${peso(item.target_amount || 0)}`;
               metaLine = item.target_date ? `By ${formatDate(item.target_date)}` : '';
@@ -312,9 +329,9 @@ export default function ArchiveScreen() {
                     {archivedOn ? <Text style={styles.cardMeta} numberOfLines={1}>{archivedOn}</Text> : null}
                   </View>
 
-                  {activeTab === 'Transactions' && (
+                  {(activeTab === 'Transactions' || activeTab === 'Bills') && (
                     <Text style={[styles.cardAmount, { color }]} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
-                      {item.type === 'Transfer' ? '' : isIncome ? '+' : '-'}{peso(parseFloat(item.amount) || 0, true)}
+                      {activeTab === 'Bills' ? peso(parseFloat(item.amount) || 0, true) : `${item.type === 'Transfer' ? '' : isIncome ? '+' : '-'}${peso(parseFloat(item.amount) || 0, true)}`}
                     </Text>
                   )}
                 </View>

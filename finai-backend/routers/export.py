@@ -1,5 +1,5 @@
 # finai-backend/routers/export.py
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import math
 from typing import Any, Dict, List
@@ -8,9 +8,13 @@ from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Depends
 from database import db
 from auth import get_current_user
-from services.budget_service import ph_today
+from services.budget_service import ph_today, normalize_period_type, legacy_period_key
 
 router = APIRouter(prefix="/api/export", tags=["Export"])
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 @router.get("/backup")
 async def export_user_data(current_user: dict = Depends(get_current_user)):
@@ -35,6 +39,12 @@ async def export_user_data(current_user: dict = Depends(get_current_user)):
         bgt["_id"] = str(bgt["_id"])
         budgets.append(bgt)
 
+    # Recurrence settings live separately from individual budget periods.
+    budget_rules = []
+    async for rule in db.budget_rules.find({"user_id": user_id}):
+        rule["_id"] = str(rule["_id"])
+        budget_rules.append(rule)
+
     # 4. Kunin ang mga financial goals ng user
     goals = []
     async for goal in db.goals.find({"user_id": user_id}):
@@ -42,11 +52,12 @@ async def export_user_data(current_user: dict = Depends(get_current_user)):
         goals.append(goal)
 
     backup_data = {
-        "version": "1.0",
+        "version": "1.1",
         "user_id": user_id,
         "transactions": transactions,
         "accounts": accounts,
         "budgets": budgets,
+        "budget_rules": budget_rules,
         "goals": goals
     }
 
@@ -58,11 +69,19 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
     """Validate the complete backup, then replace the user's data atomically."""
     user_id = current_user["id"]
     collections = ("transactions", "accounts", "budgets", "goals")
+    optional_collections = ("budget_rules",)
     if not isinstance(payload, dict) or any(
         not isinstance(payload.get(name, []), list)
         or len(payload.get(name, [])) > 5000
         or any(not isinstance(item, dict) for item in payload.get(name, []))
         for name in collections
+    ) or any(
+        name in payload and (
+            not isinstance(payload[name], list)
+            or len(payload[name]) > 5000
+            or any(not isinstance(item, dict) for item in payload[name])
+        )
+        for name in optional_collections
     ):
         raise HTTPException(status_code=422, detail="Backup must contain valid record lists (up to 5,000 each).")
 
@@ -125,7 +144,7 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
             "current_savings": require_amount(source, "current_savings", allow_zero=True),
             "target_date": target_date,
             "is_archived": optional_bool(source, "is_archived"),
-            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else datetime.utcnow(),
+            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else _utcnow(),
         })
 
     restored_accounts = []
@@ -165,10 +184,71 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
             "period_type": period_type,
             "period_key": period_key,
             "month_year": optional_text(source, "month_year", 20),
+            "rollover_enabled": optional_bool(source, "rollover_enabled"),
+            "budget_kind": source.get("budget_kind", "variable"),
             "spent": 0.0,
-            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else datetime.utcnow(),
-            "updated_at": datetime.utcnow(),
+            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else _utcnow(),
+            "updated_at": _utcnow(),
         })
+        if not isinstance(restored_budgets[-1]["budget_kind"], str) or restored_budgets[-1]["budget_kind"] not in {"fixed", "variable"}:
+            raise HTTPException(status_code=422, detail="Invalid budget kind in backup.")
+
+    restored_budget_rules = []
+    if "budget_rules" in payload:
+        rule_keys = set()
+        for source in payload.get("budget_rules", []):
+            category_id = require_text(source, "category_id", 100)
+            try:
+                ObjectId(category_id)
+            except Exception as exc:
+                raise HTTPException(status_code=422, detail="Invalid recurring budget category in backup.") from exc
+            raw_period_type = str(source.get("period_type", "")).strip().lower()
+            period_type = normalize_period_type(raw_period_type)
+            if raw_period_type not in {"week", "weekly", "month", "monthly", "year", "yearly", "annual"}:
+                raise HTTPException(status_code=422, detail="Invalid recurring budget period in backup.")
+            key = (category_id, period_type)
+            if key in rule_keys:
+                raise HTTPException(status_code=422, detail="The backup contains duplicate recurring budgets.")
+            rule_keys.add(key)
+            budget_kind = source.get("budget_kind", "variable")
+            if not isinstance(budget_kind, str) or budget_kind not in {"fixed", "variable"}:
+                raise HTTPException(status_code=422, detail="Invalid recurring budget kind in backup.")
+            restored_budget_rules.append({
+                "user_id": user_id,
+                "category_id": category_id,
+                "period_type": period_type,
+                "amount": require_amount(source, "amount"),
+                "rollover_enabled": optional_bool(source, "rollover_enabled"),
+                "budget_kind": budget_kind,
+                "is_active": optional_bool(source, "is_active", True),
+                "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else _utcnow(),
+                "updated_at": source.get("updated_at") if isinstance(source.get("updated_at"), (str, datetime)) else _utcnow(),
+            })
+    else:
+        # Backward compatibility for version 1.0 exports, which did not include
+        # recurrence rules. Rebuild each rule from that category/period's newest
+        # snapshot so imported backups keep rolling forward instead of stopping.
+        latest_snapshots = {}
+        for budget in restored_budgets:
+            period_type = normalize_period_type(budget.get("period_type"))
+            period_key = budget.get("period_key") or legacy_period_key(budget.get("month_year"))
+            if not period_key:
+                continue
+            key = (budget["category_id"], period_type)
+            if key not in latest_snapshots or period_key > latest_snapshots[key][0]:
+                latest_snapshots[key] = (period_key, budget)
+        for (category_id, period_type), (_, budget) in latest_snapshots.items():
+            restored_budget_rules.append({
+                "user_id": user_id,
+                "category_id": category_id,
+                "period_type": period_type,
+                "amount": budget["amount"],
+                "rollover_enabled": budget["rollover_enabled"],
+                "budget_kind": budget["budget_kind"],
+                "is_active": True,
+                "created_at": _utcnow(),
+                "updated_at": _utcnow(),
+            })
 
     restored_transactions = []
     for source in payload.get("transactions", []):
@@ -202,7 +282,7 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
             "account": account_name,
             "to_account": to_account,
             "date": txn_date or ph_today().isoformat(),
-            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else datetime.utcnow(),
+            "created_at": source.get("created_at") if isinstance(source.get("created_at"), (str, datetime)) else _utcnow(),
             "is_archived": optional_bool(source, "is_archived"),
         }
         for field in ("title", "item_name", "note"):
@@ -223,11 +303,14 @@ async def restore_user_data(payload: dict, current_user: dict = Depends(get_curr
                 await db.expenses.delete_many({"user_id": user_id}, session=session)
                 await db.accounts.delete_many({"user_id": user_id}, session=session)
                 await db.budgets.delete_many({"user_id": user_id}, session=session)
+                await db.budget_rules.delete_many({"user_id": user_id}, session=session)
                 await db.goals.delete_many({"user_id": user_id}, session=session)
                 if restored_accounts:
                     await db.accounts.insert_many(restored_accounts, session=session)
                 if restored_budgets:
                     await db.budgets.insert_many(restored_budgets, session=session)
+                if restored_budget_rules:
+                    await db.budget_rules.insert_many(restored_budget_rules, session=session)
                 if restored_goals:
                     await db.goals.insert_many(restored_goals, session=session)
                 if restored_transactions:

@@ -1,7 +1,7 @@
 import React, { useState, useCallback } from 'react';
 import {
   View, Text, SectionList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
+  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -10,6 +10,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import EmojiPicker, { getDisplayEmoji } from '../../components/EmojiPicker';
 import { API_URL } from '../../config';
+import { logUnexpectedError, userFacingError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 
 const { width } = Dimensions.get('window');
@@ -24,7 +25,7 @@ const EXPENSE_TINT = '#FFEBEE';
 
 const getResponseDetail = async (response: Response, fallback: string) => {
   const data = await response.json().catch(() => ({}));
-  return typeof data?.detail === 'string' ? data.detail : fallback;
+  return userFacingError(data?.detail, fallback);
 };
 
 interface Category {
@@ -65,7 +66,7 @@ export default function CategoriesScreen() {
       const data = await response.json();
       setCategories(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Error fetching categories:", error);
+      logUnexpectedError('Admin category fetch failed unexpectedly:', error);
     } finally {
       setLoading(false);
     }
@@ -123,7 +124,7 @@ export default function CategoriesScreen() {
                 if (response.status === 401) {
                   Alert.alert("Session Expired", "Please log in again.");
                 } else {
-                  Alert.alert('Could not delete category', data.detail || 'Active transactions still use this category.');
+                  Alert.alert('Could not delete category', userFacingError(data.detail, 'Active transactions still use this category.'));
                 }
               }
             } catch (error) {
@@ -278,7 +279,7 @@ export default function CategoriesScreen() {
 
       {/* Edit Modal */}
       <Modal visible={modalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
           <View style={styles.modalContent}>
             <Text style={styles.modalTitle}>Edit Category</Text>
 
@@ -327,7 +328,7 @@ export default function CategoriesScreen() {
               <Text style={{ color: SAGE, textAlign: 'center', fontWeight: '700' }}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

@@ -25,7 +25,7 @@ import main
 from main import TransactionSchema, validate_transaction_for_storage
 from routers import accounts as accounts_router
 from routers import goals as goals_router
-from schemas.goal import GoalDeposit
+from schemas.goal import GoalCreate, GoalDeposit
 from services import budget_service
 
 
@@ -219,6 +219,8 @@ class TransactionEndpointTests(unittest.IsolatedAsyncioTestCase):
             patch.object(accounts_router, "db", self.fake_db),
             patch.object(main, "validate_transaction_references", new=AsyncMock(side_effect=self._resolve_refs)),
             patch.object(main, "safely_refresh_budget_notifications", new=AsyncMock(return_value=[])),
+            patch.object(main, "create_weekly_spending_spike", new=AsyncMock(return_value=None)),
+            patch.object(main.advisor, "evaluate_proactive_financial_signals", new=AsyncMock()),
             patch.object(accounts_router, "ensure_account_balance_lock", new=AsyncMock(side_effect=lambda user, oid: f"{user}:{oid}")),
             patch.object(accounts_router, "lock_account_balance", new=AsyncMock()),
         ]
@@ -236,6 +238,16 @@ class TransactionEndpointTests(unittest.IsolatedAsyncioTestCase):
             await main.add_expense(transaction(amount=200.01, date_value="2026-01-01"), {"id": "u1"})
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(self.fake_db.expenses.insert_calls, 0)
+
+    async def test_retry_with_same_client_request_id_returns_original_transaction(self):
+        request = transaction(amount=25, date_value="2026-01-01")
+        request.client_request_id = "mobile-retry-1"
+        first = await main.add_expense(request, {"id": "u1"})
+        second = await main.add_expense(request, {"id": "u1"})
+
+        self.assertEqual(first["id"], second["id"])
+        self.assertTrue(second.get("duplicate"))
+        self.assertEqual(self.fake_db.expenses.insert_calls, 1)
 
     async def test_transfer_records_one_event_and_updates_both_derived_balances(self):
         result = await main.add_expense(
@@ -306,6 +318,37 @@ class TransactionEndpointTests(unittest.IsolatedAsyncioTestCase):
 
 
 class GoalContributionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_retried_goal_creation_returns_the_existing_goal(self):
+        goal_id = ObjectId()
+        fake_db = FakeDatabase(goals=FakeCollection([{
+            "_id": goal_id, "user_id": "u1", "client_request_id": "goal-request-1",
+            "goal_type_id": str(ObjectId()), "target_name": "Trip", "target_amount": 1000,
+            "current_savings": 0, "target_date": "2026-12-31", "is_archived": False,
+        }]))
+        with patch.object(goals_router, "db", fake_db):
+            result = await goals_router.create_goal(
+                GoalCreate(user_id="ignored", client_request_id="goal-request-1", goal_type_id="bad", target_name="Trip", target_amount=1000, target_date="2026-12-31"),
+                {"id": "u1"},
+            )
+        self.assertEqual(result.id, str(goal_id))
+        self.assertEqual(len(fake_db.goals.rows), 1)
+
+    async def test_retried_goal_contribution_does_not_debit_or_credit_twice(self):
+        existing_id = ObjectId()
+        goal_id = ObjectId()
+        fake_db = FakeDatabase(expenses=FakeCollection([{
+            "_id": existing_id, "user_id": "u1", "goal_id": str(goal_id),
+            "client_request_id": "deposit-request-1", "type": "Contribution", "amount": 50,
+        }]))
+        with patch.object(goals_router, "db", fake_db):
+            result = await goals_router.deposit_to_goal(
+                "invalid-on-retry-is-not-needed", GoalDeposit(user_id="ignored", client_request_id="deposit-request-1", amount=50, account="Cash"),
+                {"id": "u1"},
+            )
+        self.assertEqual(result["id"], str(existing_id))
+        self.assertTrue(result["duplicate"])
+        self.assertEqual(fake_db.expenses.insert_calls, 0)
+
     async def test_contribution_debits_account_and_credits_goal_atomically(self):
         account_id, goal_id = ObjectId(), ObjectId()
         goal = {"_id": goal_id, "user_id": "u1", "target_name": "Emergency Fund", "current_savings": 20, "is_archived": False}

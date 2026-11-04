@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { 
   View, TextInput, TouchableOpacity, Alert, StyleSheet, Text, 
   ScrollView, StatusBar, Image, KeyboardAvoidingView, Platform, Modal,
@@ -9,6 +9,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { Checkbox } from 'expo-checkbox'; 
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../config'; 
+import { userFacingError } from '../utils/userFacingError';
+import { useAuth } from '../context/AuthContext';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import GoogleSignInButton from '../components/GoogleSignInButton';
+import { isExpoGo } from '../utils/runtime';
 
 // ---- FINAI BRAND TOKENS (matches getstarted.tsx / login.tsx exactly) ----
 const DEEP_GREEN = '#1c3c36';
@@ -28,7 +34,40 @@ export default function SignupScreen() {
   const [loading, setLoading] = useState(false);
   const [openDocument, setOpenDocument] = useState<'terms' | 'privacy' | null>(null);
   const [verificationEmail, setVerificationEmail] = useState<string | null>(null);
+  const [draftReady, setDraftReady] = useState(false);
+  const insets = useSafeAreaInsets();
   const router = useRouter();
+  const { loginUser } = useAuth();
+
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem('@finai_signup_draft').then((raw) => {
+      if (!active) return;
+      if (raw) {
+        try {
+          const draft = JSON.parse(raw);
+          setFirstName(typeof draft.firstName === 'string' ? draft.firstName : '');
+          setLastName(typeof draft.lastName === 'string' ? draft.lastName : '');
+          setEmail(typeof draft.email === 'string' ? draft.email : '');
+          setAgree(Boolean(draft.isAgree));
+          const pendingEmail = typeof draft.verificationEmail === 'string' ? draft.verificationEmail.trim() : '';
+          if (pendingEmail) {
+            router.replace({ pathname: '/otpverify', params: { email: pendingEmail } });
+            return;
+          }
+        } catch { /* Ignore a damaged local draft and let the user start fresh. */ }
+      }
+      setDraftReady(true);
+    }).catch(() => { if (active) setDraftReady(true); });
+    return () => { active = false; };
+  }, [router]);
+
+  useEffect(() => {
+    if (!draftReady) return;
+    // Keep the registration form recoverable if Android suspends or recreates
+    // the app while the user checks email. Passwords are deliberately excluded.
+    void AsyncStorage.setItem('@finai_signup_draft', JSON.stringify({ firstName, lastName, email, isAgree, verificationEmail })).catch(() => undefined);
+  }, [draftReady, firstName, lastName, email, isAgree, verificationEmail]);
 
   const passwordChecks = [
     { label: 'At least 10 characters', valid: password.length >= 10 },
@@ -37,6 +76,54 @@ export default function SignupScreen() {
   ];
   const passwordStrong = passwordChecks.every((check) => check.valid);
   const passwordHasSymbol = /[^A-Za-z0-9]/.test(password);
+
+  const handleGoogleSignUp = async (idToken: string) => {
+    if (!isAgree) {
+      Alert.alert('Terms and privacy', 'Review and accept the Terms & Privacy statement before continuing.');
+      return;
+    }
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/google-signin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_token: idToken, flow: 'signup' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (
+        response.status === 409 &&
+        typeof data.detail === 'string' &&
+        data.detail.toLowerCase().includes('please log in instead')
+      ) {
+        Alert.alert(
+          'Account already exists',
+          'A FinAI account already uses this Google account. Log in to continue.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Log In', onPress: () => router.replace('/login') },
+          ],
+        );
+        return;
+      }
+      if (!response.ok) throw new Error(userFacingError(data.detail, 'Could not create your account with Google. Please try again.'));
+      await loginUser({
+        id: String(data.user_id),
+        name: data.name,
+        email: data.email,
+        role: data.role,
+        token: data.token,
+      });
+      if (data.role === 'admin') {
+        router.replace('/(admin)/admin-dashboard');
+      } else if (!data.has_pin) {
+        router.replace('/setup-pin');
+      } else {
+        router.replace('/verify-pin');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleSignup = async () => {
     Keyboard.dismiss(); // 👈 [NEW] Itago ang keyboard kapag pinindot ang signup
@@ -101,9 +188,22 @@ export default function SignupScreen() {
       const data = await response.json();
 
       if (response.ok) {
-        setVerificationEmail(cleanEmail);
+        await AsyncStorage.setItem('@finai_signup_draft', JSON.stringify({ firstName: cleanFirstName, lastName: cleanLastName, email: cleanEmail, isAgree: true, verificationEmail: cleanEmail }));
+        router.replace({ pathname: '/otpverify', params: { email: cleanEmail } });
       } else {
-        Alert.alert('Registration failed', data.detail || 'We could not create your account. Please try again.');
+        if (response.status === 409 || /already registered|already use this email/i.test(String(data.detail || ''))) {
+          Alert.alert(
+            'Account may already exist',
+            'Try signing in, or reset the password if you cannot remember it.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              { text: 'Sign in', onPress: () => router.replace({ pathname: '/login', params: { email: cleanEmail } }) },
+              { text: 'Forgot password?', onPress: () => router.push({ pathname: '/forgot-password', params: { email: cleanEmail } }) },
+            ],
+          );
+          return;
+        }
+        Alert.alert('Registration failed', userFacingError(data.detail, 'We could not create your account. Please try again.'));
       }
     } catch (e) {
       Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
@@ -117,7 +217,7 @@ export default function SignupScreen() {
       <Stack.Screen options={{ headerShown: false }} />
       <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
       
-      <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.header}>
+      <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={[styles.header, { paddingTop: Math.max(50, insets.top + 16) }]}>
         <View style={styles.headerTextContainer}>
           <Text style={styles.headerTitle}>Create your{"\n"}FinAI account</Text>
         </View>
@@ -128,7 +228,7 @@ export default function SignupScreen() {
 
       {/* 👈 [NEW] keyboardShouldPersistTaps="handled" */}
       <ScrollView 
-        contentContainerStyle={styles.formContainer} 
+        contentContainerStyle={[styles.formContainer, { paddingBottom: insets.bottom + 30 }]} 
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
       >
@@ -231,7 +331,9 @@ export default function SignupScreen() {
         <View style={styles.privacySummaryCard}>
           <Ionicons name="shield-checkmark-outline" size={19} color={TEAL} />
           <Text style={styles.privacySummaryText}>
-            Receipt images are sent to Google Gemini for scanning and may be sent to Groq if Gemini is unavailable. The AI Budget Advisor may send an aggregated summary of your financial activity to Google Gemini or Groq to prepare recommendations.
+            {isExpoGo
+              ? 'Receipt images are sent to Google Cloud Vision and Google Gemini for scanning; Groq may also receive them if Gemini is unavailable. The AI Budget Advisor may send an aggregated summary of your financial activity to Google Gemini or Groq to prepare recommendations.'
+              : 'If you continue with Google, FinAI uses your verified name and email to create or link your account; it does not access Google Drive. Receipt images are sent to Google Cloud Vision and Google Gemini for scanning; Groq may also receive them if Gemini is unavailable. The AI Budget Advisor may send an aggregated summary of your financial activity to Google Gemini or Groq to prepare recommendations.'}
           </Text>
         </View>
 
@@ -255,6 +357,11 @@ export default function SignupScreen() {
         <TouchableOpacity style={styles.signupButton} onPress={handleSignup} disabled={loading} activeOpacity={0.85}>
           {loading ? <ActivityIndicator color="white" /> : <Text style={styles.buttonText}>Sign Up</Text>}
         </TouchableOpacity>
+        {!isExpoGo && <>
+          <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
+          <GoogleSignInButton disabled={loading || !isAgree} onIdToken={handleGoogleSignUp} />
+          {!isAgree && <Text style={styles.googleTermsHint}>Accept the Terms & Privacy statement above to continue with Google.</Text>}
+        </>}
 
         {/* Footer Link */}
         <TouchableOpacity onPress={() => router.replace('/login')} disabled={loading}>
@@ -280,11 +387,11 @@ export default function SignupScreen() {
                 <>
                   <Text style={styles.documentIntro}>This notice summarizes how the current FinAI capstone app handles information you provide.</Text>
                   <Text style={styles.documentSectionTitle}>Information used</Text>
-                  <Text style={styles.documentBody}>FinAI uses your name and email to create and verify your account. Your password and app PIN are stored by the backend as one-way hashes. If you use the app, it also processes financial information you enter, such as income baseline, transactions, budgets, and savings goals. Receipt images you submit are sent for scanning.</Text>
+                  <Text style={styles.documentBody}>FinAI uses your name and email to create and verify your account. If you choose Google sign-in, FinAI verifies a Google sign-in token and uses your verified name and email to create or link your account; it does not access Google Drive or other Google services. Your password and app PIN are stored by the backend as one-way hashes. If you use the app, it also processes financial information you enter, such as income baseline, transactions, budgets, and savings goals. Receipt images you submit are sent for scanning.</Text>
                   <Text style={styles.documentSectionTitle}>Why it is used</Text>
                   <Text style={styles.documentBody}>Your information is used to operate your account, record and display your finances, calculate budgets and insights, scan receipts, and prepare advisor recommendations.</Text>
                   <Text style={styles.documentSectionTitle}>AI services</Text>
-                  <Text style={styles.documentBody}>Receipt images are sent to Google Gemini to extract visible receipt details and may be sent to Groq if Gemini is unavailable. For AI Budget Advisor recommendations, an aggregated summary of active transactions, budgets, and goals may be sent to Google Gemini or Groq. The advisor summary excludes transaction notes and descriptions. AI results can be incomplete or incorrect, so review receipt details and recommendations.</Text>
+                  <Text style={styles.documentBody}>Receipt images are sent to Google Cloud Vision and Google Gemini to extract visible receipt details; Groq may also receive them if Gemini is unavailable. For AI Budget Advisor recommendations, an aggregated summary of active transactions, budgets, and goals may be sent to Google Gemini or Groq. The advisor summary excludes transaction notes and descriptions. AI results can be incomplete or incorrect, so review receipt details and recommendations.</Text>
                   <Text style={styles.documentSectionTitle}>Storage and choices</Text>
                   <Text style={styles.documentBody}>FinAI stores account and financial records in its backend database. You can review or edit information through available app features. This signup screen does not specify a data-retention period or provide a self-service account-deletion process. For questions or requests about your information, contact the FinAI project team through the contact channel provided with the study.</Text>
                   <Text style={styles.documentFootnote}>This notice describes the current capstone build. The project team should confirm its retention period, privacy contact, and study data-handling process before distributing the app to survey participants.</Text>
@@ -293,7 +400,7 @@ export default function SignupScreen() {
                 <>
                   <Text style={styles.documentIntro}>By creating a FinAI account, you agree to use the app responsibly under these prototype terms.</Text>
                   <Text style={styles.documentSectionTitle}>Your account</Text>
-                  <Text style={styles.documentBody}>Provide an email address you can access, complete email verification, and keep your password and app PIN private. You are responsible for checking that information you enter is accurate.</Text>
+                  <Text style={styles.documentBody}>Use an email address you can access and verify it through FinAI or a verified Google sign-in. Keep your password and app PIN private. You are responsible for checking that information you enter is accurate.</Text>
                   <Text style={styles.documentSectionTitle}>Financial information and AI results</Text>
                   <Text style={styles.documentBody}>FinAI provides tools for recording and understanding personal finances. Forecasts, receipt extraction, and AI recommendations are estimates or suggestions based on available records. Check the figures before saving them and consider your circumstances before acting on a recommendation.</Text>
                   <Text style={styles.documentSectionTitle}>Service limits</Text>
@@ -362,6 +469,10 @@ const styles = StyleSheet.create({
   policyLink: { fontWeight: '800', color: TEAL, textDecorationLine: 'underline' },
   signupButton: { backgroundColor: DEEP_GREEN, height: 55, borderRadius: 30, justifyContent: 'center', alignItems: 'center', marginTop: 10, shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
   buttonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  orRow: { flexDirection: 'row', alignItems: 'center', gap: 12, marginTop: 15, marginBottom: 15 },
+  orLine: { flex: 1, height: 1, backgroundColor: '#DCE5E0' },
+  orText: { color: SAGE, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
+  googleTermsHint: { color: SAGE, fontSize: 11, textAlign: 'center', marginTop: 8 },
   footerText: { textAlign: 'center', marginTop: 25, color: SAGE },
   boldLink: { fontWeight: 'bold', color: DEEP_GREEN },
   documentBackdrop: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(14,32,29,0.55)' },

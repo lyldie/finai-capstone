@@ -1,0 +1,16 @@
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.git/
+.vscode/
+tests/
+test_mail.py
+seed.py
+seed_budgets.py
+reset.py

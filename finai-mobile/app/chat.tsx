@@ -10,16 +10,22 @@ import {
   KeyboardAvoidingView,
   Platform,
   ActivityIndicator,
+  Animated,
   StatusBar,
   Alert,
   ScrollView,
+  Keyboard,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useAuth } from "../context/AuthContext";
+import { useNetworkStatus } from "../context/NetworkStatusContext";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_URL } from "../config";
 import FinnPortrait from "../components/FinnPortrait";
+import { isExpectedNetworkError } from "../utils/userFacingError";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ---- FINAI BRAND TOKENS (shared with transactions.tsx / index.tsx / two.tsx / insights.tsx) ----
 const DEEP_GREEN = "#1c3c36";
@@ -34,7 +40,7 @@ interface ChatMessage {
   id: string;
   text: string;
   sender: "user" | "ai";
-  source?: "gemini" | "groq" | "rule_based" | "user";
+  source?: "gemini" | "groq" | "vertex" | "rule_based" | "user";
   message_type?: "planning_insight";
 }
 
@@ -44,14 +50,62 @@ const formatFinnMessage = (text: string) => text
   .replace(/^\s*[-*]\s+/gm, '• ')
   .trim();
 
+function FinnTypingIndicator() {
+  const first = useRef(new Animated.Value(0)).current;
+  const second = useRef(new Animated.Value(0)).current;
+  const third = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const makePulse = (value: Animated.Value, delay: number) => Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(value, { toValue: 1, duration: 280, useNativeDriver: true }),
+        Animated.timing(value, { toValue: 0, duration: 280, useNativeDriver: true }),
+        Animated.delay(300),
+      ]),
+    );
+    const animations = Animated.parallel([
+      makePulse(first, 0), makePulse(second, 150), makePulse(third, 300),
+    ]);
+    animations.start();
+    return () => animations.stop();
+  }, [first, second, third]);
+
+  const renderDot = (value: Animated.Value) => (
+    <Animated.View
+      style={[
+        styles.typingDot,
+        {
+          opacity: value.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1] }),
+          transform: [{ translateY: value.interpolate({ inputRange: [0, 1], outputRange: [0, -3] }) }],
+        },
+      ]}
+    />
+  );
+
+  return (
+    <View style={[styles.messageBubbleWrapper, styles.messageBubbleAI]} accessibilityRole="text" accessibilityLabel="Finn is typing">
+      <View style={styles.aiAvatarSmall}><FinnPortrait size={32} /></View>
+      <View style={[styles.messageBubble, styles.bubbleAI, styles.typingBubble]}>
+        <Text style={styles.typingLabel}>Finn is typing</Text>
+        <View style={styles.typingDots}>{renderDot(first)}{renderDot(second)}{renderDot(third)}</View>
+      </View>
+    </View>
+  );
+}
+
 export default function ChatScreen() {
+  const insets = useSafeAreaInsets();
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
   const { user } = useAuth();
+  const { isOnline } = useNetworkStatus();
   const router = useRouter();
-  const params = useLocalSearchParams<{ conversation_id?: string; prefill?: string }>();
+  const params = useLocalSearchParams<{ conversation_id?: string; prefill?: string; topic?: string }>();
   const routeConversationId = typeof params.conversation_id === "string" ? params.conversation_id : undefined;
   const routePrefill = typeof params.prefill === "string" ? params.prefill : undefined;
+  const routeTopic = params.topic === 'budget' || params.topic === 'goals' ? params.topic : 'general';
   const flatListRef = useRef<FlatList>(null);
-  const prefillApplied = useRef(false);
+  const inputRef = useRef<TextInput>(null);
 
   const [inputText, setInputText] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -59,6 +113,17 @@ export default function ChatScreen() {
   const [isReady, setIsReady] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(routeConversationId || null);
   const [conversationTitle, setConversationTitle] = useState("FinAI Advisor");
+
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => setKeyboardVisible(true));
+    const hideSubscription = Keyboard.addListener(hideEvent, () => setKeyboardVisible(false));
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, []);
 
   // A direct Chat open is a draft. Persist it only after the user sends a message.
   useEffect(() => {
@@ -70,6 +135,7 @@ export default function ChatScreen() {
     setConversationId(null);
     setMessages([]);
     setConversationTitle("New chat");
+    setInputText("");
     setIsReady(true);
   }, [user?.token, routeConversationId]);
 
@@ -77,6 +143,15 @@ export default function ChatScreen() {
     if (!conversationId || !user?.token) return;
     let active = true;
     setIsReady(false);
+    const cacheKey = `@offline_${user.id}_advisor_messages_${conversationId}`;
+    if (isOnline === false) {
+      AsyncStorage.getItem(cacheKey).then((cached) => {
+        if (!active) return;
+        try { setMessages(cached ? JSON.parse(cached) : []); } catch { setMessages([]); }
+        setIsReady(true);
+      });
+      return () => { active = false; };
+    }
     fetch(`${API_URL}/advisor/conversations/${conversationId}/messages`, {
       headers: { Authorization: `Bearer ${user.token}` },
     })
@@ -87,6 +162,7 @@ export default function ChatScreen() {
           const loadedMsgs = Array.isArray(payload.messages) ? payload.messages : [];
           setMessages(loadedMsgs);
           setConversationTitle(payload.conversation?.title || "FinAI Advisor");
+          void AsyncStorage.setItem(cacheKey, JSON.stringify(loadedMsgs));
 
           // Proactive check-in: if thread has no check-in yet or is opened fresh, query check-in
           fetch(`${API_URL}/advisor/conversations/${conversationId}/check-in`, {
@@ -106,21 +182,22 @@ export default function ChatScreen() {
         }
       })
       .catch((error) => {
-        console.error("Failed to load advisor messages", error);
-        if (active) Alert.alert("Couldn’t load messages", "Check your connection and reopen this conversation.");
+        if (!isExpectedNetworkError(error)) console.error("Failed to load advisor messages; showing saved copy.", error);
+        if (active) void AsyncStorage.getItem(cacheKey).then((cached) => {
+          try { setMessages(cached ? JSON.parse(cached) : []); } catch { setMessages([]); }
+        });
       })
       .finally(() => { if (active) setIsReady(true); });
     return () => { active = false; };
-  }, [conversationId, user?.token]);
+  }, [conversationId, user?.id, user?.token, isOnline]);
 
   useEffect(() => {
-    if (!isReady || !routePrefill || prefillApplied.current) return;
+    if (!isReady || !routePrefill) return;
     setInputText(routePrefill);
-    prefillApplied.current = true;
   }, [isReady, routePrefill]);
 
   const sendChatMessage = async (question = inputText) => {
-    if (!question.trim() || !user?.token || isChatLoading || !isReady) return;
+    if (!question.trim() || !user?.token || isChatLoading || !isReady || isOnline === false) return;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -140,7 +217,7 @@ export default function ChatScreen() {
         const createResponse = await fetch(`${API_URL}/advisor/conversations`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${user.token}` },
-          body: JSON.stringify({ topic: "general" }),
+          body: JSON.stringify({ topic: routeTopic }),
         });
         const created = await createResponse.json();
         if (!createResponse.ok) throw new Error(created.detail || "Could not start your conversation.");
@@ -186,6 +263,12 @@ export default function ChatScreen() {
     } finally {
       setIsChatLoading(false);
     }
+  };
+
+  const draftSuggestedQuestion = (question: string) => {
+    if (isOnline === false || isChatLoading || !isReady) return;
+    setInputText(question);
+    inputRef.current?.focus();
   };
 
   const clearChat = () => {
@@ -255,9 +338,8 @@ export default function ChatScreen() {
             {(item.message_type === "planning_insight" || item.source === "rule_based") && (
               <Text style={styles.sourceLabel}>
                 {item.message_type === "planning_insight"
-                  ? item.source === "gemini" ? "PROACTIVE INSIGHT · GEMINI ANALYSIS"
-                    : item.source === "groq" ? "PROACTIVE INSIGHT · GROQ AI ANALYSIS"
-                    : "PROACTIVE INSIGHT · RECORDED DATA"
+                  ? item.source === "gemini" || item.source === "groq" || item.source === "vertex" ? "AI INSIGHT"
+                    : "BASED ON YOUR RECORDED DATA"
                   : "BASED ON YOUR RECORDED DATA"}
               </Text>
             )}
@@ -285,11 +367,13 @@ export default function ChatScreen() {
         <Text style={styles.heroDesc}>
           Ask me about your spending trends, budget limits, or savings targets anytime.
         </Text>
+        <Text style={{ color: SAGE, fontSize: 11, lineHeight: 16, marginTop: 8 }}>Tap a suggestion to ask Finn right away, or type your own question below.</Text>
 
         <View style={styles.actionGrid}>
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => sendChatMessage("How much have I spent so far this month, and is it within my usual pace?")}
+            onPress={() => { void sendChatMessage("How much have I spent so far this month, and is it within my usual pace?"); }}
+            disabled={isOnline === false || isChatLoading || !isReady}
           >
             <View
               style={[
@@ -305,7 +389,8 @@ export default function ChatScreen() {
 
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => sendChatMessage("Are any of my active budgets close to exceeding their limits?")}
+            onPress={() => { void sendChatMessage("Are any of my active budgets close to exceeding their limits?"); }}
+            disabled={isOnline === false || isChatLoading || !isReady}
           >
             <View
               style={[
@@ -321,7 +406,8 @@ export default function ChatScreen() {
 
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => sendChatMessage("Based on my income and targets, how much should I set aside for my savings goals?")}
+            onPress={() => { void sendChatMessage("Based on my income and targets, how much should I set aside for my savings goals?"); }}
+            disabled={isOnline === false || isChatLoading || !isReady}
           >
             <View
               style={[
@@ -337,7 +423,8 @@ export default function ChatScreen() {
 
           <TouchableOpacity
             style={styles.actionCard}
-            onPress={() => sendChatMessage("Give me 2 practical tips to improve my cash flow based on my recent transactions.")}
+            onPress={() => { void sendChatMessage("Give me 2 practical tips to improve my cash flow based on my recent transactions."); }}
+            disabled={isOnline === false || isChatLoading || !isReady}
           >
             <View
               style={[
@@ -388,9 +475,6 @@ export default function ChatScreen() {
             <Ionicons name="analytics-outline" size={17} color={TEAL} />
             <Text style={styles.planButtonText}>Plan</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconButton} onPress={() => router.push('/messages' as never)} accessibilityLabel="Open messages inbox">
-            <Ionicons name="mail-unread-outline" size={18} color={DEEP_GREEN} />
-          </TouchableOpacity>
           {conversationId && (
             <TouchableOpacity style={styles.iconButton} onPress={clearChat} accessibilityLabel="Delete conversation">
               <Ionicons name="trash-outline" size={18} color={EXPENSE} />
@@ -401,13 +485,14 @@ export default function ChatScreen() {
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
       >
         <FlatList
           ref={flatListRef}
           data={messages}
           keyExtractor={(item) => item.id}
           renderItem={renderMessage}
+          ListFooterComponent={isChatLoading ? <FinnTypingIndicator /> : null}
           ListHeaderComponent={isReady ? renderHeader : <ActivityIndicator style={{ marginTop: 32 }} size="large" color={TEAL} />}
           contentContainerStyle={styles.chatContentContainer}
           onContentSizeChange={() => {
@@ -415,10 +500,11 @@ export default function ChatScreen() {
               flatListRef.current?.scrollToEnd({ animated: true });
           }}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         />
 
         {/* Bottom Input Area */}
-        <View style={styles.inputArea}>
+        <View style={[styles.inputArea, { paddingBottom: keyboardVisible ? 8 : Math.max(insets.bottom, 12) }]}>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
             {[
               ['Today', 'How much have I spent today?'],
@@ -429,8 +515,8 @@ export default function ChatScreen() {
               <TouchableOpacity
                 key={label}
                 style={{ borderRadius: 16, borderWidth: 1, borderColor: '#D7E2DE', backgroundColor: '#F7F9F8', paddingHorizontal: 12, paddingVertical: 7 }}
-                onPress={() => sendChatMessage(prompt)}
-                disabled={isChatLoading || !isReady}
+                onPress={() => draftSuggestedQuestion(prompt)}
+                disabled={isOnline === false || isChatLoading || !isReady}
               >
                 <Text style={{ color: DEEP_GREEN, fontSize: 12, fontWeight: '700' }}>{label}</Text>
               </TouchableOpacity>
@@ -442,17 +528,19 @@ export default function ChatScreen() {
             </TouchableOpacity>
 
             <TextInput
+              ref={inputRef}
               style={styles.textInput}
-              placeholder="Message FinAi..."
+              placeholder={isOnline === false ? 'Chat is available when online' : 'Message FinAi...'}
               placeholderTextColor="#A2B5B0"
               value={inputText}
               onChangeText={setInputText}
               multiline
+              editable={isOnline !== false}
             />
 
             <TouchableOpacity
               onPress={() => sendChatMessage()}
-              disabled={!inputText.trim() || isChatLoading || !isReady}
+              disabled={isOnline === false || !inputText.trim() || isChatLoading || !isReady}
               activeOpacity={0.85}
             >
               {!inputText.trim() || isChatLoading ? (
@@ -616,6 +704,10 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   messageBubble: { maxWidth: "78%", padding: 14, borderRadius: 20 },
+  typingBubble: { flexDirection: "row", alignItems: "center", gap: 9, paddingVertical: 11, paddingHorizontal: 14 },
+  typingLabel: { color: SAGE, fontSize: 11, fontWeight: "600" },
+  typingDots: { flexDirection: "row", alignItems: "center", gap: 4 },
+  typingDot: { width: 5, height: 5, borderRadius: 3, backgroundColor: TEAL },
   bubbleUser: {
     borderBottomRightRadius: 4,
     shadowColor: DEEP_GREEN,
@@ -682,7 +774,9 @@ const styles = StyleSheet.create({
     color: DEEP_GREEN,
     fontSize: 14,
     paddingHorizontal: 10,
+    minHeight: 40,
     maxHeight: 100,
+    textAlignVertical: "center",
   },
   sendButton: {
     width: 38,

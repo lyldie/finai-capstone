@@ -5,10 +5,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTransactions, Transaction } from '../../context/TransactionContext';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
-import Swipeable from 'react-native-gesture-handler/Swipeable';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
+import TransactionDetailModal from '../../components/TransactionDetailModal';
+import EditContributionModal from '../../components/EditContributionModal';
+import { userFacingError } from '../../utils/userFacingError';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -50,12 +52,21 @@ export default function TransactionsScreen() {
   const {
     transactions,
     archiveTransaction,
+    updateTransaction,
+    showTransactionToast,
     fetchTransactions,
     isLoading,
     isRefreshing,
     categories,
     accounts,
-    notifications
+    notifications,
+    goals = [],
+    pendingTransactionCount,
+    pendingChanges,
+    failedPendingChangeCount,
+    syncPendingTransactions,
+    retryPendingChange,
+    discardFailedPendingChange,
   } = useTransactions();
 
   const insets = useSafeAreaInsets();
@@ -71,6 +82,25 @@ export default function TransactionsScreen() {
   const [isFilterModalVisible, setIsFilterModalVisible] = useState(false);
   const [datePickerTarget, setDatePickerTarget] = useState<'start' | 'end' | null>(null);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
+  const [activeTransaction, setActiveTransaction] = useState<Transaction | null>(null);
+  const [editingContribution, setEditingContribution] = useState<Transaction | null>(null);
+  const [isSyncingPending, setIsSyncingPending] = useState(false);
+  const [isPendingReviewVisible, setIsPendingReviewVisible] = useState(false);
+
+  const handleSyncPending = async () => {
+    if (isSyncingPending || pendingTransactionCount === 0) return;
+    setIsSyncingPending(true);
+    try {
+      const synced = await syncPendingTransactions();
+      const remaining = Math.max(pendingTransactionCount - synced, 0);
+      if (remaining > 0) setIsPendingReviewVisible(true);
+      else Alert.alert('Sync complete', `${synced} pending change${synced === 1 ? '' : 's'} synced to your account.`);
+    } catch (error) {
+      Alert.alert('Sync paused', userFacingError(error, 'Check your connection and try again. Your pending transactions remain on this device.'));
+    } finally {
+      setIsSyncingPending(false);
+    }
+  };
 
   const phTodayParts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -144,85 +174,78 @@ export default function TransactionsScreen() {
     setSelectedCalendarDate(today.getDate());
   };
 
-  const confirmArchive = useCallback((id: string, swipeableInstance: Swipeable | null) => {
+  const confirmArchive = useCallback((id: string) => {
     Alert.alert('Archive record', 'Move this record to the archive?', [
-      { text: "Cancel", style: "cancel", onPress: () => swipeableInstance?.close() },
+      { text: "Cancel", style: "cancel" },
       {
         text: "Archive",
         style: "default",
         onPress: async () => {
           try {
             await archiveTransaction(id);
-            swipeableInstance?.close();
+            setActiveTransaction(null);
           } catch (error) {
-            Alert.alert("Couldn't archive transaction", error instanceof Error ? error.message : "Please try again.");
+            Alert.alert("Couldn't archive transaction", userFacingError(error, 'Check your connection and try again.'));
           }
         }
       }
     ]);
   }, [archiveTransaction]);
 
-  const handleEditPress = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => {
+  const handleEditPress = useCallback((item: Transaction) => {
     if (selectedTransactionIds.length > 0) {
       setSelectedTransactionIds((current) => current.includes(item.id) ? current.filter((id) => id !== item.id) : [...current, item.id]);
       return;
     }
-    if (item.goal_id) {
-      swipeableInstance?.close();
-      Alert.alert('Goal contribution', 'Edit or remove this contribution from its savings goal so the goal total stays accurate.');
+    if (item.type === 'Goal Withdrawal') {
+      Alert.alert('Withdrawal cannot be edited', 'Archive this withdrawal and create a new one from Goal savings if you need to correct it.');
       return;
     }
-    swipeableInstance?.close();
+    if (item.goal_id || item.type === 'Contribution') {
+      if (!item.goal_id || !goals.some((goal) => goal.id === item.goal_id)) {
+        Alert.alert('Goal unavailable', 'Restore this savings goal or refresh your saved data before editing its contribution.');
+        return;
+      }
+      setActiveTransaction(null);
+      setEditingContribution(item);
+      return;
+    }
+    setActiveTransaction(null);
     router.push({
       pathname: '/(tabs)/two',
       params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date }
     });
-  }, [router, selectedTransactionIds.length]);
-
-  const renderRightActions = useCallback((item: Transaction, swipeableInstance: Swipeable | null) => (
-    <View style={styles.actionsContainer}>
-      {!item.goal_id && (
-        <TouchableOpacity style={[styles.actionButton, styles.editActionButton]} onPress={() => handleEditPress(item, swipeableInstance)}>
-          <Ionicons name="pencil-sharp" size={16} color={DEEP_GREEN} />
-          <Text style={[styles.actionButtonText, { color: DEEP_GREEN }]}>Edit</Text>
-        </TouchableOpacity>
-      )}
-      <TouchableOpacity style={[styles.actionButton, styles.archiveActionButton]} onPress={() => confirmArchive(item.id, swipeableInstance)}>
-        <Ionicons name="archive-outline" size={16} color="#FFFFFF" />
-        <Text style={styles.actionButtonText}>Archive</Text>
-      </TouchableOpacity>
-    </View>
-  ), [handleEditPress, confirmArchive]);
+  }, [router, selectedTransactionIds.length, goals]);
 
   const renderTransactionItem = useCallback(({ item }: { item: Transaction }) => {
-    let swipeableRef: Swipeable | null = null;
     let amountColor = DEEP_GREEN, prefix = '-', bgColor = 'rgba(255, 98, 89, 0.12)';
 
     if (item.type === 'Income') {
       amountColor = INCOME; prefix = '+'; bgColor = 'rgba(16, 185, 129, 0.12)';
+    } else if (item.type === 'Goal Withdrawal') {
+      amountColor = TEAL; prefix = '+'; bgColor = 'rgba(61, 125, 108, 0.12)';
     } else if (item.type === 'Transfer') {
       amountColor = DEEP_GREEN; prefix = ''; bgColor = 'rgba(61, 125, 108, 0.12)';
-    } else if (item.type === 'Contribution' || item.goal_id) {
+    } else if (item.type === 'Contribution' || (item.goal_id && item.type !== 'Goal Withdrawal')) {
       amountColor = TEAL; prefix = '-'; bgColor = 'rgba(61, 125, 108, 0.12)';
     }
     const categoryIcon = categories.find((category) => category.name === item.category && category.type === item.type.toLowerCase())?.icon;
     const transactionEmoji = item.type === 'Transfer'
       ? '🔄'
-      : item.type === 'Contribution' || item.goal_id
+      : item.type === 'Contribution' || (item.goal_id && item.type !== 'Goal Withdrawal')
         ? '🎯'
         : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
     return (
-      <Swipeable ref={(ref) => { swipeableRef = ref; }} renderRightActions={() => renderRightActions(item, swipeableRef)} enabled={!selectedTransactionIds.length}>
         <View style={styles.transactionCard}>
-          <TouchableOpacity style={[styles.cardMainRow, selectedTransactionIds.length > 0 && { paddingLeft: 26 }]} activeOpacity={0.82} onPress={() => handleEditPress(item, swipeableRef)} onLongPress={() => setSelectedTransactionIds((current) => current.includes(item.id) ? current : [...current, item.id])} accessibilityRole="button" accessibilityLabel={`Edit ${item.category} transaction`}>
+          <TouchableOpacity style={[styles.cardMainRow, selectedTransactionIds.length > 0 && { paddingLeft: 26 }]} activeOpacity={0.82} onPress={() => selectedTransactionIds.length > 0 ? handleEditPress(item) : setActiveTransaction(item)} onLongPress={() => setSelectedTransactionIds((current) => current.includes(item.id) ? current : [...current, item.id])} accessibilityRole="button" accessibilityLabel={`View ${item.type === 'Goal Withdrawal' ? 'goal withdrawal' : item.type === 'Contribution' || item.goal_id ? 'goal contribution' : item.category} details`}>
           <View style={styles.cardLeft}>
             <View style={[styles.cardIconBox, { backgroundColor: bgColor }]}>
               <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
             </View>
             <View style={styles.cardInfo}>
               <Text style={styles.cardCategory} numberOfLines={1}>
-                {item.type === 'Transfer' ? `${item.account} → ${item.to_account || 'Other'}` : item.type === 'Contribution' || item.goal_id ? 'Goal Contribution' : item.category}
+                {item.type === 'Transfer' ? `${item.account} → ${item.to_account || 'Other'}` : item.type === 'Goal Withdrawal' ? 'Goal Withdrawal' : item.type === 'Contribution' || item.goal_id ? 'Goal Contribution' : item.category}
               </Text>
               {item.note ? <Text style={styles.cardNote} numberOfLines={1}>{item.note}</Text> : null}
             </View>
@@ -238,13 +261,12 @@ export default function TransactionsScreen() {
           </TouchableOpacity>
           {selectedTransactionIds.length > 0 ? <View style={styles.selectionMark}><Ionicons name={selectedTransactionIds.includes(item.id) ? 'checkmark-circle' : 'ellipse-outline'} size={20} color={selectedTransactionIds.includes(item.id) ? DEEP_GREEN : SAGE} /></View> : null}
           {selectedTransactionIds.length === 0 ? <View style={styles.visibleActionsRow}>
-            {!item.goal_id && <TouchableOpacity style={styles.visibleActionButton} onPress={() => handleEditPress(item, swipeableRef)} accessibilityRole="button" accessibilityLabel="Edit transaction"><Ionicons name="pencil-outline" size={16} color={DEEP_GREEN} /><Text style={styles.visibleActionText}>Edit</Text></TouchableOpacity>}
-            <TouchableOpacity style={styles.visibleActionButton} onPress={() => confirmArchive(item.id, swipeableRef)} accessibilityRole="button" accessibilityLabel="Archive transaction"><Ionicons name="archive-outline" size={16} color="#A33B34" /><Text style={[styles.visibleActionText, { color: '#A33B34' }]}>Archive</Text></TouchableOpacity>
+            {item.type !== 'Goal Withdrawal' ? <TouchableOpacity style={styles.visibleActionButton} onPress={() => handleEditPress(item)} accessibilityRole="button" accessibilityLabel={item.type === 'Contribution' || item.goal_id ? 'Edit contribution' : 'Edit transaction'}><Ionicons name="pencil-outline" size={18} color={DEEP_GREEN} /></TouchableOpacity> : null}
+            <TouchableOpacity style={styles.visibleActionButton} onPress={() => confirmArchive(item.id)} accessibilityRole="button" accessibilityLabel={item.type === 'Contribution' || item.goal_id ? 'Archive savings movement' : 'Archive transaction'}><Ionicons name="archive-outline" size={18} color="#A33B34" /></TouchableOpacity>
           </View> : null}
         </View>
-      </Swipeable>
     );
-  }, [renderRightActions, categories, handleEditPress, confirmArchive, selectedTransactionIds]);
+  }, [categories, handleEditPress, confirmArchive, selectedTransactionIds]);
 
   const archiveSelectedTransactions = () => {
     const ids = [...selectedTransactionIds];
@@ -255,7 +277,7 @@ export default function TransactionsScreen() {
         let archived = 0;
         for (const id of ids) {
           try { await archiveTransaction(id); archived += 1; }
-          catch (error) { Alert.alert('Some records were not archived', `${archived} archived. ${error instanceof Error ? error.message : 'Try again.'}`); break; }
+          catch (error) { Alert.alert('Some records were not archived', `${archived} archived. ${userFacingError(error, 'Check your connection and try again.')}`); break; }
         }
         setSelectedTransactionIds([]);
       } },
@@ -273,12 +295,20 @@ export default function TransactionsScreen() {
       if (selectedFilter !== 'All' && !startDate && !endDate && (transDate.getMonth() !== selectedMonth || transDate.getFullYear() !== selectedYear)) return false;
       const matchesType = selectedFilter === 'All'
         || (selectedFilter === 'Expense' && t.type === 'Expense' && !t.goal_id)
-        || (selectedFilter === 'Contribution' && (t.type === 'Contribution' || Boolean(t.goal_id)))
+        || (selectedFilter === 'Contribution' && (t.type === 'Contribution' || (Boolean(t.goal_id) && t.type !== 'Goal Withdrawal')))
         || (selectedFilter !== 'All' && selectedFilter !== 'Expense' && selectedFilter !== 'Contribution' && t.type === selectedFilter);
       const matchesCategory = selectedCategory === 'All' || t.category === selectedCategory;
       const matchesAccount = selectedAccount === 'All' || t.account === selectedAccount || t.to_account === selectedAccount;
       const query = searchQuery.toLowerCase().trim();
-      const matchesSearch = query === '' || (t.category && t.category.toLowerCase().includes(query)) || (t.note && t.note.toLowerCase().includes(query));
+      const searchableText = [
+        t.category,
+        t.note,
+        (t as Transaction & { merchant?: string; merchant_name?: string }).merchant,
+        (t as Transaction & { merchant?: string; merchant_name?: string }).merchant_name,
+        t.account,
+        t.to_account,
+      ].filter(Boolean).join(' ').toLocaleLowerCase();
+      const matchesSearch = query === '' || searchableText.includes(query);
       return matchesType && matchesCategory && matchesAccount && matchesSearch;
     });
 
@@ -413,6 +443,9 @@ export default function TransactionsScreen() {
           <Text style={styles.headerTitle}>Transactions</Text>
 
           <View style={styles.headerRightActions}>
+            {pendingTransactionCount > 0 && <TouchableOpacity style={styles.syncPendingButton} onPress={() => { void handleSyncPending(); }} disabled={isSyncingPending} accessibilityRole="button" accessibilityLabel={`Sync ${pendingTransactionCount} pending changes`}>
+              {isSyncingPending ? <ActivityIndicator size="small" color="#FFFFFF" /> : <><Ionicons name="cloud-upload-outline" size={17} color="#FFFFFF" /><Text style={styles.syncPendingText}>Sync {pendingTransactionCount}</Text></>}
+            </TouchableOpacity>}
             <TouchableOpacity style={styles.iconHeaderButton} onPress={() => router.push('/(tabs)/two' as never)} accessibilityRole="button" accessibilityLabel="Add transaction">
               <Ionicons name="add" size={22} color="#FFFFFF" />
             </TouchableOpacity>
@@ -454,6 +487,14 @@ export default function TransactionsScreen() {
         </View>
       ) : null}
 
+      {failedPendingChangeCount > 0 && (
+        <TouchableOpacity style={styles.pendingReviewBanner} onPress={() => setIsPendingReviewVisible(true)} accessibilityRole="button">
+          <Ionicons name="alert-circle-outline" size={18} color="#7A3E00" />
+          <Text style={styles.pendingReviewBannerText}>{failedPendingChangeCount} saved change{failedPendingChangeCount === 1 ? '' : 's'} need review</Text>
+          <Text style={styles.pendingReviewLink}>Review</Text>
+        </TouchableOpacity>
+      )}
+
       {/* -------------------- DAILY TAB -------------------- */}
       {activeTab === 'Daily' && (
         <View style={{ flex: 1 }}>
@@ -461,7 +502,7 @@ export default function TransactionsScreen() {
             <View style={styles.searchRow}>
               <View style={styles.searchBar}>
                 <Ionicons name="search-outline" size={18} color={SAGE} style={styles.searchIcon} />
-                <TextInput placeholder="Search records..." placeholderTextColor={SAGE} style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} />
+                <TextInput placeholder="Search category, merchant, account..." placeholderTextColor={SAGE} style={styles.searchInput} value={searchQuery} onChangeText={setSearchQuery} />
                 {searchQuery.length > 0 && (
                   <TouchableOpacity onPress={() => setSearchQuery('')} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
                     <Ionicons name="close-circle" size={18} color={SAGE} />
@@ -477,7 +518,7 @@ export default function TransactionsScreen() {
             </View>
 
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-              {['All', 'Income', 'Expense', 'Transfer', 'Contribution'].map((filter) => (
+              {['All', 'Income', 'Expense', 'Transfer', 'Contribution', 'Goal Withdrawal'].map((filter) => (
                 <TouchableOpacity key={filter} onPress={() => setSelectedFilter(filter)} style={[styles.filterChip, selectedFilter === filter && styles.activeFilterChip]}>
                   <Text style={[styles.filterChipText, selectedFilter === filter && styles.activeFilterChipText]}>{filter}</Text>
                 </TouchableOpacity>
@@ -814,6 +855,80 @@ export default function TransactionsScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+      <Modal visible={isPendingReviewVisible} transparent animationType="slide" onRequestClose={() => setIsPendingReviewVisible(false)}>
+        <View style={styles.pendingReviewOverlay}>
+          <View style={[styles.pendingReviewContent, { paddingBottom: Math.max(insets.bottom, 18) }]}>
+            <View style={styles.pendingReviewHandle} />
+            <View style={styles.pendingReviewHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.pendingReviewTitle}>Saved changes</Text>
+                <Text style={styles.pendingReviewSubtitle}>Unrelated changes can sync while one needs attention.</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsPendingReviewVisible(false)} accessibilityRole="button" accessibilityLabel="Close saved changes">
+                <View style={styles.closeBtnCircle}><Ionicons name="close" size={20} color={DEEP_GREEN} /></View>
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.pendingReviewList} contentContainerStyle={{ paddingBottom: 8 }}>
+              {pendingChanges.length === 0 ? (
+                <Text style={styles.pendingReviewEmpty}>All saved changes have synced.</Text>
+              ) : pendingChanges.map((item) => (
+                <View key={item.id} style={styles.pendingReviewItem}>
+                  <View style={styles.pendingReviewItemHeading}>
+                    <Ionicons name={item.sync_error ? 'alert-circle' : 'cloud-upload-outline'} size={18} color={item.sync_error ? '#A84C24' : TEAL} />
+                    <Text style={styles.pendingReviewItemTitle}>{item.title}</Text>
+                    <Text style={[styles.pendingReviewStatus, item.sync_error ? styles.pendingReviewStatusFailed : null]}>{item.sync_error ? 'Needs review' : 'Waiting'}</Text>
+                  </View>
+                  <Text style={styles.pendingReviewDetail} numberOfLines={2}>{item.detail}</Text>
+                  {item.sync_error ? <Text style={styles.pendingReviewError}>{item.sync_error}</Text> : null}
+                  {item.sync_error ? (
+                    <View style={styles.pendingReviewActions}>
+                      <TouchableOpacity
+                        style={styles.pendingRetryButton}
+                        onPress={() => { void retryPendingChange(item.id).catch((error) => Alert.alert('Sync paused', userFacingError(error, 'Your saved change remains on this device. Try again when the connection is stable.'))); }}
+                        accessibilityRole="button"
+                      >
+                        <Ionicons name="refresh" size={15} color="#FFFFFF" /><Text style={styles.pendingRetryText}>Retry</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.pendingDiscardButton}
+                        onPress={() => Alert.alert(
+                          'Remove this saved change?',
+                          'It will be removed from this device and will not be added to your FinAI account. Related unsaved changes may be removed with it.',
+                          [
+                            { text: 'Keep it', style: 'cancel' },
+                            { text: 'Remove', style: 'destructive', onPress: () => { void discardFailedPendingChange(item.id).catch((error) => Alert.alert('Could not remove change', userFacingError(error, 'Connect to FinAI and refresh your saved data first.'))); } },
+                          ],
+                        )}
+                        accessibilityRole="button"
+                      >
+                        <Text style={styles.pendingDiscardText}>Remove</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <TransactionDetailModal
+        transaction={activeTransaction}
+        goalName={activeTransaction?.goal_id ? goals.find((goal) => goal.id === activeTransaction.goal_id)?.target_name : undefined}
+        onClose={() => setActiveTransaction(null)}
+        onEdit={handleEditPress}
+        onViewGoals={() => { setActiveTransaction(null); router.push('/savings' as never); }}
+      />
+      <EditContributionModal
+        transaction={editingContribution}
+        goalName={editingContribution?.goal_id ? goals.find((goal) => goal.id === editingContribution.goal_id)?.target_name || 'Savings goal' : 'Savings goal'}
+        accounts={accounts}
+        onClose={() => setEditingContribution(null)}
+        onSave={async (transaction, amount, account, date) => {
+          if (!transaction.goal_id) throw new Error('This contribution is missing its savings goal link. Refresh and try again.');
+          await updateTransaction(transaction.id, amount, 'Goal Contribution', transaction.note, 'Contribution', account, undefined, date, transaction.goal_id);
+          showTransactionToast({ kind: 'success', title: 'Contribution updated', messages: [`${transaction.category} · ${peso(Number(amount), 'fixed')} · ${date}`] });
+        }}
+      />
       {datePickerTarget && Platform.OS === 'android' && (
         <DateTimePicker
           value={transactionDate(datePickerTarget === 'start' ? startDate || todayDateKey : endDate || todayDateKey)}
@@ -852,6 +967,31 @@ const styles = StyleSheet.create({
 
   headerRightActions: { flexDirection: 'row', gap: 8, alignItems: 'center' },
   iconHeaderButton: { width: 40, height: 40, alignItems: 'center', justifyContent: 'center', borderRadius: 20, backgroundColor: 'rgba(255,255,255,0.16)' },
+  syncPendingButton: { minHeight: 38, paddingHorizontal: 10, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, borderRadius: 19, backgroundColor: 'rgba(237,178,50,0.34)' },
+  syncPendingText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  pendingReviewBanner: { marginHorizontal: 16, marginTop: 10, paddingHorizontal: 12, paddingVertical: 10, borderRadius: 12, backgroundColor: '#FFF0D8', flexDirection: 'row', alignItems: 'center', gap: 8 },
+  pendingReviewBannerText: { flex: 1, color: '#6D4315', fontSize: 12, fontWeight: '700' },
+  pendingReviewLink: { color: '#6D4315', fontSize: 12, fontWeight: '900', textDecorationLine: 'underline' },
+  pendingReviewOverlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(28, 60, 54, 0.55)' },
+  pendingReviewContent: { maxHeight: '82%', backgroundColor: '#FFFFFF', borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 20, paddingTop: 12 },
+  pendingReviewHandle: { width: 42, height: 4, borderRadius: 2, backgroundColor: TRACK, alignSelf: 'center', marginBottom: 16 },
+  pendingReviewHeader: { flexDirection: 'row', alignItems: 'center', gap: 12, marginBottom: 14 },
+  pendingReviewTitle: { color: DEEP_GREEN, fontSize: 20, fontWeight: '900' },
+  pendingReviewSubtitle: { color: SAGE, fontSize: 12, lineHeight: 17, marginTop: 3 },
+  pendingReviewList: { flexGrow: 0 },
+  pendingReviewItem: { paddingVertical: 13, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: TRACK, gap: 6 },
+  pendingReviewItemHeading: { flexDirection: 'row', alignItems: 'center', gap: 7 },
+  pendingReviewItemTitle: { flex: 1, color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  pendingReviewStatus: { color: TEAL, fontSize: 10, fontWeight: '800' },
+  pendingReviewStatusFailed: { color: '#A84C24' },
+  pendingReviewDetail: { color: SAGE, fontSize: 11, lineHeight: 16 },
+  pendingReviewError: { color: '#8A3824', fontSize: 12, lineHeight: 17, backgroundColor: '#FFF2ED', padding: 9, borderRadius: 9 },
+  pendingReviewActions: { flexDirection: 'row', gap: 8, marginTop: 3 },
+  pendingRetryButton: { minHeight: 36, paddingHorizontal: 14, borderRadius: 18, backgroundColor: DEEP_GREEN, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5 },
+  pendingRetryText: { color: '#FFFFFF', fontSize: 11, fontWeight: '800' },
+  pendingDiscardButton: { minHeight: 36, paddingHorizontal: 14, borderRadius: 18, backgroundColor: '#FFF2ED', alignItems: 'center', justifyContent: 'center' },
+  pendingDiscardText: { color: '#8A3824', fontSize: 11, fontWeight: '800' },
+  pendingReviewEmpty: { color: SAGE, fontSize: 13, textAlign: 'center', paddingVertical: 28 },
   notificationBadge: { position: 'absolute', top: -2, right: -2, minWidth: 18, height: 18, borderRadius: 9, backgroundColor: GOLD, alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: DEEP_GREEN },
   notificationBadgeText: { color: DEEP_GREEN, fontSize: 9, fontWeight: '800' },
 

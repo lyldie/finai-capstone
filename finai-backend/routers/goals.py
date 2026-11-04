@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, status, Depends
 from bson import ObjectId
 from typing import Optional
 from database import db
-from schemas.goal import GoalCreate, GoalResponse, GoalDeposit
+from schemas.goal import GoalCreate, GoalResponse, GoalDeposit, GoalWithdrawal
 from datetime import datetime
 from datetime import date
 from auth import get_current_user
@@ -32,6 +32,7 @@ async def get_user_goals(user_id: str, archived: Optional[bool] = False, current
                 current_savings=float(g.get("current_savings", 0.0)),
                 target_date=g.get("target_date", ""),
                 is_archived=g.get("is_archived", False),
+                client_request_id=g.get("client_request_id"),
             )
         )
     return goals
@@ -53,6 +54,7 @@ async def get_archived_goals(user_id: str, current_user: dict = Depends(get_curr
                 current_savings=float(g.get("current_savings", 0.0)),
                 target_date=g.get("target_date", ""),
                 is_archived=g.get("is_archived", False),
+                client_request_id=g.get("client_request_id"),
             )
         )
     return goals
@@ -61,6 +63,20 @@ async def get_archived_goals(user_id: str, current_user: dict = Depends(get_curr
 # 3. CREATE NEW GOAL
 @router.post("/", response_model=GoalResponse, status_code=status.HTTP_201_CREATED)
 async def create_goal(goal: GoalCreate, current_user: dict = Depends(get_current_user)):
+    if goal.client_request_id:
+        existing = await db.goals.find_one({
+            "user_id": current_user["id"],
+            "client_request_id": goal.client_request_id,
+        })
+        if existing:
+            return GoalResponse(
+                id=str(existing["_id"]), user_id=existing.get("user_id", ""),
+                goal_type_id=existing.get("goal_type_id", ""), target_name=existing.get("target_name", ""),
+                target_amount=float(existing.get("target_amount", 0)),
+                current_savings=float(existing.get("current_savings", 0)),
+                target_date=existing.get("target_date", ""), is_archived=existing.get("is_archived", False),
+                client_request_id=existing.get("client_request_id"),
+            )
     try:
         goal_dict = goal.model_dump()
     except AttributeError:
@@ -100,6 +116,7 @@ async def create_goal(goal: GoalCreate, current_user: dict = Depends(get_current
         current_savings=float(created_goal.get("current_savings", 0)),
         target_date=created_goal.get("target_date", ""),
         is_archived=created_goal.get("is_archived", False),
+        client_request_id=created_goal.get("client_request_id"),
     )
 
 
@@ -140,6 +157,9 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
         return_document=True
     )
     if not updated:
+        already_archived = await db.goals.find_one({"_id": oid, "user_id": current_user["id"], "is_archived": True}, {"_id": 1})
+        if already_archived:
+            return {"status": "Success", "message": "Goal already archived"}
         raise HTTPException(status_code=404, detail="Goal not found")
 
     from . import advisor
@@ -157,6 +177,7 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
         current_savings=float(updated.get("current_savings", 0)),
         target_date=updated.get("target_date", ""),
         is_archived=updated.get("is_archived", False),
+        client_request_id=updated.get("client_request_id"),
     )
 
 
@@ -174,6 +195,12 @@ async def archive_goal(goal_id: str, current_user: dict = Depends(get_current_us
         return_document=True
     )
     if not updated:
+        already_archived = await db.goals.find_one(
+            {"_id": oid, "user_id": current_user["id"], "is_archived": True},
+            {"_id": 1},
+        )
+        if already_archived:
+            return {"status": "Success", "message": "Goal already archived"}
         raise HTTPException(status_code=404, detail="Goal not found")
 
     return {"status": "Success", "message": "Goal archived successfully"}
@@ -236,7 +263,7 @@ async def delete_goal(goal_id: str, current_user: dict = Depends(get_current_use
         raise HTTPException(status_code=409, detail="This goal has contribution history. Archive it to preserve its records.")
     result = await db.goals.delete_one({"_id": oid, "user_id": current_user["id"]})
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Goal not found")
+        return {"status": "Success", "message": "Goal already deleted"}
         
     return {"message": "Goal deleted successfully"}
 
@@ -244,6 +271,13 @@ async def delete_goal(goal_id: str, current_user: dict = Depends(get_current_use
 # 9. PATCH DEPOSIT TO GOAL
 @router.patch("/{goal_id}/deposit")
 async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict = Depends(get_current_user)):
+    if deposit.client_request_id:
+        existing = await db.expenses.find_one({
+            "user_id": current_user["id"],
+            "client_request_id": deposit.client_request_id,
+        })
+        if existing:
+            return {"status": "Success", "id": str(existing["_id"]), "duplicate": True}
     try:
         oid = ObjectId(goal_id)
     except Exception:
@@ -261,6 +295,13 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         account = await db.accounts.find_one({"name": account_name, "account_role": "admin", "is_archived": {"$ne": True}})
     if not account:
         raise HTTPException(status_code=400, detail="Choose an active account available to this user.")
+    contribution_date = deposit.date or ph_today().isoformat()
+    try:
+        parsed_contribution_date = date.fromisoformat(contribution_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Contribution date must be a valid calendar date.") from exc
+    if parsed_contribution_date > ph_today():
+        raise HTTPException(status_code=422, detail="Contribution date cannot be in the future.")
     expense_log = {
         "user_id": current_user["id"],
         "amount": deposit.amount,
@@ -271,8 +312,9 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         "type": "Contribution",
         "account": account.get("name", account_name),
         "account_id": str(account["_id"]), "to_account": None, "to_account_id": None, "category_id": None,
-        "date": ph_today().isoformat(),
-        "goal_id": str(goal_id)
+        "date": contribution_date,
+        "goal_id": str(goal_id),
+        "client_request_id": deposit.client_request_id,
     }
 
     lock_id = await ensure_account_balance_lock(current_user["id"], account["_id"])
@@ -294,7 +336,8 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         )
         if deposit.amount > available_balance:
             raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
-        await db.expenses.insert_one(expense_log, session=session)
+        inserted = await db.expenses.insert_one(expense_log, session=session)
+        expense_log["_id"] = inserted.inserted_id
         await db.goals.update_one(
             {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
             {"$inc": {"current_savings": deposit.amount}}, session=session,
@@ -313,4 +356,86 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
             current_user["id"], goal, float(goal.get("current_savings", 0) or 0),
             float(updated_goal.get("current_savings", 0) or 0),
         )
-    return {"status": "Success", "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}
+    return {"status": "Success", "id": str(expense_log["_id"]), "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}
+
+
+@router.patch("/{goal_id}/withdraw")
+async def withdraw_from_goal(goal_id: str, withdrawal: GoalWithdrawal, current_user: dict = Depends(get_current_user)):
+    if withdrawal.client_request_id:
+        existing = await db.expenses.find_one({
+            "user_id": current_user["id"],
+            "client_request_id": withdrawal.client_request_id,
+        })
+        if existing:
+            return {"status": "Success", "id": str(existing["_id"]), "duplicate": True}
+    try:
+        oid = ObjectId(goal_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid goal ID format") from exc
+
+    goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+
+    account_name = withdrawal.account.strip()
+    if not account_name:
+        raise HTTPException(status_code=422, detail="Choose an account to receive the withdrawal.")
+    account = await db.accounts.find_one({"name": account_name, "user_id": current_user["id"], "account_role": "user", "is_archived": {"$ne": True}})
+    if not account:
+        account = await db.accounts.find_one({"name": account_name, "account_role": "admin", "is_archived": {"$ne": True}})
+    if not account:
+        raise HTTPException(status_code=400, detail="Choose an active account available to this user.")
+
+    withdrawal_date = withdrawal.date or ph_today().isoformat()
+    try:
+        parsed_withdrawal_date = date.fromisoformat(withdrawal_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Withdrawal date must be a valid calendar date.") from exc
+    if parsed_withdrawal_date > ph_today():
+        raise HTTPException(status_code=422, detail="Withdrawal date cannot be in the future.")
+
+    movement = {
+        "user_id": current_user["id"],
+        "amount": withdrawal.amount,
+        "category": "Goal Withdrawal",
+        "title": f"Withdrawal from {goal.get('target_name')}",
+        "item_name": f"Withdrawal from {goal.get('target_name')}",
+        "note": f"Withdrawal from goal: {goal.get('target_name')}",
+        "type": "Goal Withdrawal",
+        "account": account.get("name", account_name),
+        "account_id": str(account["_id"]), "to_account": None, "to_account_id": None, "category_id": None,
+        "date": withdrawal_date,
+        "goal_id": str(goal_id),
+        "client_request_id": withdrawal.client_request_id,
+    }
+    lock_id = await ensure_account_balance_lock(current_user["id"], account["_id"])
+
+    async def commit_withdrawal(session):
+        await lock_account_balance(session, lock_id)
+        current_goal = await db.goals.find_one(
+            {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}}, session=session
+        )
+        if not current_goal:
+            raise HTTPException(status_code=404, detail="Goal not found")
+        if withdrawal.amount > float(current_goal.get("current_savings", 0) or 0):
+            raise HTTPException(status_code=409, detail="The goal does not have enough savings for this withdrawal.")
+        current_account = await db.accounts.find_one(
+            {"_id": account["_id"], "is_archived": {"$ne": True}}, session=session
+        )
+        if not current_account:
+            raise HTTPException(status_code=409, detail="The selected account was archived. Choose an active account and try again.")
+        inserted = await db.expenses.insert_one(movement, session=session)
+        movement["_id"] = inserted.inserted_id
+        await db.goals.update_one(
+            {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
+            {"$inc": {"current_savings": -withdrawal.amount}}, session=session,
+        )
+
+    try:
+        async with await db.client.start_session() as session:
+            await session.with_transaction(commit_withdrawal)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely complete the withdrawal. Verify MongoDB transaction support and try again.") from exc
+    return {"status": "Success", "id": str(movement["_id"]), "message": f"Successfully withdrew ₱{withdrawal.amount} from {goal.get('target_name')}"}

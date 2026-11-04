@@ -4,18 +4,23 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 import { View } from 'react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import 'react-native-reanimated';
 
 // Context Providers
 import { TransactionProvider } from '../context/TransactionContext';
 import { AuthProvider } from '../context/AuthContext';
 import TransactionToastHost from '../components/TransactionToastHost';
+import OfflineStatusBanner from '../components/OfflineStatusBanner';
+import { NetworkStatusProvider } from '../context/NetworkStatusContext';
+import { WalkthroughProvider } from '../context/WalkthroughContext';
 
 export { ErrorBoundary } from 'expo-router';
 
 function AppShell() {
   return (
     <View style={{ flex: 1 }}>
+      <OfflineStatusBanner />
       <Stack screenOptions={{ headerShown: false }} initialRouteName="getstarted">
         <Stack.Screen name="index" />
         <Stack.Screen name="getstarted" />
@@ -56,10 +61,16 @@ export default function RootLayout() {
   if (!loaded) return null;
 
   return (
-    <AuthProvider>
-      <TransactionProvider>
-        <AppShell />
-      </TransactionProvider>
-    </AuthProvider>
+    <SafeAreaProvider>
+      <AuthProvider>
+        <NetworkStatusProvider>
+          <WalkthroughProvider>
+            <TransactionProvider>
+              <AppShell />
+            </TransactionProvider>
+          </WalkthroughProvider>
+        </NetworkStatusProvider>
+      </AuthProvider>
+    </SafeAreaProvider>
   );
 }

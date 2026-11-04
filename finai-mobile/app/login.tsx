@@ -9,7 +9,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
+import { logUnexpectedError, userFacingError } from '../utils/userFacingError';
 import { useAuth } from '../context/AuthContext';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import GoogleSignInButton from '../components/GoogleSignInButton';
+import { isExpoGo } from '../utils/runtime';
 
 // ---- FINAI BRAND TOKENS (matches getstarted.tsx exactly) ----
 const DEEP_GREEN = '#1c3c36';
@@ -22,10 +26,55 @@ export default function LoginScreen() {
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
+  const insets = useSafeAreaInsets();
   const router = useRouter();
-  const { session } = useLocalSearchParams<{ session?: string }>();
+  const { session, email: initialEmail } = useLocalSearchParams<{ session?: string; email?: string }>();
   
   const { loginUser } = useAuth(); 
+
+  const handleGoogleSignIn = async (idToken: string) => {
+    setLoading(true);
+    try {
+      const response = await fetch(`${API_URL}/google-signin`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id_token: idToken, flow: 'login' }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 404) {
+        Alert.alert(
+          'No FinAI account found',
+          'This Google account is not registered with FinAI yet. Create an account to continue.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Sign Up', onPress: () => router.replace('/signup') },
+          ],
+        );
+        return;
+      }
+      if (!response.ok) throw new Error(userFacingError(data.detail, 'Could not sign in with Google. Please try again.'));
+      await loginUser({
+        id: String(data.user_id),
+        name: data.name,
+        email: data.email,
+        role: data.role,
+        token: data.token,
+      });
+      if (data.role === 'admin') {
+        router.replace('/(admin)/admin-dashboard');
+      } else if (!data.has_pin) {
+        router.replace('/setup-pin');
+      } else {
+        router.replace('/verify-pin');
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (typeof initialEmail === 'string') setEmail(initialEmail);
+  }, [initialEmail]);
 
   const handleLogin = async () => {
     const cleanedEmail = email.trim().toLowerCase();
@@ -77,14 +126,12 @@ export default function LoginScreen() {
         }
         
       } else {
-        const errorMessage = typeof data.detail === 'string'
-          ? data.detail
-          : 'The email or password is incorrect.';
+        const errorMessage = userFacingError(data.detail, 'The email or password is incorrect.');
         
         Alert.alert("Login Failed", errorMessage);
       }
     } catch (e) {
-      console.log("Network Error:", e);
+      logUnexpectedError('Login request failed unexpectedly:', e);
       Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
@@ -94,10 +141,10 @@ export default function LoginScreen() {
   return (
     <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.mainContainer}>
       <Stack.Screen options={{ headerShown: false }} />
-      <StatusBar barStyle="light-content" />
+      <StatusBar barStyle="light-content" translucent backgroundColor="transparent" />
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
-        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <ScrollView contentContainerStyle={[styles.scrollContent, { paddingTop: insets.top + 16, paddingBottom: insets.bottom + 24 }]} showsVerticalScrollIndicator={false}>
           
           <View style={styles.logoSection}>
             <View style={styles.logoCircle}>
@@ -144,9 +191,22 @@ export default function LoginScreen() {
               </View>
             </View>
 
+            <TouchableOpacity
+              style={styles.forgotLink}
+              onPress={() => router.push({ pathname: '/forgot-password', params: { email: email.trim().toLowerCase() } })}
+              disabled={loading}
+              accessibilityRole="button"
+            >
+              <Text style={styles.forgotText}>Forgot password?</Text>
+            </TouchableOpacity>
+
             <TouchableOpacity style={styles.loginButton} onPress={handleLogin} disabled={loading} activeOpacity={0.85}>
               {loading ? <ActivityIndicator color="white" /> : <Text style={styles.loginButtonText}>Log In</Text>}
             </TouchableOpacity>
+            {!isExpoGo && <>
+              <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
+              <GoogleSignInButton disabled={loading} onIdToken={handleGoogleSignIn} />
+            </>}
           </View>
 
           <TouchableOpacity onPress={() => router.replace('/signup')} style={styles.footer} disabled={loading}>
@@ -172,8 +232,13 @@ const styles = StyleSheet.create({
   inputWrapper: { flexDirection: 'row', alignItems: 'center', borderWidth: 2, borderColor: TEAL, borderRadius: 30, paddingHorizontal: 15, height: 60, marginBottom: 15 },
   inputIcon: { marginRight: 10 },
   input: { flex: 1, color: DEEP_GREEN, fontSize: 15 },
+  forgotLink: { alignSelf: 'flex-end', marginTop: -18, marginBottom: 22, paddingVertical: 5 },
+  forgotText: { color: TEAL, fontSize: 13, fontWeight: '700' },
   loginButton: { backgroundColor: DEEP_GREEN, width: '100%', height: 60, borderRadius: 30, justifyContent: 'center', alignItems: 'center', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.25, shadowRadius: 8, elevation: 4 },
   loginButtonText: { color: 'white', fontSize: 18, fontWeight: 'bold' },
+  orRow: { width: '100%', flexDirection: 'row', alignItems: 'center', gap: 12, marginVertical: 16 },
+  orLine: { flex: 1, height: 1, backgroundColor: '#DCE5E0' },
+  orText: { color: SAGE, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   footer: { marginTop: 25, alignItems: 'center' },
   footerText: { color: 'white', fontSize: 14 },
   boldLink: { fontWeight: 'bold', textDecorationLine: 'underline', color: GOLD }

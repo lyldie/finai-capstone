@@ -1,15 +1,19 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator, Image } from 'react-native';
+import { Alert, StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator, Image } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { useTransactions } from '../../context/TransactionContext';
+import { Transaction, useTransactions } from '../../context/TransactionContext';
 import { useAuth } from '../../context/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
+import { API_URL } from '../../config';
+import { getSecureItem } from '../../utils/secureStorage';
 
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
 import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
+import { getAccountCardColors } from '../../utils/accountCardColors';
+import TransactionDetailModal from '../../components/TransactionDetailModal';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -21,8 +25,20 @@ const RED = '#D94C43';
 const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
 
+type DueSoonBill = { id: string; name: string; category: string; amount: number; due_date: string; due_day: number; status: 'paid' | 'unpaid' };
+
+const localDateKey = (value: Date) => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(value);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+};
+
 export default function HomeDashboard() {
   const [aiTipCardHeight, setAiTipCardHeight] = useState(174);
+  const [activeTransaction, setActiveTransaction] = useState<Transaction | null>(null);
+  const [dueSoonBill, setDueSoonBill] = useState<DueSoonBill | null>(null);
   const { user } = useAuth();
   const {
     transactions,
@@ -32,6 +48,8 @@ export default function HomeDashboard() {
     totalSavings,
     goals = [],
     fetchTransactions,
+    archiveTransaction,
+    showTransactionToast,
     accounts,
     categories,
     budgets,
@@ -43,9 +61,9 @@ export default function HomeDashboard() {
 
   const router = useRouter();
 
-  const goalContributions = transactions
-    .filter((transaction) => transaction.type === 'Contribution' || Boolean(transaction.goal_id))
-    .reduce((sum, transaction) => sum + (Number(transaction.amount) || 0), 0);
+  // Wallet balances already exclude goal deposits. Add current goal savings back
+  // for the user's total tracked money; spendable funds remain the wallet balance.
+  const totalTrackedBalance = balance + totalSavings;
   const accountCardColors = useMemo(() => {
     const palette: [string, string][] = [
       ['#5B4A8A', '#806AB5'], ['#9A5938', '#C47B50'], ['#286A79', '#4195A4'],
@@ -56,7 +74,9 @@ export default function HomeDashboard() {
     accounts.forEach((account, index) => {
       const name = account.name.toLowerCase();
       let colors: [string, string];
-      if (name.includes('gcash')) colors = ['#2463C7', '#4C8DF2'];
+      const customColors = getAccountCardColors(account.card_color);
+      if (customColors) colors = customColors;
+      else if (name.includes('gcash')) colors = ['#2463C7', '#4C8DF2'];
       else if (name === 'cash' || name.includes('cash')) colors = ['#286650', '#4A9B7B'];
       else {
         const stableKey = account.id || account.name;
@@ -77,6 +97,47 @@ export default function HomeDashboard() {
     }, [fetchTransactions])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      let isActive = true;
+      const loadDueSoonBill = async () => {
+        if (isActive) setDueSoonBill(null);
+        try {
+          const token = await getSecureItem('user_token');
+          if (!token) return;
+          const response = await fetch(`${API_URL}/api/bills`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!response.ok) return;
+          const payload = await response.json();
+          const today = new Date(`${localDateKey(new Date())}T00:00:00Z`);
+          const soonThrough = new Date(today);
+          soonThrough.setUTCDate(soonThrough.getUTCDate() + 7);
+          const todayKey = today.toISOString().slice(0, 10);
+          const soonThroughKey = soonThrough.toISOString().slice(0, 10);
+          const nextMonth = new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth() + 1, 1));
+          const nextMonthLastDay = new Date(Date.UTC(nextMonth.getUTCFullYear(), nextMonth.getUTCMonth() + 1, 0)).getUTCDate();
+          const candidates: DueSoonBill[] = [];
+          for (const bill of (payload.bills || []) as DueSoonBill[]) {
+            if (bill.status === 'unpaid') {
+              if (bill.due_date <= soonThroughKey) candidates.push(bill);
+              continue;
+            }
+            const nextDueDay = Math.min(Number(bill.due_day) || 1, nextMonthLastDay);
+            const nextDueDate = `${nextMonth.getUTCFullYear()}-${String(nextMonth.getUTCMonth() + 1).padStart(2, '0')}-${String(nextDueDay).padStart(2, '0')}`;
+            if (nextDueDate >= todayKey && nextDueDate <= soonThroughKey) candidates.push({ ...bill, due_date: nextDueDate, status: 'unpaid' });
+          }
+          const nextBill = candidates.sort((left, right) => left.due_date.localeCompare(right.due_date))[0] || null;
+          if (isActive) setDueSoonBill(nextBill);
+        } catch {
+          // Keep the dashboard usable offline; the reminder appears again when bills can load.
+        }
+      };
+      void loadDueSoonBill();
+      return () => { isActive = false; };
+    }, [])
+  );
+
   const greetingMessage = useMemo(() => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good morning';
@@ -84,14 +145,18 @@ export default function HomeDashboard() {
     return 'Good evening';
   }, []);
 
-  const localDateKey = (value: Date) => {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit',
-    }).formatToParts(value);
-    const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
-    return `${part('year')}-${part('month')}-${part('day')}`;
-  };
   const todayKey = localDateKey(new Date());
+  const dueDateLabel = useMemo(() => {
+    if (!dueSoonBill?.due_date) return '';
+    const [year, month, day] = dueSoonBill.due_date.split('-').map(Number);
+    const due = new Date(Date.UTC(year, month - 1, day));
+    const today = new Date(`${todayKey}T00:00:00Z`);
+    const days = Math.round((due.getTime() - today.getTime()) / 86400000);
+    if (days < 0) return `Past due by ${Math.abs(days)} ${Math.abs(days) === 1 ? 'day' : 'days'}`;
+    if (days === 0) return 'Due today';
+    if (days === 1) return 'Due tomorrow';
+    return `Due in ${days} days`;
+  }, [dueSoonBill, todayKey]);
   const mostUsedBudget = useMemo(() => budgets
     .filter((budget) => budget.start_date && budget.end_date && budget.start_date <= todayKey && budget.end_date >= todayKey)
     .map((budget) => ({
@@ -203,9 +268,9 @@ export default function HomeDashboard() {
 
         {/* Hero balance card */}
         <LinearGradient colors={[DEEP_GREEN, TEAL]} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Total wallet balance</Text>
+          <Text style={styles.balanceLabel}>Total balance</Text>
           <Text style={styles.balanceValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
-            ₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+            ₱{totalTrackedBalance.toLocaleString(undefined, { minimumFractionDigits: 2 })}
           </Text>
 
           <View style={styles.statsRow}>
@@ -238,11 +303,15 @@ export default function HomeDashboard() {
 
           <View style={styles.contributionSummary}>
             <View style={styles.contributionSummaryCopy}>
-              <Text style={styles.statLabel}>Goal contributions</Text>
-              <Text style={styles.contributionSummaryValue}>-₱{goalContributions.toLocaleString(undefined, { maximumFractionDigits: 0 })}</Text>
+              <Text style={styles.statLabel}>Goal savings</Text>
+              <Text style={styles.contributionSummaryValue}>-₱{totalSavings.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
             </View>
-            <Text style={styles.balanceFootnote}>Set aside from wallets · still your money, reserved for goals.</Text>
+            <View style={styles.spendableSummary}>
+              <Text style={styles.statLabel}>Spendable balance</Text>
+              <Text style={styles.spendableValue} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>₱{balance.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+            </View>
           </View>
+          <Text style={styles.balanceFootnote}>Total balance includes goal savings. Spendable balance is what remains in your wallets.</Text>
         </LinearGradient>
 
         <View
@@ -265,9 +334,9 @@ export default function HomeDashboard() {
           </View>
           <View style={styles.savingsSummaryCopy}>
             <Text style={styles.savingsSummaryTitle}>GOAL SAVINGS</Text>
-            <Text style={styles.savingsSummaryCaption}>Set aside from wallets · not counted as spending</Text>
+            <Text style={styles.savingsSummaryCaption}>Reserved for goals · excluded from spendable balance</Text>
           </View>
-          <View style={styles.notInWalletPill}><Text style={styles.notInWalletText}>Not in wallet balance</Text></View>
+          <View style={styles.notInWalletPill}><Text style={styles.notInWalletText}>Included above</Text></View>
           </View>
           <Text style={styles.savingsSummaryAmount} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.7}>
             ₱{totalSavings.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -283,6 +352,27 @@ export default function HomeDashboard() {
           })}</View> : <Text style={styles.savingsSummaryCaption}>Create a goal to start setting money aside.</Text>}
           <View style={styles.savingsOpenRow}><Text style={styles.savingsOpenText}>View goals and contributions</Text><Ionicons name="chevron-forward" size={17} color={TEAL} /></View>
         </TouchableOpacity>
+
+        {dueSoonBill && (
+          <TouchableOpacity
+            style={styles.dueSoonCard}
+            onPress={() => router.push('/fixed-bills' as never)}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel={`${dueSoonBill.name}, ${dueDateLabel}. Open scheduled bills.`}
+          >
+            <View style={styles.dueSoonIcon}><Ionicons name="calendar-outline" size={19} color={DEEP_GREEN} /></View>
+            <View style={styles.dueSoonCopy}>
+              <View style={styles.dueSoonTitleRow}>
+                <Text style={styles.dueSoonTitle}>{dueDateLabel.startsWith('Past due') ? 'Bill needs attention' : 'Bill coming up'}</Text>
+                <Text style={styles.dueSoonDate}>{dueDateLabel}</Text>
+              </View>
+              <Text style={styles.dueSoonName} numberOfLines={1}>{dueSoonBill.name} · ₱{Number(dueSoonBill.amount || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</Text>
+              <Text style={styles.dueSoonAction}>View scheduled bills</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color={TEAL} />
+          </TouchableOpacity>
+        )}
 
         {/* Wallets */}
         <View style={styles.sectionHeaderRow}>
@@ -342,26 +432,27 @@ export default function HomeDashboard() {
             {recentTransactions.map((item, index) => {
               const isIncome = item.type === 'Income';
               const isTransfer = item.type === 'Transfer';
-              const isContribution = item.type === 'Contribution' || Boolean(item.goal_id);
-              const color = isTransfer || isContribution ? TEAL : isIncome ? INCOME : EXPENSE;
-              const bgColor = isTransfer || isContribution ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
-              const prefix = isTransfer ? '' : isIncome ? '+' : '-';
+              const isWithdrawal = item.type === 'Goal Withdrawal';
+              const isContribution = !isWithdrawal && (item.type === 'Contribution' || Boolean(item.goal_id));
+              const color = isTransfer || isContribution || isWithdrawal ? TEAL : isIncome ? INCOME : EXPENSE;
+              const bgColor = isTransfer || isContribution || isWithdrawal ? 'rgba(61, 125, 108, 0.12)' : isIncome ? 'rgba(16, 185, 129, 0.12)' : 'rgba(255, 98, 89, 0.12)';
+              const prefix = isTransfer ? '' : isIncome || isWithdrawal ? '+' : '-';
               
               const categoryIcon = categories.find((category) => category.name === item.category && category.type === item.type.toLowerCase())?.icon;
               // LILINISIN DIN YUNG MGA LUMANG TEXT ICONS DITO
-              const transactionEmoji = isContribution ? '🎯' : isTransfer
+              const transactionEmoji = isContribution || isWithdrawal ? '🎯' : isTransfer
                 ? '🔄' 
                 : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
               return (
-                <TouchableOpacity key={item.id || index} style={styles.recentFloatingCard} activeOpacity={0.82} accessibilityRole="button" accessibilityLabel={`Edit ${item.category} transaction`} onPress={() => router.push({ pathname: '/(tabs)/two', params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date } } as never)}>
+                <TouchableOpacity key={item.id || index} style={styles.recentFloatingCard} activeOpacity={0.82} accessibilityRole="button" accessibilityLabel={`View ${isWithdrawal ? 'goal withdrawal' : isContribution ? 'goal contribution' : item.category} details`} onPress={() => setActiveTransaction(item)}>
                   <View style={styles.recentLeft}>
                     <View style={[styles.recentIconBox, { backgroundColor: bgColor }]}>
                       <Text style={{ fontSize: 20 }}>{transactionEmoji}</Text>
                     </View>
                     <View style={styles.recentInfo}>
                       <Text style={styles.recentCategory} numberOfLines={1}>
-                        {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : isContribution ? 'Goal Contribution' : item.category}
+                {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : isWithdrawal ? 'Goal Withdrawal' : isContribution ? 'Goal Contribution' : item.category}
                       </Text>
                       <Text style={styles.recentNote} numberOfLines={1}>{item.note || 'No description'}</Text>
                     </View>
@@ -386,7 +477,34 @@ export default function HomeDashboard() {
           </View>
         )}
 
-      </ScrollView>
+        </ScrollView>
+
+      <TransactionDetailModal
+        transaction={activeTransaction}
+        goalName={activeTransaction?.goal_id ? goals.find((goal) => goal.id === activeTransaction.goal_id)?.target_name : undefined}
+        onClose={() => setActiveTransaction(null)}
+        onEdit={(item) => {
+          setActiveTransaction(null);
+          router.push({ pathname: '/(tabs)/two', params: { id: item.id, amount: item.amount, category: item.category, note: item.note, type: item.type, account: item.account, to_account: item.to_account || '', date: item.date } } as never);
+        }}
+        onArchive={(item) => Alert.alert(
+          'Archive transaction?',
+          'It will be removed from active totals and moved to your archive, where you can restore it later.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Archive', style: 'destructive', onPress: async () => {
+              try {
+                await archiveTransaction(item.id);
+                setActiveTransaction(null);
+                showTransactionToast({ kind: 'success', title: 'Transaction archived', messages: ['You can restore it from Archive.'] });
+              } catch {
+                Alert.alert('Could not archive transaction', 'Check your connection and try again.');
+              }
+            } },
+          ],
+        )}
+        onViewGoals={() => { setActiveTransaction(null); router.push('/savings' as never); }}
+      />
 
       {/* FAB */}
       <TouchableOpacity
@@ -464,8 +582,18 @@ const styles = StyleSheet.create({
   contributionSummary: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginTop: 12, padding: 10, borderRadius: 12, backgroundColor: 'rgba(255,255,255,0.13)' },
   contributionSummaryCopy: { minWidth: 104 },
   contributionSummaryValue: { color: '#FFE6A6', fontSize: 13, fontWeight: '900', marginTop: 3 },
-  balanceFootnote: { color: 'rgba(255,255,255,0.82)', fontSize: 10, fontWeight: '500', lineHeight: 14, flex: 1 },
+  spendableSummary: { alignItems: 'flex-end', flex: 1, minWidth: 0 },
+  spendableValue: { color: '#FFFFFF', fontSize: 15, fontWeight: '900', marginTop: 3 },
+  balanceFootnote: { color: 'rgba(255,255,255,0.82)', fontSize: 10, fontWeight: '500', lineHeight: 14, marginTop: 10 },
   savingsSummaryCard: { flexDirection: 'column', alignItems: 'stretch', gap: 10, backgroundColor: '#FFF9E9', borderRadius: 20, padding: 15, marginBottom: 22, borderWidth: 1, borderColor: 'rgba(237,178,50,0.38)' },
+  dueSoonCard: { flexDirection: 'row', alignItems: 'center', gap: 11, backgroundColor: '#FFFFFF', borderRadius: 17, padding: 13, marginTop: -8, marginBottom: 20, borderWidth: 1, borderColor: 'rgba(61,125,108,0.14)', shadowColor: DEEP_GREEN, shadowOffset: { width: 0, height: 3 }, shadowOpacity: 0.04, shadowRadius: 7, elevation: 1 },
+  dueSoonIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: 'rgba(237,178,50,0.18)', alignItems: 'center', justifyContent: 'center' },
+  dueSoonCopy: { flex: 1, minWidth: 0 },
+  dueSoonTitleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 6 },
+  dueSoonTitle: { color: DEEP_GREEN, fontSize: 13, fontWeight: '800' },
+  dueSoonDate: { color: TEAL, fontSize: 10, fontWeight: '800' },
+  dueSoonName: { color: DEEP_GREEN, fontSize: 12, fontWeight: '700', marginTop: 3 },
+  dueSoonAction: { color: SAGE, fontSize: 10, fontWeight: '600', marginTop: 3 },
   savingsTopRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   savingsSummaryIcon: { width: 40, height: 40, borderRadius: 13, backgroundColor: '#FFE9B3', alignItems: 'center', justifyContent: 'center' },
   piggyEmoji: { fontSize: 23 },

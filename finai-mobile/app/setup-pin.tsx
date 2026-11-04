@@ -1,10 +1,11 @@
-import React, { useState, useRef } from 'react';
+import React, { useCallback, useState, useRef } from 'react';
 import { 
   StyleSheet, Text, View, TouchableOpacity, TextInput, Modal, FlatList,
-  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard 
+  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard,
+  InteractionManager
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { useRouter, Stack } from 'expo-router';
+import { useRouter, Stack, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
@@ -14,6 +15,7 @@ import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
 import { setSecureItem } from '../utils/secureStorage';
 import { hasSubCentPrecision } from '../utils/money';
+import { logUnexpectedError } from '../utils/userFacingError';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -65,6 +67,20 @@ export default function SetupPinScreen() {
   const router = useRouter();
   
   const { user } = useAuth();
+
+  // Android can drop autoFocus while the onboarding route is animating in.
+  // Focus the PIN input after navigation interactions complete, with the PIN
+  // boxes also acting as a full-size tap target for reopening the keyboard.
+  useFocusEffect(useCallback(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const interaction = InteractionManager.runAfterInteractions(() => {
+      timer = setTimeout(() => inputRef.current?.focus(), 150);
+    });
+    return () => {
+      interaction.cancel();
+      if (timer) clearTimeout(timer);
+    };
+  }, []));
 
   React.useEffect(() => {
     let active = true;
@@ -169,7 +185,7 @@ export default function SetupPinScreen() {
           [
             { 
               text: 'Continue',
-              onPress: () => router.replace('/login') 
+              onPress: () => router.replace('/(tabs)') 
             }
           ]
         );
@@ -178,7 +194,7 @@ export default function SetupPinScreen() {
       }
 
     } catch (error) {
-      console.error(error);
+      logUnexpectedError('PIN setup failed unexpectedly:', error);
       Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
     } finally {
       setLoading(false);
@@ -223,23 +239,23 @@ export default function SetupPinScreen() {
             <Text style={styles.instruction}>Set a 4-digit PIN to lock this app. This is separate from your account password and bank PIN.</Text>
             
             <Pressable style={styles.pinWrapper} onPress={focusInput} disabled={loading}>
-              <View style={styles.pinContainer}>
+              <View pointerEvents="none" style={styles.pinContainer}>
                 {[...Array(4)].map((_, i) => (
                   <View key={i} style={[styles.dot, pin.length > i && styles.dotActive]} />
                 ))}
               </View>
+              <TextInput
+                ref={inputRef}
+                style={styles.hiddenInput}
+                keyboardType="number-pad"
+                maxLength={4}
+                value={pin}
+                onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
+                caretHidden
+                editable={!loading}
+                accessibilityLabel="4-digit app PIN"
+              />
             </Pressable>
-
-            <TextInput
-              ref={inputRef}
-              style={styles.hiddenInput}
-              keyboardType="number-pad"
-              maxLength={4}
-              value={pin}
-              onChangeText={(text) => setPin(text.replace(/[^0-9]/g, ''))}
-              autoFocus={true}
-              editable={!loading}
-            />
           </View>
 
           <View style={styles.sectionCard}>
@@ -431,7 +447,7 @@ const styles = StyleSheet.create({
   },
   sectionTitle: { fontSize: 14, fontWeight: 'bold', color: DEEP_GREEN, marginBottom: 15, letterSpacing: 1 },
   instruction: { fontSize: 14, color: SAGE, marginBottom: 10, fontWeight: '500' },
-  pinWrapper: { paddingVertical: 10, alignItems: 'center' },
+  pinWrapper: { position: 'relative', minHeight: 45, paddingVertical: 10, alignItems: 'center', justifyContent: 'center' },
   pinContainer: { flexDirection: 'row', gap: 25 },
   dot: { 
     width: 20, 
@@ -445,7 +461,7 @@ const styles = StyleSheet.create({
     borderColor: GOLD,
     transform: [{ scale: 1.2 }] 
   },
-  hiddenInput: { position: 'absolute', opacity: 0, width: 1, height: 1 },
+  hiddenInput: { ...StyleSheet.absoluteFill, opacity: 0, color: 'transparent', backgroundColor: 'transparent' },
   label: { fontSize: 12, color: SAGE, marginBottom: 6, fontWeight: '600' },
   fieldHint: { fontSize: 12, color: SAGE, lineHeight: 17, marginBottom: 12 },
   inputField: {

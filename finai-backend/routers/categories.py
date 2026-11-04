@@ -56,21 +56,39 @@ async def _insert_category_with_name_lock(category_data: dict, duplicate_query: 
         await db.category_name_locks.delete_one({"_id": lock_key, "owner": owner})
 
 def get_default_icon(name: str):
-    """(unchanged)"""
-    name_lower = name.lower()
-    if any(word in name_lower for word in ["food", "grocery", "meal", "eat"]):
-        return "fast-food-outline"
-    elif any(word in name_lower for word in ["transpo", "gas", "fare", "travel"]):
-        return "bus-outline"
-    elif any(word in name_lower for word in ["bill", "rent", "electric", "water"]):
-        return "card-outline"
-    elif any(word in name_lower for word in ["shop", "cloth", "buy"]):
+    """Return a distinct legacy Ionicons default for categories without a chosen icon."""
+    name_lower = name.lower().strip()
+    words = re.findall(r"[a-z0-9]+", name_lower)
+    def has(*terms):
+        return any(word.startswith(term) for word in words for term in terms)
+
+    if has("rent", "housing", "mortgage"):
+        return "home-outline"
+    elif has("utilit", "electric", "water", "kuryente", "tubig", "internet", "phone"):
+        return "bulb-outline"
+    elif has("grocery", "groceries"):
         return "cart-outline"
-    elif any(word in name_lower for word in ["health", "med", "doctor"]):
+    elif has("food", "meal", "eat", "dining", "restaurant", "kain"):
+        return "fast-food-outline"
+    elif has("transpo", "commute", "gas", "fuel", "fare", "travel", "bakasyon", "gala"):
+        return "bus-outline"
+    elif has("bill", "fee", "dues"):
+        return "card-outline"
+    elif has("shop", "cloth", "apparel", "fashion", "buy", "bili"):
+        return "cart-outline"
+    elif has("health", "med", "doctor", "pharmacy"):
         return "medical-outline"
-    elif any(word in name_lower for word in ["salary", "job", "work"]):
+    elif has("leisure", "entertainment", "hobby", "game"):
+        return "game-controller-outline"
+    elif has("education", "school", "tuition", "book"):
+        return "book-outline"
+    elif has("pet", "veterinary"):
+        return "paw-outline"
+    elif has("subscription", "streaming"):
+        return "play-circle-outline"
+    elif has("salary", "job", "work"):
         return "cash-outline"
-    elif any(word in name_lower for word in ["invest", "bank", "save"]):
+    elif has("invest", "bank", "save"):
         return "trending-up-outline"
     else:
         return "pricetag-outline"

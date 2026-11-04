@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../../config';
+import { logUnexpectedError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getCategoryEmoji } from '../../utils/categoryEmoji';
@@ -45,7 +46,7 @@ export default function AdminArchiveScreen() {
         setArchivedData([]);
       }
     } catch (error) {
-      console.error(`Error fetching archived ${activeTab}:`, error);
+      logUnexpectedError(`Admin archived ${activeTab} fetch failed unexpectedly:`, error);
       setArchivedData([]);
     } finally {
       setIsLoading(false);

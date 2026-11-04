@@ -36,15 +36,17 @@ export type CategoryForecast = {
 };
 
 export type PlanningRecommendation = {
-  kind: string;
+  id: string;
+  topic: 'spending' | 'income' | 'goals';
+  finding: { headline: string; key_number: { label: string; value: number; unit: string } | null };
+  evidence: { values: Record<string, any>; window: string[]; comparison_period: string | null; how_calculated?: string | null };
+  why: string;
+  nextStep: { action_type: string; label: string; params: Record<string, any>; preview?: Record<string, any> | null } | null;
+  confidence: string;
+  insufficientData: boolean;
+  source: 'ai' | 'rules';
+  kind?: string;
   priority: 'high' | 'medium' | 'goal' | string;
-  title: string;
-  message: string;
-  action?: string;
-  actions?: string[];
-  context_question?: string;
-  how_calculated?: string;
-  evidence?: Record<string, any>;
 };
 
 export type GoalPlan = {
@@ -57,8 +59,9 @@ export type GoalPlan = {
 };
 
 export type PlanningData = {
-  metrics?: { as_of_date?: string };
+  metrics?: { as_of_date?: string; reported_monthly_baseline?: number };
   recommendation_source?: 'ai' | 'rule_based' | string;
+  insufficient_insight_data?: boolean;
   monthly_net_forecast: number;
   category_forecasts: CategoryForecast[];
   recommendations: PlanningRecommendation[];

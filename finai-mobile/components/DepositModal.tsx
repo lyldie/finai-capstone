@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, Modal, TextInput, TouchableOpacity, Keyboard, TouchableWithoutFeedback, Alert, ActivityIndicator, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, Modal, TextInput, TouchableOpacity, Keyboard, Alert, ActivityIndicator, ScrollView, KeyboardAvoidingView, Platform, Pressable } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { hasSubCentPrecision } from '../utils/money';
 
@@ -16,7 +16,9 @@ export default function DepositModal({
   selectedGoal, 
   accounts, 
   getAccountBalance,
-  depositToGoal 
+  depositToGoal,
+  withdrawFromGoal,
+  mode = 'deposit',
 }: any) {
   const [depositAmount, setDepositAmount] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -34,9 +36,10 @@ export default function DepositModal({
 
   // NEW: live preview of the selected account's balance, using the getAccountBalance
   // function that was already being passed down but never actually used.
-  const selectedAccountBalance = selectedAccount && typeof getAccountBalance === 'function'
+  const accountBalance = selectedAccount && typeof getAccountBalance === 'function'
     ? getAccountBalance(selectedAccount)
     : null;
+  const selectedAccountBalance = mode === 'deposit' ? accountBalance : Number(selectedGoal?.current_savings || 0);
   const parsedAmount = parseFloat(depositAmount) || 0;
   const exceedsBalance = selectedAccountBalance !== null && parsedAmount > selectedAccountBalance;
 
@@ -48,7 +51,7 @@ export default function DepositModal({
 
     const amount = parseFloat(depositAmount);
     if (hasSubCentPrecision(depositAmount)) {
-      Alert.alert('Too many decimal places', 'Contributions can be entered to the nearest centavo (up to 2 decimal places).');
+      Alert.alert('Too many decimal places', 'Amounts can be entered to the nearest centavo (up to 2 decimal places).');
       return;
     }
     if (!amount || amount <= 0) {
@@ -57,26 +60,33 @@ export default function DepositModal({
     }
 
     if (!selectedAccount) {
-      Alert.alert('Choose an account', 'Select the account to withdraw from.');
+      Alert.alert('Choose an account', mode === 'deposit' ? 'Select the account to contribute from.' : 'Select the account to receive the withdrawal.');
       return;
     }
     
     setIsSubmitting(true);
-    const success = await depositToGoal(selectedGoal.id, amount, selectedAccount);
+    const success = mode === 'deposit'
+      ? await depositToGoal(selectedGoal.id, amount, selectedAccount)
+      : await withdrawFromGoal(selectedGoal.id, amount, selectedAccount);
     setIsSubmitting(false);
 
     if (success) {
-      Alert.alert('Contribution added', `₱${amount.toLocaleString()} was added to your goal.`);
+      Alert.alert(
+        mode === 'deposit' ? (success === 'synced' ? 'Contribution added' : 'Saved on this device') : (success === 'synced' ? 'Withdrawal completed' : 'Saved on this device'),
+        success === 'synced'
+          ? (mode === 'deposit' ? `₱${amount.toLocaleString()} was added to your goal.` : `₱${amount.toLocaleString()} was returned to ${selectedAccount}.`)
+          : (mode === 'deposit' ? `₱${amount.toLocaleString()} is reflected in your goal and wallet here. It will sync when you are online.` : `₱${amount.toLocaleString()} is reflected in your goal and ${selectedAccount} account here. It will sync when you are online.`),
+      );
       onClose();
     }
   };
 
   return (
     <Modal visible={visible} animationType="fade" transparent={true}>
-      <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setIsDropdownOpen(false); }}>
-        <View style={styles.modalOverlay}>
+      <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <Pressable style={StyleSheet.absoluteFill} onPress={() => { Keyboard.dismiss(); setIsDropdownOpen(false); }} accessibilityRole="button" accessibilityLabel="Close account picker" />
           <View style={styles.modalContainer}>
-            <Text style={styles.modalTitle}>Add to {selectedGoal?.target_name || 'goal'}</Text>
+            <Text style={styles.modalTitle}>{mode === 'deposit' ? 'Add to' : 'Withdraw from'} {selectedGoal?.target_name || 'goal'}</Text>
             
             <TextInput
               style={[styles.modalInput, exceedsBalance && styles.modalInputWarning]}
@@ -89,7 +99,7 @@ export default function DepositModal({
               onSubmitEditing={Keyboard.dismiss}
             />
 
-            <Text style={styles.label}>Select an account:</Text>
+            <Text style={styles.label}>{mode === 'deposit' ? 'Contribute from account:' : 'Return funds to account:'}</Text>
             
             {/* DROPDOWN TRIGGER */}
             <TouchableOpacity 
@@ -112,7 +122,7 @@ export default function DepositModal({
             {/* NEW: live balance preview for whichever account is currently selected */}
             {selectedAccount && selectedAccountBalance !== null && (
               <Text style={[styles.balancePreview, exceedsBalance && styles.balancePreviewWarning]}>
-                Available: ₱{selectedAccountBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
+                {mode === 'deposit' ? 'Available in account' : 'Available in goal'}: ₱{selectedAccountBalance.toLocaleString('en-US', { minimumFractionDigits: 2 })}
                 {exceedsBalance ? ' - insufficient balance' : ''}
               </Text>
             )}
@@ -155,15 +165,14 @@ export default function DepositModal({
               onPress={handleConfirm} 
               disabled={isSubmitting || !selectedAccount || !depositAmount}
             >
-              {isSubmitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>Add contribution</Text>}
+              {isSubmitting ? <ActivityIndicator color="#FFF" /> : <Text style={styles.confirmBtnText}>{mode === 'deposit' ? 'Add contribution' : 'Withdraw savings'}</Text>}
             </TouchableOpacity>
             
             <TouchableOpacity onPress={onClose} style={styles.cancelBtn}>
               <Text style={{color: SAGE}}>Cancel</Text>
             </TouchableOpacity>
           </View>
-        </View>
-      </TouchableWithoutFeedback>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

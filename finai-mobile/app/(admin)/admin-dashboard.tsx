@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useAuth } from '../../context/AuthContext';
 import { API_URL } from '../../config';
+import { logUnexpectedError } from '../../utils/userFacingError';
 
 const { width } = Dimensions.get('window');
 const DEEP_GREEN = '#1c3c36';
@@ -52,7 +53,7 @@ export default function AdminDashboard() {
             setActiveUserCount(Array.isArray(data) ? data.filter((u: any) => u.role !== 'admin').length : null);
           }
         } catch (e) {
-          console.error("Could not fetch active user count:", e);
+          logUnexpectedError('Admin dashboard count refresh failed unexpectedly:', e);
         }
 
         // 2. Fetch System Health Status (OCR & Advisor Check)
@@ -76,8 +77,8 @@ export default function AdminDashboard() {
   );
 
   const handleLogout = async () => {
-    await logoutUser();
     router.replace('/login');
+    await logoutUser();
   };
 
   // Determine colors based on health status

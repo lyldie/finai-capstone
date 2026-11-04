@@ -15,6 +15,7 @@ import { getCategoryEmoji } from '../../utils/categoryEmoji';
 import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
 import { getDisplayEmoji } from '../../components/EmojiPicker';
 import { hasSubCentPrecision } from '../../utils/money';
+import { userFacingError } from '../../utils/userFacingError';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -171,6 +172,15 @@ export default function TabTwoScreen() {
   }, [accounts, params?.id]);
 
   useEffect(() => {
+    if (params?.scheduled_bill_id) {
+      setType('Expense');
+      setAmount(String(params.scheduled_bill_amount || ''));
+      setNote(String(params.scheduled_bill_name || ''));
+      setDate(philippineTodayKey());
+      const scheduledCategory = categories.find((item: any) => item.id === params.scheduled_bill_category_id);
+      if (scheduledCategory) setCategory(scheduledCategory.name);
+      return;
+    }
     if (params && params.id) {
       if (params.type) {
         const pType = params.type as string;
@@ -185,11 +195,11 @@ export default function TabTwoScreen() {
       if (params.to_account) setToAccount(params.to_account as string);
       if (params.date) setDate(params.date as string);
     }
-  }, [params.id, params.type, params.amount, params.note, params.category, params.account, params.to_account, params.date]);
+  }, [params.id, params.type, params.amount, params.note, params.category, params.account, params.to_account, params.date, params.scheduled_bill_id, params.scheduled_bill_amount, params.scheduled_bill_name, params.scheduled_bill_category_id, categories]);
 
   useFocusEffect(
     useCallback(() => {
-      if (!params || !params.id) {
+      if (!params || (!params.id && !params.scheduled_bill_id)) {
         resetForm();
       }
     }, [params?.id, resetForm])
@@ -271,9 +281,17 @@ export default function TabTwoScreen() {
       if (params && params.id) {
         budgetNotifications = await updateTransaction(params.id as string, numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
       } else {
-        budgetNotifications = await addTransaction(numericAmount, finalCategory, note, type, account, type === 'Transfer' ? toAccount : undefined, date);
+        budgetNotifications = await addTransaction(
+          numericAmount, finalCategory, note, type, account,
+          type === 'Transfer' ? toAccount : undefined,
+          date,
+          params?.scheduled_bill_id && params?.scheduled_bill_period_key
+            ? { id: String(params.scheduled_bill_id), periodKey: String(params.scheduled_bill_period_key) }
+            : undefined,
+        );
       }
 
+      const offlinePending = budgetNotifications.some((notification) => notification.event_type === 'offline_pending');
       const spikeNotifications = budgetNotifications.filter((notification) => notification.event_type === 'spending_spike');
       const budgetAlerts = budgetNotifications.filter((notification) => notification.event_type !== 'spending_spike');
       const hasCriticalBudgetAlert = budgetAlerts.some(
@@ -298,7 +316,32 @@ export default function TabTwoScreen() {
         ? 'Transaction updated'
         : type === 'Transfer' ? 'Transfer complete' : `${type} recorded`;
 
-      if (spikeNotifications.length > 0) {
+      if (offlinePending) {
+        const localAlerts = [...spikeNotifications, ...budgetAlerts].filter((notification) => notification.provisional);
+        if (localAlerts.some((notification) => notification.event_type === 'spending_spike')) {
+          showTransactionToast({
+            kind: 'spending_spike',
+            title: 'Saved on this device · offline estimate',
+            messages: ['Your expense is saved locally.', ...localAlerts.map((notification) => notification.message)],
+          });
+        } else if (localAlerts.length) {
+          const highestBudgetAlert = [...localAlerts].sort((a, b) => b.threshold - a.threshold)[0];
+          showTransactionToast({
+            kind: 'budget',
+            title: 'Saved on this device · offline estimate',
+            threshold: highestBudgetAlert.threshold,
+            percentage_used: highestBudgetAlert.percentage_used,
+            level: highestBudgetAlert.level,
+            messages: ['Your expense is saved locally.', ...localAlerts.map((notification) => notification.message)],
+          });
+        } else {
+          showTransactionToast({
+            kind: 'success',
+            title: 'Saved on this device',
+            messages: ['This transaction is waiting to sync. Open Transactions and tap Sync pending when you are back online.'],
+          });
+        }
+      } else if (spikeNotifications.length > 0) {
         showTransactionToast({
           kind: 'spending_spike',
           title: 'Spending higher than usual',
@@ -330,7 +373,9 @@ export default function TabTwoScreen() {
       else router.replace('/(tabs)' as never);
     } catch (err) {
       const code = err instanceof Error ? err.message : "";
-      if (code === "INSUFFICIENT_BALANCE") {
+      if (code === "BILL_PAYMENT_PENDING") {
+        Alert.alert("Payment waiting to sync", "This scheduled bill payment is already saved on this device. Wait for it to sync before trying again.");
+      } else if (code === "INSUFFICIENT_BALANCE") {
         const transactionLabel = type === "Transfer" ? "transfer" : "expense";
         Alert.alert(
           "Not enough account balance",
@@ -339,7 +384,7 @@ export default function TabTwoScreen() {
       } else if (code === "TRANSACTION_TEMPORARY_FAILURE") {
         Alert.alert("Couldn't save transaction", "Please check your connection and try again.");
       } else {
-        Alert.alert("Couldn't save transaction", code || "Please review the details and try again.");
+        Alert.alert("Couldn't save transaction", userFacingError(code, 'Please review the details and try again.'));
       }
     } finally {
       setIsSaving(false);
@@ -396,8 +441,14 @@ export default function TabTwoScreen() {
         <View style={styles.headerSide} />
       </View>
 
+      {params?.scheduled_bill_id ? (
+        <View style={{ paddingHorizontal: 20, paddingVertical: 12, backgroundColor: '#EAF4EF' }}>
+          <Text style={{ color: DEEP_GREEN, fontWeight: '800' }}>Record bill payment · {String(params.scheduled_bill_name || 'Scheduled bill')}</Text>
+          <Text style={{ color: SAGE, fontSize: 12, marginTop: 3 }}>Saving records the expense and marks this month’s bill paid.</Text>
+        </View>
+      ) : (
       <View style={styles.selectorContainer}>
-        {(['Income', 'Expense', 'Transfer'] as TransactionType[]).map((t) => {
+      {(['Income', 'Expense', 'Transfer'] as TransactionType[]).map((t) => {
           const tColor = t === 'Income' ? INCOME : t === 'Expense' ? EXPENSE : TRANSFER;
           return (
             <TouchableOpacity
@@ -413,8 +464,9 @@ export default function TabTwoScreen() {
               <Text style={[styles.selectorText, type === t && { color: 'white' }]}>{t}</Text>
             </TouchableOpacity>
           );
-        })}
+      })}
       </View>
+      )}
 
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
         <ScrollView
@@ -432,7 +484,7 @@ export default function TabTwoScreen() {
                 placeholder="0.00"
                 placeholderTextColor="#A2B5B0"
                 keyboardType="decimal-pad"
-                autoFocus={!params?.id}
+                autoFocus={!params?.id && !params?.scheduled_bill_id}
                 value={amount}
                 onChangeText={handleAmountChange}
                 onFocus={handleAmountFocus}
@@ -482,7 +534,7 @@ export default function TabTwoScreen() {
                 </View>
               </Modal>
             ) : (
-              <DateTimePicker value={dateFromIso(date)} mode="date" display="default" maximumDate={new Date()} onValueChange={(_event, selectedDate) => { if (selectedDate) setDate(formatLocalDate(selectedDate)); }} onDismiss={() => setShowDatePicker(false)} />
+              <DateTimePicker value={dateFromIso(date)} mode="date" display="default" maximumDate={new Date()} onValueChange={(_event, selectedDate) => { if (selectedDate) setDate(formatLocalDate(selectedDate)); setShowDatePicker(false); }} onDismiss={() => setShowDatePicker(false)} />
             ))}
 
             <InputRow
@@ -509,7 +561,12 @@ export default function TabTwoScreen() {
                 onPress={() => { setSelectingTarget('to'); setIsAccModalVisible(true); }}
               />
             )}
-            {type !== 'Transfer' && (
+            {type !== 'Transfer' && params?.scheduled_bill_id ? (
+              <View style={[styles.inputRow, styles.inputRowLast]}>
+                <View style={styles.rowLabelContainer}><View style={[styles.rowIconChip, { backgroundColor: tint }]}><Ionicons name="grid-outline" size={17} color={accent} /></View><Text style={styles.rowLabel}>Bill category</Text></View>
+                <Text style={styles.rowValue} numberOfLines={1}>{category}</Text>
+              </View>
+            ) : type !== 'Transfer' ? (
               <InputRow
                 label="Category"
                 value={category}
@@ -521,7 +578,7 @@ export default function TabTwoScreen() {
                 accent={accent}
                 onPress={() => setIsCatModalVisible(true)}
               />
-            )}
+            ) : null}
 
             <View style={[styles.inputRow, styles.inputRowLast]}>
               <View style={styles.rowLabelContainer}>

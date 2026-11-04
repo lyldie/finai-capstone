@@ -2,6 +2,7 @@ import React from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { Tabs } from 'expo-router';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // ---- FINAI BRAND TOKENS (matches every other screen) ----
 const DEEP_GREEN = '#1c3c36';
@@ -15,6 +16,7 @@ function TabBarIcon(props: {
 }
 
 export default function TabLayout() {
+  const insets = useSafeAreaInsets();
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <Tabs
@@ -22,11 +24,12 @@ export default function TabLayout() {
           tabBarActiveTintColor: GOLD, 
           tabBarInactiveTintColor: '#FFFFFF',
           headerShown: false,
+          tabBarHideOnKeyboard: true,
           tabBarStyle: {
             backgroundColor: DEEP_GREEN, 
             borderTopWidth: 0,
-            paddingBottom: 8,
-            height: 65,
+            paddingBottom: Math.max(insets.bottom, 8),
+            height: 65 + insets.bottom,
             elevation: 10,
             shadowColor: DEEP_GREEN,
             shadowOpacity: 0.15,

@@ -8,6 +8,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
+import { logUnexpectedError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 
 const DEEP_GREEN = '#1c3c36';
@@ -52,7 +53,7 @@ export default function UsersManagementScreen() {
       const data = await response.json();
       setUsers(Array.isArray(data) ? data : []);
     } catch (error) {
-      console.error("Error fetching users:", error);
+      logUnexpectedError('Admin user list failed unexpectedly:', error);
     } finally {
       setLoading(false);
     }

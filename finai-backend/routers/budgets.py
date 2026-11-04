@@ -184,7 +184,7 @@ async def update_budget(budget_id: str, budget_data: Dict[str, Any], current_use
         raise HTTPException(status_code=400, detail="budget_kind must be fixed or variable.")
 
     result = await db.budgets.update_one(
-        {"_id": oid},
+        {"_id": oid, "user_id": requester_id},
         {"$set": {"amount": float(amount), "rollover_enabled": rollover_enabled,
                   "budget_kind": budget_kind,
                   "updated_at": datetime.utcnow()}},
@@ -229,7 +229,7 @@ async def delete_budget(budget_id: str, user_id: str, current_user: dict = Depen
     user_id = current_user["id"]
     existing = await db.budgets.find_one({"_id": oid, "user_id": user_id})
     if not existing:
-        raise HTTPException(status_code=404, detail="Budget not found")
+        return {"status": "Success", "message": "Budget already deleted"}
     period_type, current_period_key, _, _ = period_details(
         existing.get("period_type") or existing.get("period"), ph_today(),
     )
