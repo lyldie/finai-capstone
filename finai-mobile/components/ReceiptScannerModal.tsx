@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Alert, Image, TextInput, ScrollView, Animated, Easing, Linking } from 'react-native';
+import { StyleSheet, Text, View, Modal, TouchableOpacity, ActivityIndicator, Image, TextInput, ScrollView, Animated, Easing, Linking } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 import * as ImagePicker from 'expo-image-picker';
 import * as ImageManipulator from 'expo-image-manipulator';
@@ -28,8 +29,14 @@ const MAX_MULTI_PHOTOS = 4;
 const RECEIPT_SCAN_TIMEOUT_MS = 65_000;
 
 function receiptScanErrorMessage(error: unknown): string {
-  const candidate = error as { name?: string; message?: string } | null;
+  const candidate = error as { name?: string; message?: string; status?: number; retryAfter?: number | null } | null;
   const detail = `${candidate?.name || ''} ${candidate?.message || ''}`.toLowerCase();
+
+  if (candidate?.status === 429) {
+    const waitMinutes = candidate.retryAfter ? Math.ceil(candidate.retryAfter / 60) : null;
+    const waitText = waitMinutes ? ` Please try again in about ${waitMinutes} minute${waitMinutes === 1 ? '' : 's'}.` : ' Please try again later.';
+    return `You've reached the temporary receipt-scanning limit.${waitText} You can enter the details manually in the meantime.`;
+  }
 
   if (/aborterror|fetchrequestcanceled|request.*cancel|network request failed|failed to fetch|timed? ?out|timeout/.test(detail)) {
     return "We couldn't reach the receipt scanning service in time. Check your internet connection and try again, or enter the details manually.";
@@ -38,7 +45,15 @@ function receiptScanErrorMessage(error: unknown): string {
   return "We couldn't scan this receipt right now. Please try again, or enter the details manually.";
 }
 
-type ReviewField = { value: string; status: string; engines: string[] };
+function formatReceiptDate(value: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return value;
+  const [, year, month, day] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), 12))
+    .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+type ReviewField = { value: string; status: string; engines: string[]; raw_text?: string | null; alternatives?: string[]; reason?: string };
 type ReviewData = {
   values: { amount: string; merchant: string; date: string; category: string };
   fields: Record<string, ReviewField>;
@@ -198,7 +213,14 @@ export default function ReceiptScannerModal({
       }
 
       if (!response.ok) {
-        throw new Error(result?.detail || 'The receipt could not be read clearly. Try again.');
+        const requestError = new Error(result?.detail || 'The receipt could not be read clearly. Try again.') as Error & {
+          status?: number;
+          retryAfter?: number | null;
+        };
+        requestError.status = response.status;
+        const retryAfter = Number(response.headers.get('Retry-After'));
+        requestError.retryAfter = Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : null;
+        throw requestError;
       }
 
       const payload = result?.data || {};
@@ -229,12 +251,19 @@ export default function ReceiptScannerModal({
         needsReview: payload.needs_review || []
       });
     } catch (error: any) {
-      if (!isExpectedNetworkError(error)) console.error('Receipt scan failed; showing the manual-entry option.', error);
+      const rateLimited = error?.status === 429;
+      if (!rateLimited && !isExpectedNetworkError(error)) console.error('Receipt scan failed; showing the manual-entry option.', error);
       const message = receiptScanErrorMessage(error);
-      Alert.alert('Receipt scan unavailable', message, [
-        { text: 'Enter manually', style: 'cancel', onPress: onClose },
-        { text: 'Retry', onPress: () => { void submitPhotosToBackend(photos); } },
-      ]);
+      Alert.alert(
+        rateLimited ? 'Receipt scan limit reached' : 'Receipt scan unavailable',
+        message,
+        rateLimited
+          ? [{ text: 'Enter manually', style: 'cancel', onPress: onClose }]
+          : [
+              { text: 'Enter manually', style: 'cancel', onPress: onClose },
+              { text: 'Retry', onPress: () => { void submitPhotosToBackend(photos); } },
+            ],
+      );
     } finally {
       setIsProcessing(false);
     }
@@ -339,6 +368,18 @@ export default function ReceiptScannerModal({
     } : current);
   };
 
+  const chooseDateCandidate = (value: string) => {
+    setReviewData((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        values: { ...current.values, date: value },
+        fields: { ...current.fields, date: { ...current.fields.date, value, status: 'confirmed', alternatives: [] } },
+        needsReview: current.needsReview.filter((field) => field !== 'date'),
+      };
+    });
+  };
+
   const confirmReview = () => {
     if (!reviewData) return;
     const amount = Number(reviewData.values.amount.replace(/,/g, ''));
@@ -405,6 +446,31 @@ export default function ReceiptScannerModal({
                     keyboardType={keyboardType || 'default'}
                     style={styles.reviewInput}
                   />
+                  {key === 'date' && (metadata?.alternatives?.length || 0) > 0 && (
+                    <View style={{ marginTop: 10 }}>
+                      <Text style={{ color: '#7C6252', fontSize: 13, marginBottom: 8 }}>
+                        Receipt date “{metadata.raw_text || reviewData.values.date}” may use either order. Choose the correct date:
+                      </Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        {[reviewData.values.date, ...(metadata.alternatives || [])].map((candidate) => {
+                          const selected = reviewData.values.date === candidate;
+                          return (
+                            <TouchableOpacity
+                              key={candidate}
+                              onPress={() => chooseDateCandidate(candidate)}
+                              style={{ paddingVertical: 9, paddingHorizontal: 12, borderRadius: 18, backgroundColor: selected ? '#1c3c36' : '#EEF4EF' }}
+                              accessibilityRole="button"
+                              accessibilityState={{ selected }}
+                            >
+                              <Text style={{ color: selected ? '#FFFFFF' : '#1c3c36', fontWeight: '700', fontSize: 13 }}>
+                                {formatReceiptDate(candidate)}
+                              </Text>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    </View>
+                  )}
                   {key === 'category' && (
                     <>
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 10 }}>

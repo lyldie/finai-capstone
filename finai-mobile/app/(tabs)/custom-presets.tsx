@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Modal, TextInput, Alert, ActivityIndicator, FlatList, Keyboard, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, Modal, TextInput, ActivityIndicator, FlatList, Keyboard, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';

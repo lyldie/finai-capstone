@@ -1,5 +1,6 @@
 ﻿import React from 'react';
-import { Alert, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { useSegments } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
@@ -43,7 +44,7 @@ export default function OfflineStatusBanner() {
       <Ionicons name={offline ? 'cloud-offline-outline' : 'cloud-upload-outline'} size={17} color={offline ? '#6A4B0B' : '#315D4D'} />
       <TouchableOpacity style={styles.copy} onPress={showOfflineDetails} accessibilityRole="button" accessibilityLabel="Read what works offline">
         <Text style={styles.title}>{offline ? `Offline mode${pendingTransactionCount ? ` · ${pendingTransactionCount} changes waiting` : ''}` : `${pendingTransactionCount} ${pendingTransactionCount === 1 ? 'change' : 'changes'} waiting to sync`}</Text>
-        <Text style={styles.subtitle}>{offline ? 'Changes stay on this device · Tap for details' : 'Connection restored · Sync automatically or tap Sync now'}</Text>
+        <Text style={styles.subtitle}>{offline ? 'Changes stay on this device · Tap for details' : 'Sync automatically or tap Sync now'}</Text>
       </TouchableOpacity>
       <TouchableOpacity onPress={() => offline ? void checkNow() : void syncNow()} disabled={checking} accessibilityRole="button" accessibilityLabel={offline ? 'Check connection' : 'Sync saved changes'}>
         <Text style={styles.check}>{offline ? (checking ? 'Checking…' : 'Check') : 'Sync now'}</Text>

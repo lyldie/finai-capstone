@@ -6,9 +6,11 @@ class NotificationResponse(BaseModel):
     id: str
     user_id: str
     budget_id: str | None = None
+    bill_id: str | None = None
     category_id: str | None = None
     category_name: str | None = None
     period_key: str | None = None
+    due_date: str | None = None
     event_type: str = "budget_threshold"
     title: str | None = None
     threshold: int = 0

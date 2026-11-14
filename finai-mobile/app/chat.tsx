@@ -1,21 +1,6 @@
 import React, { useState, useRef, useEffect } from "react";
-import {
-  StyleSheet,
-  Text,
-  View,
-  TouchableOpacity,
-  TextInput,
-  FlatList,
-  Image,
-  KeyboardAvoidingView,
-  Platform,
-  ActivityIndicator,
-  Animated,
-  StatusBar,
-  Alert,
-  ScrollView,
-  Keyboard,
-} from "react-native";
+import { StyleSheet, Text, View, TouchableOpacity, TextInput, FlatList, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Animated, StatusBar, ScrollView, Keyboard } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -25,6 +10,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { API_URL } from "../config";
 import FinnPortrait from "../components/FinnPortrait";
 import { isExpectedNetworkError } from "../utils/userFacingError";
+import { buildPlanAheadChatContext, planAheadChatStorageKey } from "../utils/planAheadChatContext";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 // ---- FINAI BRAND TOKENS (shared with transactions.tsx / index.tsx / two.tsx / insights.tsx) ----
@@ -40,7 +26,7 @@ interface ChatMessage {
   id: string;
   text: string;
   sender: "user" | "ai";
-  source?: "gemini" | "groq" | "vertex" | "rule_based" | "user";
+  source?: "gemini" | "groq" | "vertex" | "rule_based" | "deterministic" | "scope_guard" | "unavailable" | "user";
   message_type?: "planning_insight";
 }
 
@@ -100,12 +86,15 @@ export default function ChatScreen() {
   const { user } = useAuth();
   const { isOnline } = useNetworkStatus();
   const router = useRouter();
-  const params = useLocalSearchParams<{ conversation_id?: string; prefill?: string; topic?: string }>();
+  const params = useLocalSearchParams<{ conversation_id?: string; prefill?: string; topic?: string; plan_ahead?: string }>();
   const routeConversationId = typeof params.conversation_id === "string" ? params.conversation_id : undefined;
   const routePrefill = typeof params.prefill === "string" ? params.prefill : undefined;
   const routeTopic = params.topic === 'budget' || params.topic === 'goals' ? params.topic : 'general';
+  const routeHasPlanAheadContext = params.plan_ahead === '1';
   const flatListRef = useRef<FlatList>(null);
   const inputRef = useRef<TextInput>(null);
+  const appliedPrefillRef = useRef<string | null>(null);
+  const sendInFlightRef = useRef(false);
 
   const [inputText, setInputText] = useState("");
   const [isChatLoading, setIsChatLoading] = useState(false);
@@ -192,12 +181,20 @@ export default function ChatScreen() {
   }, [conversationId, user?.id, user?.token, isOnline]);
 
   useEffect(() => {
-    if (!isReady || !routePrefill) return;
+    if (!routePrefill) {
+      appliedPrefillRef.current = null;
+      return;
+    }
+    if (!isReady) return;
+    if (appliedPrefillRef.current === routePrefill) return;
+    appliedPrefillRef.current = routePrefill;
     setInputText(routePrefill);
-  }, [isReady, routePrefill]);
+    router.setParams({ prefill: undefined });
+  }, [isReady, routePrefill, router]);
 
   const sendChatMessage = async (question = inputText) => {
-    if (!question.trim() || !user?.token || isChatLoading || !isReady || isOnline === false) return;
+    if (!question.trim() || !user?.token || sendInFlightRef.current || isChatLoading || !isReady || isOnline === false) return;
+    sendInFlightRef.current = true;
 
     const userMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -212,12 +209,29 @@ export default function ChatScreen() {
 
     let activeConversationId = conversationId;
     let createdConversationId: string | null = null;
+    let planAheadContext: string | null = null;
     try {
       if (!activeConversationId) {
+        if (user.id) {
+          if (routeHasPlanAheadContext) {
+            planAheadContext = await AsyncStorage.getItem(planAheadChatStorageKey(user.id));
+          } else {
+            const cachedPlan = await AsyncStorage.getItem(`@offline_${user.id}_planning_data`);
+            const parsedPlan = cachedPlan ? JSON.parse(cachedPlan) : null;
+            const planningData = parsedPlan?.data || parsedPlan;
+            const todayInManila = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Manila' }).format(new Date());
+            if (planningData?.metrics?.as_of_date === todayInManila) {
+              planAheadContext = JSON.stringify(buildPlanAheadChatContext(planningData));
+            }
+          }
+        }
         const createResponse = await fetch(`${API_URL}/advisor/conversations`, {
           method: "POST",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${user.token}` },
-          body: JSON.stringify({ topic: routeTopic }),
+          body: JSON.stringify({
+            topic: routeTopic,
+            ...(planAheadContext ? { plan_ahead_context: JSON.parse(planAheadContext) } : {}),
+          }),
         });
         const created = await createResponse.json();
         if (!createResponse.ok) throw new Error(created.detail || "Could not start your conversation.");
@@ -234,6 +248,9 @@ export default function ChatScreen() {
       const data = await response.json();
 
       if (response.ok) {
+        if (planAheadContext && user.id) {
+          void AsyncStorage.removeItem(planAheadChatStorageKey(user.id));
+        }
         if (createdConversationId) {
           setConversationId(createdConversationId);
           setConversationTitle(data.conversation?.title || "FinAI Advisor");
@@ -246,7 +263,7 @@ export default function ChatScreen() {
           ...prev.filter((message) => message.id !== userMsg.id),
           savedUserMessage,
           savedAssistantMessage,
-        ]);
+        ].filter((message, index, all) => all.findIndex((candidate) => candidate.id === message.id) === index));
       } else {
         throw new Error(data.detail || "Error communicating with FinAi");
       }
@@ -261,6 +278,7 @@ export default function ChatScreen() {
       setInputText(userMsg.text);
       Alert.alert("Message not saved", "Check your connection and try again. Your text is still in the message box.");
     } finally {
+      sendInFlightRef.current = false;
       setIsChatLoading(false);
     }
   };
@@ -505,7 +523,7 @@ export default function ChatScreen() {
 
         {/* Bottom Input Area */}
         <View style={[styles.inputArea, { paddingBottom: keyboardVisible ? 8 : Math.max(insets.bottom, 12) }]}>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
+          {messages.length === 0 && <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8, paddingBottom: 10 }}>
             {[
               ['Today', 'How much have I spent today?'],
               ['This week', 'How am I doing with spending this week?'],
@@ -521,7 +539,7 @@ export default function ChatScreen() {
                 <Text style={{ color: DEEP_GREEN, fontSize: 12, fontWeight: '700' }}>{label}</Text>
               </TouchableOpacity>
             ))}
-          </ScrollView>
+          </ScrollView>}
           <View style={styles.inputContainer}>
             <TouchableOpacity style={styles.attachButton}>
               <Ionicons name="add" size={22} color={SAGE} />
@@ -534,6 +552,9 @@ export default function ChatScreen() {
               placeholderTextColor="#A2B5B0"
               value={inputText}
               onChangeText={setInputText}
+              onSubmitEditing={() => { void sendChatMessage(); }}
+              returnKeyType="send"
+              submitBehavior="submit"
               multiline
               editable={isOnline !== false}
             />

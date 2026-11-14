@@ -10,6 +10,18 @@ import { CategoryForecast, PlanningData } from '../types/planning';
 
 const GREEN = '#233D36', TEAL = '#4C806F', GOLD = '#E8B844', SAGE = '#6C817C', RED = '#B7443F', EXPENSE = '#C96B65';
 const peso = (v: unknown) => `${String.fromCharCode(0x20b1)}${(Number(v) || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`;
+const estimateWording = (value: unknown) => String(value ?? '')
+  .replace(/\bforecast exceeded\b/gi, 'estimate exceeds the limit')
+  .replace(/\bforecast over limit\b/gi, 'estimate above the limit')
+  .replace(/\bforecasted\b/gi, 'estimated')
+  .replace(/\bforecasts?\b/gi, (word) => word.toLowerCase() === 'forecasts' ? 'estimates' : 'estimate')
+  .replace(/\bconfidence\s*:\s*(?:low|medium|high|limited|insufficient)\b/gi, 'available history is limited')
+  .replace(/\b(?:low|medium|high|limited) confidence\b/gi, 'limited recorded history')
+  .replace(/\bconfidence\b/gi, 'available history');
+const completeAction = (value: unknown) => estimateWording(value)
+  .replace(/\balign with annual\b/gi, 'align with your annual limit')
+  .replace(/\balign with monthly\b/gi, 'align with your monthly limit')
+  .replace(/\balign with weekly\b/gi, 'align with your weekly limit');
 type Props = { data: PlanningData; onFinn: (message?: string) => void; onManageBills: () => void; onCategory: (item: CategoryForecast, period: 'monthly' | 'weekly') => void };
 
 function totalRange(items: any[], period: 'monthly' | 'weekly', edge: 'range_low' | 'range_high') {
@@ -18,12 +30,30 @@ function totalRange(items: any[], period: 'monthly' | 'weekly', edge: 'range_low
 }
 
 function futureLabels(asOf: string | undefined, period: 'monthly' | 'weekly', count: number) {
-  if (period === 'weekly') return Array.from({ length: count }, (_, i) => `W+${i + 1}`);
+  if (period === 'weekly') return Array.from({ length: count }, (_, i) => i === 0 ? 'Next wk' : `+${i + 1}`);
   const date = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf) ? new Date(`${asOf}T12:00:00`) : new Date();
   return Array.from({ length: count }, (_, i) => {
-    const next = new Date(date.getFullYear(), date.getMonth() + i + 1, 1);
+    const next = new Date(date.getFullYear(), date.getMonth() + i, 1);
     return next.toLocaleString('en-US', { month: 'short' });
   });
+}
+
+function forecastMonthLabel(asOf?: string) {
+  const date = asOf && /^\d{4}-\d{2}-\d{2}$/.test(asOf)
+    ? new Date(`${asOf}T12:00:00`)
+    : new Date();
+  return date.toLocaleString('en-US', { month: 'long' });
+}
+
+function periodSortKey(label: string, period: 'monthly' | 'weekly') {
+  if (period === 'weekly') {
+    const date = /^(\d{4}-\d{2}-\d{2})/.exec(label)?.[1];
+    return date ? Date.parse(`${date}T00:00:00Z`) : Number.MAX_SAFE_INTEGER;
+  }
+  const match = /^([A-Za-z]{3}) (\d{4})$/.exec(label);
+  if (!match) return Number.MAX_SAFE_INTEGER;
+  const month = ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(match[1].toLowerCase());
+  return month < 0 ? Number.MAX_SAFE_INTEGER : Date.UTC(Number(match[2]), month, 1);
 }
 
 function shortDate(dateValue: string | undefined) {
@@ -47,7 +77,7 @@ function explanationRows(item: any) {
 
 export default function PlanningDashboard({ data, onFinn, onManageBills, onCategory }: Props) {
   const insets = useSafeAreaInsets();
-  const [tab, setTab] = useState<'Outlook' | 'Forecast' | 'My Plan'>('Outlook');
+  const [tab, setTab] = useState<'Outlook' | 'Estimate' | 'My Plan'>('Outlook');
   const [kind, setKind] = useState<'expense' | 'income'>('expense');
   const [period, setPeriod] = useState<'monthly' | 'weekly'>('monthly');
   const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
@@ -69,19 +99,41 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
   const items = categoryForecasts.filter((item: any) => item.type === kind);
   const expenses = categoryForecasts.filter((item: any) => item.type === 'expense');
   const incomes = categoryForecasts.filter((item: any) => item.type === 'income');
-  const actualCount = period === 'monthly' ? 3 : 4;
-  const forecastCount = period === 'monthly' ? 3 : 4;
-  const forecastConfidence = items.length === 0 ? 'No data' : items.some((item: any) => item[period]?.confidence === 'low') ? 'Low confidence' : items.some((item: any) => item[period]?.confidence === 'medium') ? 'Medium confidence' : 'High confidence';
+  const forecastCount = 1;
   const total = items.reduce((sum: number, item: any) => sum + Math.round((Number(item[period]?.forecast) || 0) * 100), 0) / 100;
   const rangeLow = totalRange(items, period, 'range_low');
   const rangeHigh = totalRange(items, period, 'range_high');
   const chartActual: ChartPoint[] = useMemo(() => {
     const totals = new Map<string, number>();
     items.forEach((item: any) => item[period]?.periods?.forEach((point: any) => totals.set(point.label, (totals.get(point.label) || 0) + Number(point.actual || 0))));
-    return [...totals.entries()].slice(-actualCount).map(([label, value], i, all) => ({
-      label: period === 'weekly' ? `W-${all.length - i}` : label.split(' ')[0], value,
-    }));
-  }, [items, period, actualCount]);
+    if (period === 'monthly') {
+      const asOf = data.metrics?.as_of_date && /^\d{4}-\d{2}-\d{2}$/.test(data.metrics.as_of_date)
+        ? new Date(`${data.metrics.as_of_date}T12:00:00`)
+        : new Date();
+      return Array.from({ length: 3 }, (_, index) => {
+        const date = new Date(asOf.getFullYear(), asOf.getMonth() - 3 + index, 1);
+        const monthLabel = date.toLocaleString('en-US', { month: 'short' });
+        const periodLabel = `${monthLabel} ${date.getFullYear()}`;
+        return { label: monthLabel, value: totals.get(periodLabel) || 0 };
+      });
+    }
+
+    const asOf = data.metrics?.as_of_date && /^\d{4}-\d{2}-\d{2}$/.test(data.metrics.as_of_date)
+      ? new Date(`${data.metrics.as_of_date}T12:00:00`)
+      : new Date();
+    const currentMonday = new Date(asOf.getFullYear(), asOf.getMonth(), asOf.getDate() - ((asOf.getDay() + 6) % 7));
+    const isoDate = (date: Date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const weeklyTotals = new Map<string, number>();
+    totals.forEach((value, label) => {
+      const start = /^(\d{4}-\d{2}-\d{2})/.exec(label)?.[1];
+      if (start) weeklyTotals.set(start, value);
+    });
+    return Array.from({ length: 4 }, (_, index) => {
+      const weeksAgo = 4 - index;
+      const start = new Date(currentMonday.getFullYear(), currentMonday.getMonth(), currentMonday.getDate() - weeksAgo * 7);
+      return { label: weeksAgo === 1 ? 'Last wk' : `${weeksAgo}w ago`, value: weeklyTotals.get(isoDate(start)) || 0 };
+    });
+  }, [items, period, data.metrics?.as_of_date]);
   const totalCents = (list: any[]) => list.reduce((sum, item) => sum + Math.round(Number(item.monthly?.forecast || 0) * 100), 0);
   const projectedIncome = totalCents(incomes) / 100;
   const projectedExpense = totalCents(expenses) / 100;
@@ -93,7 +145,7 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
       current[item.type as 'income' | 'expense'] += Number(point.actual) || 0;
       totals.set(point.label, current);
     }));
-    const actual = [...totals.entries()].slice(-3).map(([label, value]) => ({ label: label.split(' ')[0], value: value.income - value.expense }));
+    const actual = [...totals.entries()].sort(([left], [right]) => periodSortKey(left, 'monthly') - periodSortKey(right, 'monthly')).slice(-3).map(([label, value]) => ({ label: label.split(' ')[0], value: value.income - value.expense }));
     const incomeLow = totalRange(incomes, 'monthly', 'range_low'), incomeHigh = totalRange(incomes, 'monthly', 'range_high');
     const expenseLow = totalRange(expenses, 'monthly', 'range_low'), expenseHigh = totalRange(expenses, 'monthly', 'range_high');
     return {
@@ -160,38 +212,38 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
   };
 
   return <View>
-    <View style={s.tabs}>{(['Outlook', 'Forecast', 'My Plan'] as const).map((name) => <TouchableOpacity key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => setTab(name)} style={[s.tab, tab === name && s.tabActive]}><Text style={[s.tabText, tab === name && s.tabTextActive]}>{name}</Text></TouchableOpacity>)}</View>
+    <View style={s.tabs}>{(['Outlook', 'Estimate', 'My Plan'] as const).map((name) => <TouchableOpacity key={name} accessibilityRole="tab" accessibilityState={{ selected: tab === name }} onPress={() => setTab(name)} style={[s.tab, tab === name && s.tabActive]}><Text style={[s.tabText, tab === name && s.tabTextActive]}>{name}</Text></TouchableOpacity>)}</View>
 
     {tab === 'Outlook' && <ScrollView contentContainerStyle={s.body}>
       <View style={s.hero}>
-        <View style={s.between}><Text style={s.title}>Next 3 months</Text><Text style={[s.statusPill, projectedNet >= 0 ? s.goodPill : s.alertPill]}>{projectedNet >= 0 ? 'Positive estimate' : 'Negative estimate'}</Text></View>
-        <Text style={s.heroValue}>{projectedNet >= 0 ? '+' : ''}{peso(projectedNet * 3)}</Text>
-        <Text style={s.copy}>Forecast income minus forecast expenses over 3 months. This is not your current account balance.</Text>
-        <ForecastTimelineChart actual={outlookChart.actual} forecast={outlookChart.forecast} rangeLow={outlookChart.rangeLow} rangeHigh={outlookChart.rangeHigh} forecastPeriods={3} futureLabels={futureLabels(data.metrics?.as_of_date, 'monthly', 3)} accessibilityLabel="Recorded monthly net and projected next three months" height={160}/>
+        <View style={s.between}><Text style={s.title}>Projected Net for {forecastMonthLabel(data.metrics?.as_of_date)}</Text><Text style={[s.statusPill, projectedNet >= 0 ? s.goodPill : s.alertPill]}>{projectedNet >= 0 ? 'Positive estimate' : 'Negative estimate'}</Text></View>
+        <Text style={s.heroValue}>{projectedNet >= 0 ? '+' : ''}{peso(projectedNet)}</Text>
+        <Text style={s.copy}>Estimated income minus estimated expenses for one month, based on recent completed months. This is not your current account balance.</Text>
+        <ForecastTimelineChart actual={outlookChart.actual} forecast={outlookChart.forecast} rangeLow={outlookChart.rangeLow} rangeHigh={outlookChart.rangeHigh} forecastPeriods={1} futureLabels={futureLabels(data.metrics?.as_of_date, 'monthly', 1)} accessibilityLabel={`Recorded monthly net and estimate for ${forecastMonthLabel(data.metrics?.as_of_date)}`} height={160}/>
       </View>
       <View style={s.tiles}>
         <View style={s.tile}><Text style={s.tileLabel}>Health</Text><Text style={s.tileValue}>{data.health_score?.score == null ? '—' : `${data.health_score.score}/100`}</Text></View>
         <View style={s.tile}><Text style={s.tileLabel}>Safe this week</Text><Text style={s.tileValue}>{peso(data.safe_to_spend?.safe_this_week)}</Text></View>
         <View style={s.tile}><Text style={s.tileLabel}>Goals</Text><Text style={s.tileValue}>{goals.length} active</Text></View>
       </View>
-      <View style={s.card}><Text style={s.title}>Needs attention</Text>{urgent.length ? urgent.map((item: any, index: number) => <View key={`${item.id}-${index}`} style={s.listRow}><View style={[s.statusDot, { backgroundColor: RED }]}/><View style={{flex:1}}><Text style={s.itemTitle}>{item.finding?.headline || 'Planning insight'}</Text><Text style={s.copy} numberOfLines={1}>{item.why}</Text></View><Text style={[s.statusPill,s.alertPill]}>Review</Text></View>) : <Text style={s.copy}>No urgent alerts.</Text>}</View>
+      <View style={s.card}><Text style={s.title}>Needs attention</Text>{urgent.length ? urgent.map((item: any, index: number) => <View key={`${item.id}-${index}`} style={s.listRow}><View style={[s.statusDot, { backgroundColor: RED }]}/><View style={{flex:1}}><Text style={s.itemTitle}>{estimateWording(item.finding?.headline || 'Planning insight')}</Text><Text style={s.copy} numberOfLines={1}>{estimateWording(item.why)}</Text></View><Text style={[s.statusPill,s.alertPill]}>Review</Text></View>) : <Text style={s.copy}>No urgent alerts.</Text>}</View>
       <View style={s.card}><View style={s.between}><Text style={s.title}>Coming up</Text><TouchableOpacity onPress={onManageBills} accessibilityRole="button"><Text style={s.link}>Bills</Text></TouchableOpacity></View>{upcoming.length ? upcoming.map((item: any, i: number) => <View key={`${item.label}-${i}`} style={s.listRow}><Text style={s.itemTitle} numberOfLines={1}>{item.label}</Text><Text style={s.money}>{peso(item.amount)}{item.suffix || ''}</Text></View>) : <Text style={s.copy}>No bills due soon.</Text>}</View>
       <TouchableOpacity style={s.primaryButton} onPress={() => onFinn()} accessibilityRole="button"><Text style={s.primaryButtonText}>Discuss my plan with Finn</Text></TouchableOpacity>
     </ScrollView>}
 
-    {tab === 'Forecast' && <ScrollView contentContainerStyle={s.body}>
+    {tab === 'Estimate' && <ScrollView contentContainerStyle={s.body}>
       {period === 'weekly' && <View style={s.safeCard}><Text style={s.copy}>Safe to spend this week</Text><Text style={s.safeValue}>{peso(data.safe_to_spend?.safe_this_week)}</Text><Text style={s.copy}>{Number(data.safe_to_spend?.safe_this_week || 0) <= 0 ? data.safe_to_spend?.reason || 'Recorded limits and bills leave no estimated amount.' : 'After upcoming bills and goal pace'}</Text></View>}
       <View style={s.toggleRow}>
         <View style={s.toggle}>{(['expense','income'] as const).map(v => <TouchableOpacity key={v} onPress={() => setKind(v)} style={[s.toggleButton,kind===v&&s.toggleSelected]}><Text style={kind===v?s.toggleTextSelected:s.toggleText}>{v==='expense'?'Expenses':'Income'}</Text></TouchableOpacity>)}</View>
         <View style={s.toggle}>{(['weekly','monthly'] as const).map(v => <TouchableOpacity key={v} onPress={() => setPeriod(v)} style={[s.toggleButton,period===v&&s.toggleSelected]}><Text style={period===v?s.toggleTextSelected:s.toggleText}>{v==='weekly'?'Weekly':'Monthly'}</Text></TouchableOpacity>)}</View>
       </View>
       <View style={s.card}>
-        <View style={s.between}><Text style={s.title}>{kind === 'expense' ? 'Expenses' : 'Recorded income'}, {period === 'weekly' ? '4-week' : '3-month'} average</Text><Text style={s.statusPill}>{forecastConfidence}</Text></View>
-        <Text style={[s.forecastValue, kind === 'expense' && { color: EXPENSE }]}>{peso(total)}{period === 'weekly' ? '/week' : '/month'} estimated</Text>
-        <ForecastTimelineChart actual={chartActual} forecast={total} rangeLow={rangeLow} rangeHigh={rangeHigh} forecastPeriods={forecastCount} futureLabels={futureLabels(data.metrics?.as_of_date, period, forecastCount)} colorMode={kind} showLegend showValueLabels accessibilityLabel={`${kind} history and next ${forecastCount} ${period} forecasts`} height={190}/>
-        <Text style={s.copy}>Forecast = sum of each category’s recent average. {period === 'weekly' ? 'Only completed weeks are used.' : 'Only completed months are used.'}</Text>
-        {kind === 'income' && period === 'monthly' && Number(data.metrics?.reported_monthly_baseline) > 0 && <Text style={{ color: '#53645F', fontSize: 11, lineHeight: 16, backgroundColor: '#F1F4EF', padding: 10, borderRadius: 12 }}>Profile income reference: {peso(data.metrics?.reported_monthly_baseline)}/month. It is shown separately and is not added to the recorded-income forecast above.</Text>}
-        <TouchableOpacity style={s.guideLink} onPress={() => setShowForecastGuide(true)} accessibilityRole="button"><Ionicons name="help-circle-outline" size={17} color={TEAL}/><Text style={s.link}>How this forecast works</Text></TouchableOpacity>
+        <View style={s.between}><Text style={s.title}>{period === 'monthly' ? `Estimated ${kind === 'expense' ? 'Expenses' : 'Income'} for ${forecastMonthLabel(data.metrics?.as_of_date)}` : `Estimated ${kind === 'expense' ? 'Expenses' : 'Income'} next week`}</Text></View>
+        <Text style={[s.forecastValue, kind === 'expense' && { color: EXPENSE }]}>{peso(total)}</Text>
+        <ForecastTimelineChart actual={chartActual} forecast={total} rangeLow={rangeLow} rangeHigh={rangeHigh} forecastPeriods={forecastCount} futureLabels={futureLabels(data.metrics?.as_of_date, period, forecastCount)} colorMode={kind} showLegend showValueLabels accessibilityLabel={`${kind} history and ${period === 'monthly' ? `estimate for ${forecastMonthLabel(data.metrics?.as_of_date)}` : 'next-week estimate'}`} height={190}/>
+        <Text style={s.copy}>{period === 'weekly' ? 'The next-week estimate uses the average of up to 4 completed weeks.' : 'This estimate uses the average of up to 3 completed months.'}</Text>
+        {kind === 'income' && period === 'monthly' && Number(data.metrics?.reported_monthly_baseline) > 0 && <Text style={{ color: '#53645F', fontSize: 11, lineHeight: 16, backgroundColor: '#F1F4EF', padding: 10, borderRadius: 12 }}>Profile income reference: {peso(data.metrics?.reported_monthly_baseline)}/month. It is shown separately and is not added to the recorded-income estimate above.</Text>}
+        <TouchableOpacity style={s.guideLink} onPress={() => setShowForecastGuide(true)} accessibilityRole="button"><Ionicons name="help-circle-outline" size={17} color={TEAL}/><Text style={s.link}>How this estimate works</Text></TouchableOpacity>
       </View>
       <View style={s.card}><View style={s.between}><Text style={s.title}>By category, next {period === 'weekly' ? 'week' : 'month'}</Text><Text style={s.copy}>All categories</Text></View>
         <Text style={s.copy}>Amount is the estimate. Change compares recent and previous {period === 'weekly' ? '4-week' : '3-month'} averages: minus means lower, plus means higher.</Text>
@@ -203,7 +255,7 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
       <Modal visible={showForecastGuide} animationType="slide" transparent statusBarTranslucent onRequestClose={() => setShowForecastGuide(false)}>
         <View style={[s.guideOverlay, { paddingTop: Math.max(insets.top + 12, 32) }]}>
         <SafeAreaView style={s.guidePage} edges={['bottom']}>
-          <View style={s.guideHeader}><View style={{flex:1}}><Text style={s.guideTitle}>How this forecast works</Text><Text style={s.copy}>{kind === 'expense' ? 'Expenses' : 'Income'} · {period === 'weekly' ? 'weekly' : 'monthly'} estimate</Text></View><TouchableOpacity style={s.guideClose} onPress={() => setShowForecastGuide(false)} accessibilityRole="button" accessibilityLabel="Close explanation"><Ionicons name="close" size={20} color={GREEN}/></TouchableOpacity></View>
+          <View style={s.guideHeader}><View style={{flex:1}}><Text style={s.guideTitle}>How this estimate works</Text><Text style={s.copy}>{kind === 'expense' ? 'Expenses' : 'Income'} · {period === 'weekly' ? 'weekly' : 'monthly'} estimate</Text></View><TouchableOpacity style={s.guideClose} onPress={() => setShowForecastGuide(false)} accessibilityRole="button" accessibilityLabel="Close explanation"><Ionicons name="close" size={20} color={GREEN}/></TouchableOpacity></View>
           <ScrollView style={s.guideScroll} contentContainerStyle={s.guideBody}>
             <View style={s.guideCard}><Text style={s.guideLead}>The chart estimates a similar upcoming period based on your recent recorded activity.</Text>
               <GuideStep number="1" title={`Use the last ${period === 'weekly' ? '4 full weeks' : '3 full months'}`} body={`The current ${period === 'weekly' ? 'week' : 'month'} is incomplete, so it is left out. The solid bars show recorded ${kind === 'expense' ? 'spending' : 'income'} totals.`}/>
@@ -211,7 +263,6 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
               <GuideStep number="3" title="Use it as an estimate" body={`The dashed bars repeat the estimated ${period === 'weekly' ? 'weekly' : 'monthly'} amount for upcoming periods. They are flat estimates, not separate predictions for each date.`}/>
               <View style={s.guideValues}><Text style={s.guideSectionTitle}>Recent recorded totals</Text>{chartActual.length ? chartActual.map((point) => <View key={point.label} style={s.guideValueRow}><Text style={s.copy}>{point.label}</Text><Text style={s.guideValue}>{peso(point.value)}</Text></View>) : <Text style={s.copy}>No completed periods are available yet.</Text>}<View style={[s.guideValueRow,s.guideTotal]}><Text style={s.guideSectionTitle}>Estimated each {period === 'weekly' ? 'week' : 'month'}</Text><Text style={s.guideValue}>{peso(total)}</Text></View></View>
             </View>
-            <View style={s.guideCard}><Text style={s.guideSectionTitle}>How to read confidence</Text><Text style={s.copy}>{forecastConfidence === 'High confidence' ? 'Recent category amounts are relatively steady and there is enough completed history.' : forecastConfidence === 'Medium confidence' ? 'The available history shows some variation, so treat the estimate as a rough guide.' : forecastConfidence === 'No data' ? 'There is not enough recorded activity to make a useful estimate yet.' : 'At least one category has limited or highly variable history. More complete records can make its estimate more useful.'}</Text></View>
             <View style={s.guideNote}><Text style={s.guideSectionTitle}>Keep in mind</Text><Text style={s.copy}>The estimate may miss unrecorded purchases, one-time bills, or changes in your plans. It does not account for seasonal changes.</Text></View>
           </ScrollView>
           <View style={s.guideFooter}><TouchableOpacity style={s.primaryButton} onPress={() => setShowForecastGuide(false)} accessibilityRole="button"><Text style={s.primaryButtonText}>Got it</Text></TouchableOpacity></View>
@@ -224,7 +275,7 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
       <View style={s.planHero}>
         <View style={s.between}><View style={s.planIcon}><Ionicons name="navigate" size={20} color={TEAL}/></View><Text style={[s.statusPill, data.recommendation_source === 'ai' ? s.goodPill : s.watchPill]}>{data.recommendation_source === 'ai' ? 'AI-POWERED' : 'RECORD-BASED'}</Text></View>
         <Text style={s.planHeadline}>{planHeadline}</Text>
-        <Text style={s.copy} numberOfLines={2}>{data.summary || 'Recommendations are based on your recorded transactions, budgets, goals, and available forecasts.'}</Text>
+        <Text style={s.copy} numberOfLines={2}>{estimateWording(typeof data.summary === 'string' && data.summary.trim() ? data.summary : 'Recommendations are based on your recorded transactions, budgets, goals, and available estimates.')}</Text>
         {!!orderedInsights.length && <View style={s.planCountRow}><Ionicons name="sparkles-outline" size={15} color={TEAL}/><Text style={s.planCount}>{orderedInsights.length} planning {orderedInsights.length === 1 ? 'point' : 'points'} · estimates may change</Text></View>}
       </View>
       {!!visibleInsights.length && <Text style={s.sectionTitle}>{showAllInsights ? 'All suggestions' : 'Your priorities'}</Text>}
@@ -240,19 +291,21 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
         const itemKind = item.kind || nextStep?.params?.kind || '';
         const numberLabel = itemKind === 'budget_risk' ? 'Estimated by period end' : itemKind === 'budget_watch' ? 'Used so far' : keyNumber?.label;
         const numberText = keyNumber ? `${numberLabel}: ${keyNumber.unit === '%' ? `${keyNumber.value > 0 ? '+' : ''}${keyNumber.value}%` : keyNumber.unit === 'months' ? `${keyNumber.value} months` : `${peso(keyNumber.value)}${keyNumber.unit === 'PHP/month' ? '/mo' : ''}`}` : null;
-        const cta = nextStep?.label || 'Ask Finn';
-        const prompt = `Help me with this ${item.topic || 'planning'} insight: ${finding.headline || 'Review my plan'}. ${item.why || ''} Suggested next step: ${nextStep?.params?.detail || cta}. Use my recorded planning data and explain any uncertainty.`;
-        const evidenceRows = Object.entries(values).filter(([key, value]) => value !== null && value !== undefined && !['periods','window','drivers'].includes(key)).slice(0,5);
+        const cta = completeAction(nextStep?.label || 'Review this plan with Finn');
+        const headline = estimateWording(finding.headline || 'Review my plan');
+        const why = estimateWording(item.why || '');
+        const prompt = `Please explain this Plan Ahead item and suggest practical next steps: ${headline}. ${why} Suggested action: ${cta}. Use my recorded planning figures, distinguish recorded amounts from estimates, and mention what information is missing if relevant.`;
+        const evidenceRows = Object.entries(values).filter(([key, value]) => value !== null && value !== undefined && !['periods','window','drivers'].includes(key) && !/(^id$|_id|confidence|evidence_id)/i.test(key)).slice(0,5);
         const iconName = item.topic === 'goals' ? 'flag-outline' : item.topic === 'income' ? 'trending-up-outline' : itemKind.includes('bill') ? 'calendar-outline' : 'wallet-outline';
         const usage = itemKind.startsWith('budget_') ? Math.max(0, Math.min(Number(values.percentage_used) || 0, 100)) : null;
         return <View key={id} style={s.insightCard}>
           <View style={s.between}><View style={s.between}><View style={[s.insightIcon,{backgroundColor:item.priority==='high'?'#FBE5E2':'#E7F1EC'}]}><Ionicons name={iconName as any} size={18} color={item.priority==='high'?RED:TEAL}/></View><Text style={s.insightLabel}>{item.priority === 'high' ? 'PRIORITY' : item.priority === 'goal' ? 'GOAL' : 'SUGGESTION'}</Text></View><Text style={[s.statusPill, item.priority === 'high' ? s.alertPill : s.goodPill]}>{item.topic === 'goals' ? 'Goals' : item.topic === 'income' ? 'Income' : 'Spending'}</Text></View>
-          <Text style={s.insightTitle}>{finding.headline || 'Planning insight'}</Text>
+          <Text style={s.insightTitle}>{estimateWording(finding.headline || 'Planning insight')}</Text>
           {numberText && <Text style={s.insightMetric}>{numberText}</Text>}
           {usage !== null && <View accessibilityLabel={`${Math.round(usage)} percent of budget used`}><View style={s.meterTrack}><View style={[s.meterFill,{width:`${usage}%`,backgroundColor:usage>=90?RED:usage>=70?GOLD:TEAL}]}/></View><Text style={s.meterCaption}>{Math.round(usage)}% of budget used</Text></View>}
-          <Text style={s.copy} numberOfLines={2}>{item.why}</Text>
-          <View style={s.between}><TouchableOpacity style={s.softButton} onPress={() => onFinn(prompt)} accessibilityRole="button"><Text style={s.softButtonText}>{nextStep?.label || 'Plan for it'}</Text></TouchableOpacity><TouchableOpacity onPress={() => setExpandedInsight(isOpen ? null : id)} accessibilityRole="button" accessibilityState={{ expanded: isOpen }} style={s.whyButton}><Text style={s.link}>{isOpen ? 'Hide details' : 'Why this?'}</Text></TouchableOpacity></View>
-          {isOpen && <View style={s.explanation}><Text style={s.explanationTitle}>Evidence</Text>{evidence.window?.length > 0 && <Text style={s.copy}>Window: {evidence.window.join(', ')}</Text>}{evidence.comparison_period && <Text style={s.copy}>Compared with: {evidence.comparison_period}</Text>}{evidenceRows.map(([label,value]: any) => <View key={label} style={s.evidenceRow}><Text style={s.copy}>{String(label).replace(/_/g,' ')}</Text><Text style={s.evidenceValue}>{typeof value === 'number' ? peso(value) : String(value)}</Text></View>)}{evidence.how_calculated && <Text style={s.copy}>{evidence.how_calculated}</Text>}<Text style={s.copy}>Confidence: {item.confidence || 'limited'}</Text>{nextStep?.preview && <Text style={s.copy}>Possible impact: {JSON.stringify(nextStep.preview)}</Text>}</View>}
+          <Text style={s.copy} numberOfLines={2}>{estimateWording(item.why)}</Text>
+          <View style={s.between}><TouchableOpacity style={s.softButton} onPress={() => onFinn(prompt)} accessibilityRole="button"><Text style={s.softButtonText}>{cta}</Text></TouchableOpacity><TouchableOpacity onPress={() => setExpandedInsight(isOpen ? null : id)} accessibilityRole="button" accessibilityState={{ expanded: isOpen }} style={s.whyButton}><Text style={s.link}>{isOpen ? 'Hide details' : 'Why this?'}</Text></TouchableOpacity></View>
+          {isOpen && <View style={s.explanation}><Text style={s.explanationTitle}>Evidence</Text>{evidence.window?.length > 0 && <Text style={s.copy}>Window: {evidence.window.join(', ')}</Text>}{evidence.comparison_period && <Text style={s.copy}>Compared with: {evidence.comparison_period}</Text>}{evidenceRows.map(([label,value]: any) => <View key={label} style={s.evidenceRow}><Text style={s.copy}>{estimateWording(String(label).replace(/_/g,' '))}</Text><Text style={s.evidenceValue}>{typeof value === 'number' ? peso(value) : String(value)}</Text></View>)}{evidence.how_calculated && <Text style={s.copy}>{estimateWording(evidence.how_calculated)}</Text>}</View>}
         </View>;
       })}
       {showAllInsights && orderedInsights.length > 0 && !visibleInsights.length && <View style={s.card}><Text style={s.copy}>No suggestions in this area yet.</Text></View>}
@@ -270,7 +323,7 @@ export default function PlanningDashboard({ data, onFinn, onManageBills, onCateg
         </>}
       </View>}
       <View style={s.card}><TouchableOpacity style={s.between} onPress={() => setShowSpendingScenario(!showSpendingScenario)} accessibilityRole="button" accessibilityState={{ expanded: showSpendingScenario }}><View style={{flex:1}}><Text style={s.title}>Spending scenario</Text><Text style={s.copy}>Estimate how spending less could affect the next 3 months.</Text></View><Ionicons name={showSpendingScenario ? 'chevron-up' : 'chevron-down'} size={18} color={SAGE}/></TouchableOpacity>{showSpendingScenario && <><ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{gap:7}}>{expenses.map((item:any)=><TouchableOpacity key={item.category_id} onPress={()=>{setWhatIfCategory(item.category_id);setWhatIfResult(null)}} style={[s.chip,selectedExpense?.category_id===item.category_id&&s.chipSelected]}><Text style={[s.chipText,selectedExpense?.category_id===item.category_id&&{color:'#fff'}]}>{item.category}</Text></TouchableOpacity>)}</ScrollView>{selectedExpense&&<Text style={s.copy}>{selectedExpense.category} is estimated at about {peso(selectedExpense.monthly?.forecast)}/mo, based on your last 3 completed months. Choose a monthly reduction up to that estimate.</Text>}<TextInput style={s.input} placeholder="Monthly amount to reduce" value={whatIfAmount} onChangeText={setWhatIfAmount} keyboardType="decimal-pad" accessibilityLabel="Monthly expense reduction"/><TouchableOpacity style={s.softButton} onPress={runSpendingWhatIf} disabled={whatIfLoading} accessibilityRole="button">{whatIfLoading?<ActivityIndicator color={TEAL}/>:<Text style={s.softButtonText}>Calculate impact</Text>}</TouchableOpacity>{whatIfResult?.error?<Text style={s.error}>{whatIfResult.error}</Text>:whatIfResult&&<Text style={[s.insightMetric,{color:EXPENSE}]}>For {selectedExpense?.category}, reducing spending by {peso(whatIfResult.monthly_reduction)}/mo could lower the 3-month estimate by about {peso(whatIfResult.net_forecast_change)}, assuming other spending stays similar.</Text>}</>}</View>
-      <Text style={s.disclaimer}>Suggestions use recorded data and forecasts. Review them against your plans before making changes.</Text>
+      <Text style={s.disclaimer}>Suggestions use recorded data and estimates. Review them against your plans before making changes.</Text>
     </ScrollView>}
   </View>;
 }

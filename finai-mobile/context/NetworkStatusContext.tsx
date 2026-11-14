@@ -9,6 +9,7 @@ export function NetworkStatusProvider({ children }: { children: React.ReactNode 
   const [isOnline, setIsOnline] = useState<boolean | null>(null);
   const [checking, setChecking] = useState(false);
   const checkSequence = useRef(0);
+  const consecutiveFailures = useRef(0);
   const checkNow = useCallback(async () => {
     const sequence = ++checkSequence.current;
     setChecking(true);
@@ -16,12 +17,22 @@ export function NetworkStatusProvider({ children }: { children: React.ReactNode 
     const timeout = setTimeout(() => controller.abort(), 7000);
     try {
       const response = await fetch(`${API_URL}/api/health`, { method: 'GET', signal: controller.signal });
-      const health = await response.json().catch(() => ({}));
-      const reachable = response.ok && health?.details?.database !== 'error' && health?.details?.database !== 'offline';
-      if (sequence === checkSequence.current) setIsOnline(reachable);
+      // The health endpoint also checks MongoDB and AI providers. Those can be
+      // degraded while the API is still reachable, so don't call that offline.
+      const reachable = response.ok;
+      if (sequence === checkSequence.current) {
+        consecutiveFailures.current = reachable ? 0 : consecutiveFailures.current + 1;
+        // Ignore one missed probe (mobile networks briefly drop requests). A
+        // second consecutive failure switches to offline mode.
+        if (reachable) setIsOnline(true);
+        else if (consecutiveFailures.current >= 2) setIsOnline(false);
+      }
       return reachable;
     } catch {
-      if (sequence === checkSequence.current) setIsOnline(false);
+      if (sequence === checkSequence.current) {
+        consecutiveFailures.current += 1;
+        if (consecutiveFailures.current >= 2) setIsOnline(false);
+      }
       return false;
     } finally {
       clearTimeout(timeout);

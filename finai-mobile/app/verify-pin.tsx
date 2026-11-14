@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Alert, StatusBar, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ActivityIndicator } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -55,7 +56,7 @@ export default function VerifyPinScreen() {
       const email = user?.email || await AsyncStorage.getItem('user_email');
       
       if (!email) {
-        Alert.alert("Error", "No user session found. Please login again.");
+        Alert.alert('Session expired', 'Your sign-in session is missing. Please sign in again to verify your PIN.');
         await logoutUser();
         router.replace('/login');
         return;

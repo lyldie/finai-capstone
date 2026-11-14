@@ -2,6 +2,7 @@ import React from 'react';
 import { Modal, Pressable, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Transaction } from '../context/TransactionContext';
+import { displayTransactionNote } from '../utils/transactionNote';
 
 const GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -45,7 +46,7 @@ export default function TransactionDetailModal({ transaction, goalName, onClose,
           <Text style={[styles.amount, { color: income || contribution || withdrawal ? TEAL : GREEN }]}>{amountPrefix}{formatAmount(transaction.amount)}</Text>
 
           <View style={styles.details}>
-            <Detail label={contribution || withdrawal ? 'Goal' : 'Category'} value={contribution || withdrawal ? (goalName || transaction.note || 'Savings goal') : transaction.category} />
+            <Detail label={contribution || withdrawal ? 'Goal' : 'Category'} value={contribution || withdrawal ? (goalName || displayTransactionNote(transaction.note).replace(/^Contribution to goal:\s*/i, '') || 'Savings goal') : transaction.category} />
             <Detail label={transfer ? 'From' : 'Account'} value={transaction.account || '—'} />
             {transfer ? <Detail label="To" value={transaction.to_account || '—'} /> : null}
             <Detail label="Date" value={transaction.date} />

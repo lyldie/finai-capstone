@@ -206,9 +206,11 @@ async def restore_admin_account(admin_id: str, admin: dict = Depends(get_current
 
 @router.get("/", response_model=List[UserResponse])
 async def get_all_users(admin: dict = Depends(get_current_admin), archived: bool = False):
-    """CHANGED: added `archived` query param, same pattern as the other
-    3 routers -- default excludes archived users."""
-    query = {"is_archived": True if archived else {"$ne": True}}
+    """List regular users; administrator accounts use the super-admin routes."""
+    query = {
+        "role": {"$ne": "admin"},
+        "is_archived": True if archived else {"$ne": True},
+    }
     users = []
     async for user in db.users.find(query):
         user_data = {
@@ -284,14 +286,70 @@ async def restore_user(user_id: str, admin: dict = Depends(get_current_admin)):
     target_user = await db.users.find_one({"_id": oid})
     if not target_user:
         raise HTTPException(status_code=404, detail="User not found")
+    if target_user.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Administrator accounts can only be restored by the configured super admin.")
 
     await db.users.update_one(
-        {"_id": oid},
+        {"_id": oid, "role": {"$ne": "admin"}},
         {"$set": {"is_archived": False}, "$inc": {"token_version": 1}},
     )
     await log_action(admin["name"], f"Restored user '{target_user.get('name', user_id)}'")
 
     return {"message": "User restored successfully"}
+
+
+@router.delete("/{user_id}/permanent")
+async def permanently_delete_archived_user(user_id: str, admin: dict = Depends(get_current_admin)):
+    """Permanently remove an archived regular user and their owned FinAI data."""
+    try:
+        oid = ObjectId(user_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid user ID format") from exc
+
+    target = await db.users.find_one({"_id": oid})
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Administrator accounts cannot be permanently deleted here.")
+    if not target.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Archive this user before permanently deleting the account.")
+
+    owner_id = str(oid)
+    email = str(target.get("email", ""))
+    owned_collections = (
+        db.expenses, db.accounts, db.budgets, db.budget_rules, db.goals,
+        db.fixed_bills, db.bill_occurrences, db.notifications,
+        db.advisor_conversations, db.advisor_messages,
+    )
+
+    async def delete_owned_data(session):
+        for collection in owned_collections:
+            await collection.delete_many({"user_id": owner_id}, session=session)
+        await db.categories.delete_many(
+            {"user_id": owner_id, "category_role": "user"}, session=session
+        )
+        await db.account_balance_locks.delete_many(
+            {"_id": {"$regex": f"^{re.escape(owner_id)}:"}}, session=session
+        )
+        if email:
+            await db.password_resets.delete_many({"email": email.lower()}, session=session)
+            await db.pending_signups.delete_many({"email": email.lower()}, session=session)
+        result = await db.users.delete_one(
+            {"_id": oid, "is_archived": True, "role": {"$ne": "admin"}}, session=session
+        )
+        if result.deleted_count != 1:
+            raise HTTPException(status_code=409, detail="User state changed. Refresh and try again.")
+
+    try:
+        async with await db.client.start_session() as session:
+            await session.with_transaction(delete_owned_data)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail="Could not safely delete this user and their data.") from exc
+
+    await log_action(admin["name"], f"Permanently deleted archived user '{email or user_id}' and their FinAI data")
+    return {"message": "Archived user and owned data permanently deleted."}
 
 
 # --- SELF-SERVICE PROFILE ENDPOINTS ---

@@ -1,9 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { 
-  StyleSheet, Text, View, TextInput, Alert, StatusBar, 
-  Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard, Platform, Modal,
-  InteractionManager
-} from 'react-native';
+import { StyleSheet, Text, View, TextInput, StatusBar, Pressable, ActivityIndicator, TouchableOpacity, KeyboardAvoidingView, Keyboard, Platform, Modal, InteractionManager } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, useLocalSearchParams, Stack, useFocusEffect } from 'expo-router';

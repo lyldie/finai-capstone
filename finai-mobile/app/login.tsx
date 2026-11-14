@@ -1,9 +1,6 @@
 import React, { useState } from 'react';
-import { 
-  View, TextInput, Alert, StyleSheet, Text, ScrollView, 
-  ActivityIndicator, TouchableOpacity, StatusBar, Image, 
-  KeyboardAvoidingView, Platform 
-} from 'react-native';
+import { View, TextInput, StyleSheet, Text, ScrollView, ActivityIndicator, TouchableOpacity, StatusBar, Image, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { useRouter, Stack, useLocalSearchParams } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';

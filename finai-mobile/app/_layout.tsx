@@ -12,6 +12,7 @@ import { TransactionProvider } from '../context/TransactionContext';
 import { AuthProvider } from '../context/AuthContext';
 import TransactionToastHost from '../components/TransactionToastHost';
 import OfflineStatusBanner from '../components/OfflineStatusBanner';
+import { FinAIAlertHost } from '../utils/FinAIAlert';
 import { NetworkStatusProvider } from '../context/NetworkStatusContext';
 import { WalkthroughProvider } from '../context/WalkthroughContext';
 
@@ -36,6 +37,7 @@ function AppShell() {
         <Stack.Screen name="modal" options={{ presentation: 'modal' }} />
       </Stack>
       <TransactionToastHost />
+      <FinAIAlertHost />
     </View>
   );
 }

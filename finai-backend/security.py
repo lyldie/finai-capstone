@@ -1,6 +1,7 @@
 """Small Mongo-backed authentication rate limiter shared by all workers."""
 import hashlib
 import ipaddress
+import os
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request
@@ -8,6 +9,13 @@ from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
 
 from database import db
+
+
+# Temporary demo switch for authenticated AI/OCR feature caps. Auth/login
+# attempt limits remain active regardless of this setting.
+AI_FEATURE_RATE_LIMITS_ENABLED = os.getenv("AI_FEATURE_RATE_LIMITS_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 
 
 def _attempt_key(scope: str, value: str) -> str:
@@ -109,6 +117,9 @@ async def enforce_user_feature_rate_limit(
     MongoDB makes the counter consistent across Cloud Run instances and device
     sessions. The existing TTL index on auth_attempts removes old counters.
     """
+    if not AI_FEATURE_RATE_LIMITS_ENABLED:
+        return
+
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(seconds=window_seconds)
     key = _attempt_key(f"feature:{feature}", user_id)

@@ -1,6 +1,7 @@
 # finai-backend/schemas/goal.py
 from pydantic import BaseModel, Field, field_validator
 from typing import Optional
+from datetime import datetime
 from schemas.money import require_cent_precision
 
 class GoalCreate(BaseModel):
@@ -20,6 +21,9 @@ class GoalCreate(BaseModel):
 class GoalResponse(GoalCreate):
     id: str
     is_archived: bool = False
+    status: str = "active"
+    target_reached_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True

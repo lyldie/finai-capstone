@@ -1,5 +1,6 @@
 import React, { useCallback } from 'react';
-import { ActivityIndicator, Alert, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useFocusEffect, useRouter } from 'expo-router';
@@ -46,14 +47,15 @@ export default function NotificationsScreen() {
 
   const renderItem = ({ item }: { item: AppNotification }) => {
     const isSpendingSpike = item.event_type === 'spending_spike';
+    const isBillDue = item.event_type === 'bill_due';
     const actualPercent = Number(item.percentage_used ?? item.threshold);
     const displayPercent = formatPercentage(actualPercent);
     const isOverBudget = actualPercent > 100 || item.level === 'over_budget';
     // Notification colors reflect the threshold event saved at that time;
     // the Insights bars use the live spending percentage.
-    const accentColor = isSpendingSpike ? '#B77912' : getBudgetStatusColor(item.threshold);
-    const badgeBg = isSpendingSpike ? '#FFF4D8' : getBudgetStatusTint(item.threshold);
-    const badgeText = isSpendingSpike ? '#87530C' : getBudgetStatusTextColor(item.threshold);
+    const accentColor = isBillDue ? TEAL : isSpendingSpike ? '#B77912' : getBudgetStatusColor(item.threshold);
+    const badgeBg = isBillDue ? '#EAF4EF' : isSpendingSpike ? '#FFF4D8' : getBudgetStatusTint(item.threshold);
+    const badgeText = isBillDue ? GREEN : isSpendingSpike ? '#87530C' : getBudgetStatusTextColor(item.threshold);
     const levelTitle = isOverBudget
       ? `OVER BUDGET · ${displayPercent}%`
       : actualPercent >= 100
@@ -67,11 +69,11 @@ export default function NotificationsScreen() {
         <View style={styles.itemHeader}>
           <View style={[styles.levelBadge, { backgroundColor: badgeBg }]}>
             <Ionicons
-              name={isSpendingSpike ? 'trending-up-outline' : actualPercent < 90 ? 'warning-outline' : 'alert-circle-outline'}
+              name={isBillDue ? 'calendar-outline' : isSpendingSpike ? 'trending-up-outline' : actualPercent < 90 ? 'warning-outline' : 'alert-circle-outline'}
               size={13}
               color={badgeText}
             />
-            <Text style={[styles.levelText, { color: badgeText }]}>{item.provisional ? 'OFFLINE ESTIMATE' : isSpendingSpike ? 'SPENDING HIGHER THAN USUAL' : levelTitle}</Text>
+            <Text style={[styles.levelText, { color: badgeText }]}>{item.provisional ? 'OFFLINE ESTIMATE' : isBillDue ? 'UPCOMING BILL' : isSpendingSpike ? 'SPENDING HIGHER THAN USUAL' : levelTitle}</Text>
           </View>
           <Text style={styles.dateText}>
             {new Date(item.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
@@ -86,12 +88,12 @@ export default function NotificationsScreen() {
               style={styles.reviewButton}
               onPress={() => {
                 void markNotificationRead(item.id);
-                router.push(isSpendingSpike ? '/(tabs)/transactions' as never : '/(tabs)/insights' as never);
+                router.push(isBillDue ? '/fixed-bills' as never : isSpendingSpike ? '/(tabs)/transactions' as never : '/(tabs)/insights' as never);
               }}
               activeOpacity={0.8}
               accessibilityRole="button"
             >
-              <Text style={styles.reviewButtonText}>{isSpendingSpike ? 'Review transactions' : 'Review budget'}</Text>
+              <Text style={styles.reviewButtonText}>{isBillDue ? 'View scheduled bills' : isSpendingSpike ? 'Review transactions' : 'Review budget'}</Text>
               <Ionicons name="arrow-forward" size={13} color={TEAL} />
             </TouchableOpacity>
             <TouchableOpacity
@@ -101,8 +103,10 @@ export default function NotificationsScreen() {
                 router.push({
                   pathname: '/chat',
                   params: {
-                    topic: 'budget',
-                    prefill: `Can you explain this ${isSpendingSpike ? 'spending activity' : 'budget'} alert and suggest what I should review? ${item.message}`,
+                    topic: isBillDue ? 'general' : 'budget',
+                    prefill: isBillDue
+                      ? `Can you help me plan for this upcoming bill and suggest what I could review? ${item.message}`
+                      : `Can you explain this ${isSpendingSpike ? 'spending activity' : 'budget'} alert and suggest what I should review? ${item.message}`,
                   },
                 } as never);
               }}
@@ -188,7 +192,7 @@ export default function NotificationsScreen() {
               </View>
               <Text style={styles.emptyTitle}>No notifications yet</Text>
               <Text style={styles.emptyText}>
-                Budget alerts and unusual spending notices will appear here.
+                Budget alerts, spending activity, and upcoming bill reminders will appear here.
               </Text>
             </View>
           }

@@ -1,9 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, Alert, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import DateTimePicker, { DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { Account, Transaction } from '../context/TransactionContext';
 import { hasSubCentPrecision } from '../utils/money';
+import { userFacingError } from '../utils/userFacingError';
 
 const GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -67,7 +69,7 @@ export default function EditContributionModal({ transaction, goalName, accounts,
       await onSave(transaction, amount, account, date);
       onClose();
     } catch (error) {
-      Alert.alert('Could not update contribution', error instanceof Error ? error.message : 'Please review the details and try again.');
+      Alert.alert('Could not update contribution', userFacingError(error, 'FinAI could not update this contribution. Check the details and try again.'));
     } finally {
       setSaving(false);
     }

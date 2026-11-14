@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback } from 'react';
-import { StyleSheet, Text, Alert, View, TouchableOpacity, ScrollView, ActivityIndicator, Modal, Platform } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, ActivityIndicator, Modal, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -444,6 +445,17 @@ export default function InsightsScreen() {
   const openDatePicker = (target: 'start' | 'end') => {
     const selected = target === 'start' ? customStart : customEnd;
     setDraftDate(selected ? parseTransactionDate(selected) : today);
+    if (Platform.OS === 'android') {
+      Alert.alert(
+        target === 'start' ? 'Choose start date' : 'Choose end date',
+        target === 'start' ? 'Step 1 of 2: choose the first day to include.' : 'Step 2 of 2: choose the last day to include.',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          { text: 'Continue', onPress: () => setDatePickerTarget(target) },
+        ],
+      );
+      return;
+    }
     setDatePickerTarget(target);
   };
   const applyDate = (target: 'start' | 'end', value: Date) => {
@@ -452,7 +464,19 @@ export default function InsightsScreen() {
       setCustomStart(key);
       if (customEnd && key > customEnd) setCustomEnd(key);
       setDraftDate(customEnd && customEnd >= key ? parseTransactionDate(customEnd) : value);
-      setDatePickerTarget('end');
+      if (Platform.OS === 'android') {
+        setDatePickerTarget(null);
+        Alert.alert(
+          'Start date selected',
+          `${key} is the first day in the range. Choose the end date next.`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Choose end date', onPress: () => setDatePickerTarget('end') },
+          ],
+        );
+      } else {
+        setDatePickerTarget('end');
+      }
     } else {
       if (customStart && key < customStart) {
         setDatePickerTarget(null);
@@ -997,7 +1021,8 @@ export default function InsightsScreen() {
               goals.map((goal, index) => {
                 const target = Number(goal.target_amount) || 0;
                 const saved = Number(goal.current_savings) || 0;
-                const progress = target > 0 ? (saved / target) * 100 : 0;
+                const reached = goal.status === 'target_reached' || goal.status === 'completed' || (target > 0 && saved >= target);
+                const progress = reached ? 100 : target > 0 ? Math.min((saved / target) * 100, 100) : 0;
                 const presetName = resolvePresetName(goal);
                 const preset = goalTypes.find((item: any) => item.id === goal.goal_type_id || item._id === goal.goal_type_id);
                 const goalIcon = getDisplayEmoji(preset?.icon, getGoalEmoji(presetName || goal.target_name));
@@ -1022,8 +1047,8 @@ export default function InsightsScreen() {
                         </View>
                         <View style={{ flex: 1, minWidth: 0 }}>
                           <Text style={styles.rowTitle} numberOfLines={1} ellipsizeMode="tail">{goal.target_name}</Text>
-                          <Text style={styles.caption} numberOfLines={1}>
-                            {presetName ? `${presetName} · ` : ''}by {formatShortDate(goal.target_date)}
+                      <Text style={styles.caption} numberOfLines={1}>
+                            {goal.status === 'completed' ? 'Goal completed · ' : goal.status === 'target_reached' || reached ? 'Target reached · ' : ''}{presetName ? `${presetName} · ` : ''}by {formatShortDate(goal.target_date)}
                           </Text>
                         </View>
                       </View>
@@ -1077,7 +1102,7 @@ export default function InsightsScreen() {
                     <View style={{ marginTop: 10 }}>
                       <ProgressBar progress={progress} colors={[TEAL, INCOME_GREEN]} height={8} />
                     </View>
-                    <Text style={[styles.caption, { marginTop: 8 }]}>{formatCurrency(Math.max(target - saved, 0))} to go</Text>
+                    <Text style={[styles.caption, { marginTop: 8 }]}>{reached ? `${formatCurrency(saved)} funds remaining` : `${formatCurrency(Math.max(target - saved, 0))} to go`}</Text>
                   </TouchableOpacity>
                 );
               })

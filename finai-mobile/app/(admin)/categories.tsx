@@ -1,8 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, SectionList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform
-} from 'react-native';
+import { View, Text, SectionList, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -84,7 +82,7 @@ export default function CategoriesScreen() {
           });
           if (response.ok) fetchCategories(view);
           else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
-          else Alert.alert('Could not archive category', await getResponseDetail(response, 'Please try again.'));
+          else Alert.alert('Could not archive category', await getResponseDetail(response, 'FinAI could not archive this category. Refresh the list and try again.'));
         }
       }
     ]);
@@ -97,7 +95,7 @@ export default function CategoriesScreen() {
     });
     if (response.ok) fetchCategories(view);
     else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
-    else Alert.alert('Could not restore category', await getResponseDetail(response, 'Check whether another active preset already uses this name, then try again.'));
+    else Alert.alert('Could not restore category', await getResponseDetail(response, 'FinAI could not restore this category. Check whether an active category already uses this name, then try again.'));
   };
 
   // 👈 BAGONG IDINAGDAG: Permanent Delete handler para sa mga na-archive na Categories
@@ -128,7 +126,7 @@ export default function CategoriesScreen() {
                 }
               }
             } catch (error) {
-              Alert.alert("Error", "Check connection.");
+              Alert.alert('Could not delete category', 'FinAI could not reach the server. Check your connection and try again.');
             }
           }
         }

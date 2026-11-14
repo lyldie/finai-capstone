@@ -1,14 +1,16 @@
 import React, { useState } from 'react';
-import { ActivityIndicator, Alert, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import Svg, { Path } from 'react-native-svg';
 import { isExpoGo } from '../utils/runtime';
 
 type Props = {
   disabled?: boolean;
+  onGoogleAccountSelected?: () => Promise<boolean>;
   onIdToken: (idToken: string) => Promise<void>;
 };
 
-export default function GoogleSignInButton({ disabled = false, onIdToken }: Props) {
+export default function GoogleSignInButton({ disabled = false, onGoogleAccountSelected, onIdToken }: Props) {
   const [loading, setLoading] = useState(false);
 
   // Expo Go does not include this native module. Keep the email/password flow
@@ -29,10 +31,15 @@ export default function GoogleSignInButton({ disabled = false, onIdToken }: Prop
       // the missing native module during route startup.
       const { GoogleSignin } = require('@react-native-google-signin/google-signin');
       GoogleSignin.configure({ webClientId, ...(iosClientId ? { iosClientId } : {}) });
+      // FinAI logout does not clear the native Google Sign-In session. Clear
+      // that app session before interactive sign-in so the user can choose
+      // which Google account to use on both Login and Sign Up.
+      if (GoogleSignin.hasPreviousSignIn()) await GoogleSignin.signOut();
       const result = await GoogleSignin.signIn();
       if (result.type === 'cancelled') return;
       const idToken = result.data.idToken;
       if (!idToken) throw new Error('Google did not return a sign-in token. Please try again.');
+      if (onGoogleAccountSelected && !(await onGoogleAccountSelected())) return;
       await onIdToken(idToken);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Could not sign in with Google. Please try again.';

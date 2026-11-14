@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
-import { Alert, ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ScrollView, StatusBar, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -8,6 +9,7 @@ import { useTransactions, Goal } from '../context/TransactionContext';
 import DepositModal from '../components/DepositModal';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
+import { userFacingError } from '../utils/userFacingError';
 
 const GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -19,7 +21,7 @@ const money = (value: number) => `₱${(Number(value) || 0).toLocaleString('en-P
 
 export default function GoalSavingsScreen() {
   const router = useRouter();
-  const { goals = [], totalSavings = 0, transactions = [], goalTypes = [], accounts = [], getAccountBalance, depositToGoal, withdrawFromGoal, archiveGoal } = useTransactions();
+  const { goals = [], totalSavings = 0, transactions = [], goalTypes = [], accounts = [], getAccountBalance, depositToGoal, withdrawFromGoal, archiveGoal, completeGoal } = useTransactions();
   const [expandedGoalId, setExpandedGoalId] = useState<string | null>(null);
   const [depositGoal, setDepositGoal] = useState<Goal | null>(null);
   const [depositVisible, setDepositVisible] = useState(false);
@@ -65,7 +67,9 @@ export default function GoalSavingsScreen() {
         {goals.length ? goals.map((goal) => {
           const saved = Number(goal.current_savings) || 0;
           const target = Number(goal.target_amount) || 0;
-          const pct = target > 0 ? Math.min((saved / target) * 100, 100) : 0;
+          const goalStatus = goal.status || (target > 0 && saved >= target ? 'target_reached' : 'active');
+          const hasReachedTarget = goalStatus === 'target_reached' || goalStatus === 'completed';
+          const pct = hasReachedTarget ? 100 : target > 0 ? Math.min((saved / target) * 100, 100) : 0;
           const expanded = expandedGoalId === goal.id;
           const goalType = goalTypes.find((item) => item.id === goal.goal_type_id);
           const emoji = getDisplayEmoji(goalType?.icon, getGoalEmoji(goalType?.name || goal.target_name));
@@ -73,18 +77,19 @@ export default function GoalSavingsScreen() {
           return <View key={goal.id} style={styles.goalCard}>
             <TouchableOpacity style={styles.goalTop} activeOpacity={0.82} onPress={() => setExpandedGoalId(expanded ? null : goal.id)} accessibilityRole="button" accessibilityState={{ expanded }}>
               <View style={styles.goalIcon}><Text style={styles.goalEmoji}>{emoji}</Text></View>
-              <View style={styles.goalInfo}><Text style={styles.goalName} numberOfLines={1}>{goal.target_name}</Text><Text style={styles.goalTarget}>Target {money(target)} · due {goal.target_date || 'not set'}</Text></View>
+              <View style={styles.goalInfo}><Text style={styles.goalName} numberOfLines={1}>{goal.target_name}</Text><Text style={styles.goalTarget}>Target {money(target)} · due {goal.target_date || 'not set'}</Text>{hasReachedTarget ? <Text style={styles.goalStatus}>{goalStatus === 'completed' ? '✓ Goal completed' : '✓ Target reached'}</Text> : null}</View>
               <View style={styles.goalAmountWrap}><Text style={styles.goalAmount}>{money(saved)}</Text><Text style={styles.goalPercent}>{pct.toFixed(0)}%</Text></View>
               <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={SAGE} />
             </TouchableOpacity>
             <View style={styles.goalProgressTrack}><View style={[styles.goalProgressFill, { width: `${pct}%` }]} /></View>
             <View style={styles.goalFooter}>
-              <Text style={styles.goalRemaining}>{money(Math.max(target - saved, 0))} to go</Text>
+              <Text style={styles.goalRemaining}>{hasReachedTarget ? `${money(saved)} funds remaining` : `${money(Math.max(target - saved, 0))} to go`}</Text>
               <View style={styles.goalActions}>
                 <TouchableOpacity style={styles.goalIconAction} onPress={() => router.push({ pathname: '/create-goal', params: { id: goal.id, target_name: goal.target_name, target_amount: goal.target_amount, target_date: goal.target_date, current_savings: goal.current_savings, goal_type_id: (goal as any).goal_type_id || (goal as any).preset_id || (goal as any).goal_type } } as never)} accessibilityRole="button" accessibilityLabel={`Edit ${goal.target_name}`}><Ionicons name="pencil-outline" size={15} color={GREEN} /></TouchableOpacity>
                 <TouchableOpacity style={[styles.goalIconAction, styles.archiveGoalAction]} onPress={() => Alert.alert('Archive goal?', `Move “${goal.target_name}” to the archive? Its contribution history will be retained.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Archive', onPress: () => archiveGoal?.(goal.id) }])} accessibilityRole="button" accessibilityLabel={`Archive ${goal.target_name}`}><Ionicons name="archive-outline" size={15} color="#A33B34" /></TouchableOpacity>
-                <TouchableOpacity style={styles.addContribution} onPress={() => openMovement(goal, 'deposit')} accessibilityRole="button"><Ionicons name="add-circle-outline" size={16} color={TEAL} /><Text style={styles.addContributionText}>Add</Text></TouchableOpacity>
+                {!hasReachedTarget ? <TouchableOpacity style={styles.addContribution} onPress={() => openMovement(goal, 'deposit')} accessibilityRole="button"><Ionicons name="add-circle-outline" size={16} color={TEAL} /><Text style={styles.addContributionText}>Add</Text></TouchableOpacity> : null}
                 {saved > 0 ? <TouchableOpacity style={styles.addContribution} onPress={() => openMovement(goal, 'withdraw')} accessibilityRole="button"><Ionicons name="arrow-up-circle-outline" size={16} color={GREEN} /><Text style={styles.addContributionText}>Withdraw</Text></TouchableOpacity> : null}
+                {goalStatus === 'target_reached' ? <TouchableOpacity style={styles.addContribution} onPress={() => Alert.alert('Mark goal complete?', `Did you use this savings goal for ${goal.target_name}? Marking it complete keeps its achievement on record; it does not move or spend the funds.`, [{ text: 'Cancel', style: 'cancel' }, { text: 'Mark complete', onPress: () => completeGoal(goal.id).catch((error: any) => Alert.alert('Could not complete goal', userFacingError(error, 'FinAI could not mark this goal complete. Check your connection and try again.'))) }])} accessibilityRole="button"><Ionicons name="checkmark-circle-outline" size={16} color={TEAL} /><Text style={styles.addContributionText}>Complete</Text></TouchableOpacity> : null}
               </View>
             </View>
             {expanded ? <View style={styles.contributionsBlock}>
@@ -126,7 +131,7 @@ const styles = StyleSheet.create({
   goalTop: { flexDirection: 'row', alignItems: 'center', gap: 9 }, goalIcon: { width: 42, height: 42, borderRadius: 13, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, goalEmoji: { fontSize: 21 },
   goalInfo: { flex: 1, minWidth: 0 }, goalName: { color: GREEN, fontSize: 14, fontWeight: '800' }, goalTarget: { color: SAGE, fontSize: 10, marginTop: 3 }, goalAmountWrap: { alignItems: 'flex-end' }, goalAmount: { color: GREEN, fontSize: 13, fontWeight: '900' }, goalPercent: { color: TEAL, fontSize: 10, fontWeight: '800', marginTop: 2 },
   goalProgressTrack: { height: 7, borderRadius: 4, backgroundColor: '#E9E7DF', overflow: 'hidden', marginTop: 13 }, goalProgressFill: { height: '100%', borderRadius: 4, backgroundColor: GOLD },
-  goalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 }, goalRemaining: { color: SAGE, fontSize: 11, fontWeight: '600' }, goalActions: { flexDirection: 'row', alignItems: 'center', gap: 5 }, goalIconAction: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, archiveGoalAction: { backgroundColor: 'rgba(255,98,89,0.12)' }, addContribution: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 }, addContributionText: { color: TEAL, fontSize: 11, fontWeight: '800' },
+  goalFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8, flexWrap: 'wrap', gap: 4 }, goalRemaining: { color: SAGE, fontSize: 11, fontWeight: '600' }, goalStatus: { color: TEAL, fontSize: 10, fontWeight: '800', marginTop: 3 }, goalActions: { flexDirection: 'row', alignItems: 'center', gap: 5, flexWrap: 'wrap', justifyContent: 'flex-end' }, goalIconAction: { width: 30, height: 30, borderRadius: 15, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, archiveGoalAction: { backgroundColor: 'rgba(255,98,89,0.12)' }, addContribution: { flexDirection: 'row', alignItems: 'center', gap: 4, padding: 4 }, addContributionText: { color: TEAL, fontSize: 11, fontWeight: '800' },
   contributionsBlock: { borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: '#E6EAE6', paddingTop: 12, marginTop: 10 }, contributionsTitle: { color: GREEN, fontSize: 12, fontWeight: '800', marginBottom: 7 },
   contributionRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8 }, contributionIcon: { width: 29, height: 29, borderRadius: 10, backgroundColor: '#EAF2EE', alignItems: 'center', justifyContent: 'center' }, contributionCopy: { flex: 1 }, contributionName: { color: GREEN, fontSize: 11, fontWeight: '700' }, contributionMeta: { color: SAGE, fontSize: 9, marginTop: 2 }, contributionAmount: { color: TEAL, fontSize: 11, fontWeight: '800' },
   emptyCard: { alignItems: 'center', padding: 24, backgroundColor: '#FFFFFF', borderRadius: 20 }, emptyTitle: { color: GREEN, fontSize: 16, fontWeight: '900', marginTop: 12 }, emptyCopy: { color: SAGE, fontSize: 12, lineHeight: 18, textAlign: 'center', marginTop: 6 }, emptyButton: { backgroundColor: GREEN, borderRadius: 13, paddingHorizontal: 16, paddingVertical: 11, marginTop: 15 }, emptyButtonText: { color: '#FFFFFF', fontWeight: '800', fontSize: 12 },

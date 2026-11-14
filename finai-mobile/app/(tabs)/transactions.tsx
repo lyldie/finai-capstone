@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
-import { StyleSheet, Text, View, SectionList, TouchableOpacity, Alert, StatusBar, TextInput, ScrollView, ActivityIndicator, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, Text, View, SectionList, TouchableOpacity, StatusBar, TextInput, ScrollView, ActivityIndicator, Modal, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,6 +12,7 @@ import { getDisplayEmoji } from '../../components/EmojiPicker';
 import TransactionDetailModal from '../../components/TransactionDetailModal';
 import EditContributionModal from '../../components/EditContributionModal';
 import { userFacingError } from '../../utils/userFacingError';
+import { displayTransactionNote } from '../../utils/transactionNote';
 
 // ---- FINAI BRAND TOKENS ----
 const DEEP_GREEN = '#1c3c36';
@@ -226,13 +228,13 @@ export default function TransactionsScreen() {
       amountColor = TEAL; prefix = '+'; bgColor = 'rgba(61, 125, 108, 0.12)';
     } else if (item.type === 'Transfer') {
       amountColor = DEEP_GREEN; prefix = ''; bgColor = 'rgba(61, 125, 108, 0.12)';
-    } else if (item.type === 'Contribution' || (item.goal_id && item.type !== 'Goal Withdrawal')) {
+    } else if (item.type === 'Contribution' || item.goal_id) {
       amountColor = TEAL; prefix = '-'; bgColor = 'rgba(61, 125, 108, 0.12)';
     }
     const categoryIcon = categories.find((category) => category.name === item.category && category.type === item.type.toLowerCase())?.icon;
     const transactionEmoji = item.type === 'Transfer'
       ? '🔄'
-      : item.type === 'Contribution' || (item.goal_id && item.type !== 'Goal Withdrawal')
+      : item.type === 'Contribution' || item.goal_id
         ? '🎯'
         : getDisplayEmoji(categoryIcon, getCategoryEmoji(item.category, item.type.toLowerCase()));
 
@@ -247,7 +249,7 @@ export default function TransactionsScreen() {
               <Text style={styles.cardCategory} numberOfLines={1}>
                 {item.type === 'Transfer' ? `${item.account} → ${item.to_account || 'Other'}` : item.type === 'Goal Withdrawal' ? 'Goal Withdrawal' : item.type === 'Contribution' || item.goal_id ? 'Goal Contribution' : item.category}
               </Text>
-              {item.note ? <Text style={styles.cardNote} numberOfLines={1}>{item.note}</Text> : null}
+              {item.note ? <Text style={styles.cardNote} numberOfLines={1}>{displayTransactionNote(item.note)}</Text> : null}
             </View>
           </View>
           <View style={styles.cardRight}>

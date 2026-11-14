@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, Alert, ActivityIndicator, StatusBar } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ActivityIndicator, StatusBar } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';

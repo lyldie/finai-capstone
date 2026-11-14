@@ -1,9 +1,6 @@
 import React, { useCallback, useState, useRef } from 'react';
-import { 
-  StyleSheet, Text, View, TouchableOpacity, TextInput, Modal, FlatList,
-  Alert, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard,
-  InteractionManager
-} from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, TextInput, Modal, FlatList, StatusBar, Platform, KeyboardAvoidingView, ScrollView, Pressable, ActivityIndicator, Keyboard, InteractionManager } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter, Stack, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,7 +12,7 @@ import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
 import { setSecureItem } from '../utils/secureStorage';
 import { hasSubCentPrecision } from '../utils/money';
-import { logUnexpectedError } from '../utils/userFacingError';
+import { logUnexpectedError, userFacingError } from '../utils/userFacingError';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -66,7 +63,25 @@ export default function SetupPinScreen() {
   const inputRef = useRef<TextInput>(null); 
   const router = useRouter();
   
-  const { user } = useAuth();
+  const { user, logoutUser } = useAuth();
+
+  const handleExitSetup = () => {
+    Alert.alert(
+      'Leave account setup?',
+      'Your account is created, but you need to set an app PIN before using FinAI. You can sign in again later to finish setup.',
+      [
+        { text: 'Stay here', style: 'cancel' },
+        {
+          text: 'Sign out',
+          style: 'destructive',
+          onPress: async () => {
+            await logoutUser();
+            router.replace('/login');
+          },
+        },
+      ],
+    );
+  };
 
   // Android can drop autoFocus while the onboarding route is animating in.
   // Focus the PIN input after navigation interactions complete, with the PIN
@@ -190,7 +205,7 @@ export default function SetupPinScreen() {
           ]
         );
       } else {
-        Alert.alert('Setup error', typeof res.detail === 'string' ? res.detail : 'Could not save your setup. Please try again.');
+        Alert.alert('Could not finish PIN setup', userFacingError(res.detail, 'FinAI could not save your PIN and setup details. Check your connection and try again.'));
       }
 
     } catch (error) {
@@ -230,6 +245,16 @@ export default function SetupPinScreen() {
         >
           <Text style={styles.headerText}>Account{"\n"}Onboarding</Text>
           <Ionicons name="rocket-outline" size={80} color="rgba(255,255,255,0.2)" style={styles.headerIcon} />
+          <TouchableOpacity
+            style={styles.exitSetupButton}
+            onPress={handleExitSetup}
+            disabled={loading}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out and leave account setup"
+          >
+            <Ionicons name="log-out-outline" size={17} color="#FFFFFF" />
+            <Text style={styles.exitSetupText}>Sign out</Text>
+          </TouchableOpacity>
         </LinearGradient>
 
         <View style={styles.content}>
@@ -426,6 +451,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 30,
     paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 20 : 50,
   },
+  exitSetupButton: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 8 : 48,
+    right: 20,
+    zIndex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+  },
+  exitSetupText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
   headerText: { color: '#fff', fontSize: 34, fontWeight: '900' },
   headerIcon: { position: 'absolute', right: 20, bottom: 20 },
   content: { 

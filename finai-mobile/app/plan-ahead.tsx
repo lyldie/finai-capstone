@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -12,6 +13,7 @@ import { API_URL } from '../config';
 import PlanningDashboard from '../components/PlanningDashboard';
 import { CategoryForecast, PlanningData } from '../types/planning';
 import { userFacingError } from '../utils/userFacingError';
+import { buildPlanAheadChatContext, planAheadChatStorageKey } from '../utils/planAheadChatContext';
 
 const DEEP_GREEN = '#1c3c36';
 const CREAM = '#FAF7F2';
@@ -86,9 +88,19 @@ export default function PlanAheadScreen() {
     }
     previousPendingCount.current = pendingTransactionCount;
   }, [pendingTransactionCount]);
-  const openFinnChat = (topic: 'general' | 'budget' | 'goals', prompt: string) => {
+  const openFinnChat = async (topic: 'general' | 'budget' | 'goals', prompt: string) => {
     if (!user?.token) return;
-    if (isOnline === false) { Alert.alert('Finn is offline', 'Your saved forecasts remain viewable, but Finn can only create or continue an AI conversation when you are online.'); return; }
+    if (isOnline === false) { Alert.alert('Finn is offline', 'Your saved estimates remain viewable, but Finn can only create or continue an AI conversation when you are online.'); return; }
+    if (data && dataUserId === user.id) {
+      try {
+        const compactContext = buildPlanAheadChatContext(data);
+        await AsyncStorage.setItem(planAheadChatStorageKey(user.id), JSON.stringify(compactContext));
+        router.push({ pathname: '/chat', params: { topic, prefill: prompt, plan_ahead: '1' } });
+      } catch {
+        router.push({ pathname: '/chat', params: { topic, prefill: prompt } });
+      }
+      return;
+    }
     router.push({ pathname: '/chat', params: { topic, prefill: prompt } });
   };
 
@@ -111,9 +123,9 @@ export default function PlanAheadScreen() {
             const parsed = JSON.parse(cached);
             setData(parsed.data || parsed); setDataUserId(user.id); setError(null);
           }
-          catch { setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first forecast.'); }
+          catch { setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first estimate.'); }
         } else {
-          setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first forecast. Your Insights and saved records remain available offline.');
+          setData(null); setDataUserId(null); setError('Plan Ahead needs an internet connection for its first estimate. Your Insights and saved records remain available offline.');
         }
         setLoading(false);
       });
@@ -237,7 +249,7 @@ export default function PlanAheadScreen() {
           <Text style={styles.headerTitle}>Plan Ahead</Text>
           <Text style={styles.headerSubtitle}>{outlookDate ? `Based on recorded activity as of ${outlookDate}` : 'Your financial outlook'}</Text>
         </View>
-        <TouchableOpacity onPress={() => { forceRefresh.current = true; setData(null); setDataUserId(null); loadedSignature.current = null; setLoading(true); setRefreshKey((value) => value + 1); }} style={styles.headerIcon} accessibilityRole="button" accessibilityLabel="Refresh Plan Ahead forecast">
+        <TouchableOpacity onPress={() => { forceRefresh.current = true; setData(null); setDataUserId(null); loadedSignature.current = null; setLoading(true); setRefreshKey((value) => value + 1); }} style={styles.headerIcon} accessibilityRole="button" accessibilityLabel="Refresh Plan Ahead estimate">
           <Ionicons name="refresh-outline" size={19} color={DEEP_GREEN} />
         </TouchableOpacity>
       </View>
@@ -246,12 +258,12 @@ export default function PlanAheadScreen() {
           <Ionicons name="cloud-upload-outline" size={18} color="#785B17" />
           <Text style={styles.pendingNoticeText}>{pendingTransactionCount > 0
             ? `${pendingTransactionCount} saved ${pendingTransactionCount === 1 ? 'change has' : 'changes have'} not synced yet. This plan may not include ${pendingTransactionCount === 1 ? 'it' : 'them'}.`
-            : error ? 'Your changes synced, but this forecast could not refresh. The figures shown may be out of date.' : 'Your changes synced. Plan Ahead is refreshing to include them.'}</Text>
+            : error ? 'Your changes synced, but this estimate could not refresh. The figures shown may be out of date.' : 'Your changes synced. Plan Ahead is refreshing to include them.'}</Text>
         </View>}
         {error && !data && <View style={{ padding: 20 }}><Text style={{ color: DEEP_GREEN }}>{error}</Text><TouchableOpacity onPress={() => { forceRefresh.current = true; setLoading(true); setRefreshKey((value) => value + 1); }}><Text style={{ color: '#3D7D6C', paddingTop: 12 }}>Try again</Text></TouchableOpacity></View>}
         {dataUserId === user?.id && data && <PlanningDashboard
           data={data}
-          onFinn={(message) => openFinnChat('budget', message || 'Please help me understand my latest Plan Ahead outlook and forecast. Explain the recorded figures and uncertainty.')}
+          onFinn={(message) => openFinnChat('budget', message || 'Please help me understand my latest Plan Ahead outlook and estimates. Explain the recorded figures and uncertainty.')}
           onManageBills={() => router.push('/fixed-bills' as never)}
           onCategory={(item: CategoryForecast, period) => router.push({ pathname: '/category-forecast' as never, params: { category_id: item.category_id, period, name: item.category, forecast: JSON.stringify(item) } } as never)}
         />}

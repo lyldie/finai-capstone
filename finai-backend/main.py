@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException, Request, File, UploadFile, Form, Depends, BackgroundTasks
 from pydantic import BaseModel, EmailStr, Field, field_validator
+from email_validator import EmailNotValidError, validate_email
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from bson import ObjectId
@@ -57,7 +58,11 @@ from services.groq_service import (
     GROQ_TIMEOUT_SECONDS,
     generate_groq_response,
 )
-from services.google_vision_ocr import extract_text_from_images
+from services.vertex_service import (
+    VERTEX_AI_TIMEOUT_SECONDS,
+    generate_vertex_response,
+    is_vertex_configured,
+)
 
 app = FastAPI(title="FinAi Backend", version="1.0")
 
@@ -745,6 +750,16 @@ def reconcile_receipt_fields(
         fields["date"] = {"value": local_date, "status": "needs_review", "engines": ["OCR"]}
     else:
         fields["date"] = {"value": None, "status": "needs_review", "engines": []}
+    date_candidates = model_result.get("date_candidates") or []
+    if model_date and len(set(date_candidates)) > 1:
+        fields["date"] = {
+            "value": model_date,
+            "status": "needs_review",
+            "engines": [ai_provider],
+            "raw_text": model_result.get("date_text"),
+            "alternatives": [candidate for candidate in dict.fromkeys(date_candidates) if candidate != model_date],
+            "reason": "The receipt date can be read in more than one month/day order. Choose the correct date.",
+        }
 
     category = resolve_supported_category(model_result.get("category") or local_result.get("category"), available_categories)
     fields["category"] = {
@@ -759,6 +774,8 @@ def reconcile_receipt_fields(
         "amount": fields["amount"]["value"],
         "merchant": fields["merchant"]["value"],
         "date": fields["date"]["value"],
+        "date_text": fields["date"].get("raw_text") or model_result.get("date_text"),
+        "date_candidates": date_candidates,
         "category": fields["category"]["value"],
         "fields": fields,
         "needs_review": needs_review,
@@ -766,6 +783,7 @@ def reconcile_receipt_fields(
             "ocr": bool(local_result),
             "gemini": bool(model_result and ai_provider == "Gemini"),
             "groq": bool(model_result and ai_provider == "Groq"),
+            "vertex": bool(model_result and ai_provider == "Vertex AI"),
         }
     }
 
@@ -844,20 +862,36 @@ def _receipt_extraction_prompt(available_categories: List[str]) -> str:
     Rules:
     1. "amount": Return the FINAL TOTAL AMOUNT DUE / GRAND TOTAL only. Ignore subtotals, VAT, discounts, item prices, and cash tendered/change.
     2. "merchant": Return the business/store name only when visibly readable; otherwise null.
-    3. "date": Return YYYY-MM-DD only when visibly readable. Do not use today's date and do not invent a year; otherwise null.
-    4. "category": Choose EXACTLY one category from this allowed expense list: {categories_str}. {category_fallback}
-    5. Never guess a value. Use null for an unreadable amount, merchant, or date.
-    6. If several images are provided, treat them as views of the same receipt and combine only details supported by the images.
+    3. "date_text": Copy the transaction date exactly as printed, preserving digit order and separators; use null if unreadable.
+    4. "date": Return YYYY-MM-DD only when the date format is clear. Do not swap numeric components, use today's date, or invent a year; otherwise null.
+    5. "category": Choose EXACTLY one category from this allowed expense list: {categories_str}. {category_fallback}
+    6. Never guess a value. Use null for an unreadable amount, merchant, or date.
+    7. If several images are provided, treat them as views of the same receipt and combine only details supported by the images.
 
     Output ONLY a valid JSON object with this shape:
-    {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "category": null}}
+    {{"amount": 5895.00, "merchant": "New Lite Lumber and Construction Supply", "date": "2018-03-14", "date_text": "2018/03/14", "category": null}}
     """
 
 
 def _normalize_receipt_model_result(response, model_used: str, provider: str, image_count: int, categories: List[str]) -> dict:
     data = validate_json_response(response)
     raw_date = str(data.get("date") or "").strip()
-    sanitized_date = sanitize_and_parse_date([raw_date]) if raw_date else None
+    date_text = str(data.get("date_text") or "").strip() or None
+    date_source = date_text or raw_date
+    sanitized_date = sanitize_and_parse_date([date_source]) if date_source else None
+    date_candidates = [sanitized_date] if sanitized_date else []
+
+    numeric_date_match = re.fullmatch(
+        r"\s*(\d{1,2})\s*([/.-])\s*(\d{1,2})\s*([/.-])\s*(\d{2,4})\s*", date_text or ""
+    )
+    if numeric_date_match:
+        first, separator, second, second_separator, year = numeric_date_match.groups()
+        first, second = int(first), int(second)
+        if separator == second_separator and 1 <= first <= 12 and 1 <= second <= 12:
+            alternate_text = f"{second}{separator}{first}{separator}{year}"
+            alternate_date = sanitize_and_parse_date([alternate_text])
+            if alternate_date and alternate_date not in date_candidates:
+                date_candidates.append(alternate_date)
 
     amount_value = normalize_amount_value(data.get("amount"))
     formatted_amount = f"{amount_value:.2f}" if amount_value is not None else None
@@ -869,6 +903,8 @@ def _normalize_receipt_model_result(response, model_used: str, provider: str, im
         "merchant": merchant_value,
         "category": category_value,
         "date": sanitized_date,
+        "date_text": date_text,
+        "date_candidates": date_candidates,
         "raw_text": f"Parsed via {provider} {model_used} ({image_count} image frame(s))",
         "amount_is_fallback": amount_value is None,
         "merchant_is_fallback": merchant_value is None,
@@ -1141,6 +1177,25 @@ async def safely_refresh_budget_notifications(user_id: str, category_id: Optiona
 async def register(user: UserSignup, request: Request):
     clean_email = user.email.lower().strip()
     await enforce_auth_rate_limit(request, "register", clean_email, max_attempts=4, ip_max_attempts=20, window_seconds=1800)
+    # EmailStr checks syntax only. Check the domain's public DNS records before
+    # sending an OTP so obvious fake/non-mail domains are rejected on signup.
+    try:
+        email_check = await asyncio.to_thread(
+            validate_email,
+            clean_email,
+            check_deliverability=True,
+            timeout=3,
+        )
+    except EmailNotValidError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail="This email address can’t receive a verification code. Check the address or use another email.",
+        ) from exc
+    if email_check.mx_fallback_type:
+        raise HTTPException(
+            status_code=422,
+            detail="This email address can’t receive a verification code. Check the address or use another email.",
+        )
     clean_name = user.name.strip()
     if not clean_name:
         raise HTTPException(status_code=422, detail="Enter your name.")
@@ -1547,7 +1602,7 @@ async def ocr_scan(
     current_user: dict = Depends(get_current_user),
 ):
     try:
-        await enforce_user_feature_rate_limit(current_user["id"], "ocr", max_requests=20)
+        await enforce_user_feature_rate_limit(current_user["id"], "ocr", max_requests=50)
         if not files or len(files) == 0:
             raise HTTPException(status_code=400, detail="No receipt images were provided.")
         if len(files) > 4:
@@ -1599,12 +1654,6 @@ async def ocr_scan(
             except Exception as e:
                 print(f"Could not fetch user categories: {e}")
 
-        # Run independent OCR alongside Gemini/Groq to avoid adding its latency
-        # to the existing extraction path. Failures remain non-fatal.
-        vision_task = asyncio.create_task(
-            asyncio.to_thread(extract_text_from_images, processed_images_bytes, 18)
-        )
-
         extraction_result = None
         provider = None
         timed_out = False
@@ -1647,44 +1696,34 @@ async def ocr_scan(
                 error_code = getattr(groq_err, "status_code", None)
                 print(f"[OCR] Groq receipt fallback failed ({type(groq_err).__name__}; code={error_code}).")
 
-        local_result = None
-        try:
-            raw_vision_text = await asyncio.wait_for(vision_task, timeout=20)
-            if raw_vision_text:
-                vision_lines = [line.strip() for line in raw_vision_text.splitlines() if line.strip()]
-                vision_amount = extract_total_amount(vision_lines)
-                vision_merchant, merchant_is_fallback = pick_merchant_line(vision_lines)
-                vision_date = sanitize_and_parse_date(vision_lines)
-                _, vision_category, _ = match_merchant_and_category(
-                    raw_vision_text, vision_lines, user_categories
+        if extraction_result is None and is_vertex_configured():
+            print("[OCR] Trying Vertex AI receipt fallback.")
+            vertex_prompt = _receipt_extraction_prompt(user_categories)
+            vertex_contents = [vertex_prompt]
+            for image_bytes in processed_images_bytes:
+                vertex_contents.append(types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"))
+            try:
+                vertex_response, vertex_model = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        generate_vertex_response,
+                        vertex_contents,
+                        types.GenerateContentConfig(response_mime_type="application/json"),
+                        validate=_validate_receipt_response,
+                        operation="receipt_ocr",
+                    ),
+                    timeout=VERTEX_AI_TIMEOUT_SECONDS + 1.0,
                 )
-                local_result = {
-                    "amount": f"{vision_amount:.2f}" if vision_amount is not None else None,
-                    "merchant": vision_merchant if not merchant_is_fallback else None,
-                    "date": vision_date,
-                    "category": vision_category,
-                    "amount_is_fallback": vision_amount is None,
-                    "merchant_is_fallback": merchant_is_fallback,
-                    "date_is_fallback": vision_date is None,
-                }
-                print(f"[OCR] Google Vision read text from {len(vision_lines)} receipt line(s).")
-            else:
-                print("[OCR] Google Vision returned no readable text.")
-        except asyncio.TimeoutError:
-            print("[OCR] Google Vision exceeded its deadline; continuing without its transcript.")
-        except Exception as vision_err:
-            error_code = getattr(vision_err, "status_code", None)
-            print(f"[OCR] Google Vision unavailable ({type(vision_err).__name__}; code={error_code}).")
-
-        # If both AI providers are unavailable, retain the independently parsed
-        # Vision fields as review-required suggestions instead of dropping the scan.
-        if extraction_result is None and local_result:
-            final_result = reconcile_receipt_fields(local_result, None, user_categories)
-            final_result["raw_text"] = ""
-            final_result["amount_is_fallback"] = final_result["amount"] is None
-            final_result["merchant_is_fallback"] = final_result["merchant"] is None
-            final_result["date_is_fallback"] = final_result["date"] is None
-            return {"status": "Success", "engine": "Google Vision OCR", "data": final_result}
+                extraction_result = _normalize_receipt_model_result(
+                    vertex_response, vertex_model, "Vertex AI", len(processed_images_bytes), user_categories
+                )
+                provider = "Vertex AI"
+                print(f"[OCR] Vertex AI receipt extraction succeeded with {vertex_model}.")
+            except asyncio.TimeoutError:
+                timed_out = True
+                print(f"[OCR] Vertex AI receipt fallback exceeded its {VERTEX_AI_TIMEOUT_SECONDS + 1.0:g}s deadline.")
+            except Exception as vertex_err:
+                error_code = getattr(vertex_err, "code", None) or getattr(vertex_err, "status_code", None)
+                print(f"[OCR] Vertex AI receipt fallback failed ({type(vertex_err).__name__}; code={error_code}).")
 
         if extraction_result is None:
             if timed_out:
@@ -1699,7 +1738,10 @@ async def ocr_scan(
 
         extracted_fields = [field for field in ("merchant", "date", "amount", "category") if extraction_result.get(field) is not None]
         print(f"[OCR] {provider} extraction completed. Read fields: {', '.join(extracted_fields) or 'none'}.")
-        final_result = reconcile_receipt_fields(local_result, extraction_result, user_categories, ai_provider=provider)
+        # The selected AI provider is authoritative for extracted fields.
+        # Keep the receipt review UI metadata, but do not compare against
+        # independently parsed OCR values that can contradict the receipt total.
+        final_result = reconcile_receipt_fields(None, extraction_result, user_categories, ai_provider=provider)
         final_result["raw_text"] = ""
         final_result["amount_is_fallback"] = final_result["amount"] is None
         final_result["merchant_is_fallback"] = final_result["merchant"] is None
@@ -2141,7 +2183,7 @@ def _transaction_lifecycle_signature(transaction: dict) -> tuple:
 
 
 async def _transition_transaction_lifecycle(expense_id: str, user_id: str, action: str):
-    """Atomically change transaction state, account balances, and linked goal savings."""
+    """Atomically change transaction state, balances, linked goals, and bill occurrences."""
     try:
         expense_oid = ObjectId(expense_id)
     except Exception:
@@ -2234,7 +2276,63 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
             except Exception:
                 raise HTTPException(status_code=409, detail="The linked savings goal is unavailable.")
 
+        async def transition_bill_occurrence(*, restore_payment: bool, allow_missing: bool = False):
+            bill_id = current.get("scheduled_bill_id")
+            period_key = current.get("scheduled_bill_period_key")
+            if not bill_id and not period_key:
+                return
+            if not bill_id or not period_key or transaction_type != "expense":
+                raise HTTPException(status_code=409, detail="This bill payment link is incomplete, so the transaction cannot be changed safely.")
+
+            occurrence_query = {
+                "user_id": user_id,
+                "bill_id": str(bill_id),
+                "period_key": str(period_key),
+            }
+            occurrence = await db.bill_occurrences.find_one(occurrence_query, session=session)
+            if not occurrence:
+                if allow_missing:
+                    return
+                raise HTTPException(status_code=409, detail="The linked bill occurrence no longer exists. Refresh scheduled bills before changing this payment.")
+
+            occurrence_status = occurrence.get("status")
+            linked_payment_id = str(occurrence.get("payment_transaction_id") or "")
+            this_payment_id = str(expense_oid)
+            if restore_payment:
+                if occurrence_status == "paid":
+                    if linked_payment_id == this_payment_id:
+                        return
+                    raise HTTPException(status_code=409, detail="This bill period has already been paid by another transaction. The payment cannot be restored safely.")
+                if occurrence_status != "unpaid":
+                    raise HTTPException(status_code=409, detail="The linked bill occurrence has an unknown status. Refresh scheduled bills before restoring this payment.")
+                result = await db.bill_occurrences.update_one(
+                    {**occurrence_query, "status": "unpaid"},
+                    {"$set": {
+                        "status": "paid",
+                        "paid_at": datetime.now(timezone.utc),
+                        "payment_transaction_id": this_payment_id,
+                    }},
+                    session=session,
+                )
+            else:
+                if occurrence_status == "unpaid":
+                    return
+                if occurrence_status != "paid":
+                    raise HTTPException(status_code=409, detail="The linked bill occurrence has an unknown status. Refresh scheduled bills before changing this payment.")
+                if linked_payment_id != this_payment_id:
+                    if allow_missing:
+                        return
+                    raise HTTPException(status_code=409, detail="This bill period is linked to a different payment. The transaction cannot be changed safely.")
+                result = await db.bill_occurrences.update_one(
+                    {**occurrence_query, "status": "paid", "payment_transaction_id": this_payment_id},
+                    {"$set": {"status": "unpaid"}, "$unset": {"paid_at": "", "payment_transaction_id": ""}},
+                    session=session,
+                )
+            if result.modified_count != 1:
+                raise HTTPException(status_code=409, detail="The bill status changed while this transaction was being updated. Refresh and try again.")
+
         if action == "archive":
+            await transition_bill_occurrence(restore_payment=False)
             values = {"is_archived": True, "archived_at": datetime.now(timezone.utc)}
             if goal_oid and transaction_type == "goal withdrawal" and not current.get("goal_withdrawal_reversed"):
                 await db.goals.update_one(
@@ -2256,6 +2354,7 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
             return changed
 
         if action == "restore":
+            await transition_bill_occurrence(restore_payment=True)
             if goal_oid and (current.get("goal_contribution_reversed") or current.get("goal_withdrawal_reversed")):
                 active_goal = await db.goals.find_one(
                     {"_id": goal_oid, "user_id": user_id, "is_archived": {"$ne": True}},
@@ -2284,6 +2383,10 @@ async def _transition_transaction_lifecycle(expense_id: str, user_id: str, actio
             return changed
 
         if action in {"delete", "permanent_delete"}:
+            await transition_bill_occurrence(
+                restore_payment=False,
+                allow_missing=(action == "permanent_delete"),
+            )
             if goal_oid and transaction_type == "goal withdrawal" and not current.get("goal_withdrawal_reversed"):
                 await db.goals.update_one(
                     {"_id": goal_oid, "user_id": user_id},

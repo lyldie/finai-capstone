@@ -1,8 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar, Modal, TextInput, Dimensions } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -81,7 +79,7 @@ export default function AccountsScreen() {
           });
           if (response.ok) fetchAccounts(view);
           else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
-          else Alert.alert('Could not archive account', await getResponseDetail(response, 'Please try again.'));
+          else Alert.alert('Could not archive account', await getResponseDetail(response, 'FinAI could not archive this account. Refresh the list and try again.'));
         }
       }
     ]);
@@ -94,7 +92,7 @@ export default function AccountsScreen() {
     });
     if (response.ok) fetchAccounts(view);
     else if (response.status === 401) Alert.alert('Session expired', 'Please sign in again to manage Admin presets.');
-    else Alert.alert('Could not restore account', await getResponseDetail(response, 'Check whether another active preset already uses this name, then try again.'));
+    else Alert.alert('Could not restore account', await getResponseDetail(response, 'FinAI could not restore this account. Refresh the archived list and try again.'));
   };
 
   // 👈 BAGONG IDINAGDAG: Permanent Delete handler para sa Archived items na may error handling
@@ -125,7 +123,7 @@ export default function AccountsScreen() {
                 }
               }
             } catch (error) {
-              Alert.alert("Connection Error", "Check your internet connection and try again.");
+              Alert.alert('Could not delete account', 'FinAI could not reach the server. Check your connection and try again.');
             }
           }
         }

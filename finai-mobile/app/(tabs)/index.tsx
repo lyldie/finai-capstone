@@ -1,5 +1,6 @@
 import React, { useState, useCallback, useMemo } from 'react';
-import { Alert, StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator, Image } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, StatusBar, ScrollView, ActivityIndicator, Image } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { Transaction, useTransactions } from '../../context/TransactionContext';
@@ -7,6 +8,7 @@ import { useAuth } from '../../context/AuthContext';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { API_URL } from '../../config';
 import { getSecureItem } from '../../utils/secureStorage';
+import { displayTransactionNote } from '../../utils/transactionNote';
 
 // 👈 IMPORT NATIN YUNG MGA EMOJI HELPERS
 import { getAccountDisplayEmoji } from '../../utils/accountEmoji';
@@ -344,7 +346,8 @@ export default function HomeDashboard() {
           {goals.length ? <View style={styles.goalPreviewList}>{goals.slice(0, 2).map((goal) => {
             const target = Number(goal.target_amount) || 0;
             const saved = Number(goal.current_savings) || 0;
-            const progress = target > 0 ? Math.min((saved / target) * 100, 100) : 0;
+            const reached = goal.status === 'target_reached' || goal.status === 'completed' || (target > 0 && saved >= target);
+            const progress = reached ? 100 : target > 0 ? Math.min((saved / target) * 100, 100) : 0;
             return <View key={goal.id} style={styles.goalPreviewRow}>
               <View style={styles.goalPreviewCopy}><Text style={styles.goalPreviewName} numberOfLines={1}>{goal.target_name}</Text><Text style={styles.goalPreviewValue} numberOfLines={1}>₱{saved.toLocaleString()} of ₱{target.toLocaleString()} · {progress.toFixed(0)}%</Text></View>
               <View style={styles.goalPreviewTrack}><View style={[styles.goalPreviewFill, { width: `${progress}%` }]} /></View>
@@ -454,7 +457,7 @@ export default function HomeDashboard() {
                       <Text style={styles.recentCategory} numberOfLines={1}>
                 {isTransfer ? `${item.account} → ${item.to_account || 'Other'}` : isWithdrawal ? 'Goal Withdrawal' : isContribution ? 'Goal Contribution' : item.category}
                       </Text>
-                      <Text style={styles.recentNote} numberOfLines={1}>{item.note || 'No description'}</Text>
+                      <Text style={styles.recentNote} numberOfLines={1}>{displayTransactionNote(item.note) || 'No description'}</Text>
                     </View>
                   </View>
 

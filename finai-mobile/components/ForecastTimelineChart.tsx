@@ -96,7 +96,7 @@ export default function ForecastTimelineChart({ actual, forecast, rangeLow, rang
       <Legend color={seriesColor} label="Recorded" />
       {hasForecast && <Legend color={seriesColor} label="Estimate" dashed />}
       {Number.isFinite(Number(limit)) && Number(limit) > 0 && <Legend color={GOLD} label="Budget limit (dashed)" dashed />}
-      {hasRange && <Legend color={colorMode === 'expense' ? EXPENSE_RANGE : '#B7D8C8'} label="Forecast range" />}
+      {hasRange && <Legend color={colorMode === 'expense' ? EXPENSE_RANGE : '#B7D8C8'} label="Estimate range" />}
     </View>}
   </View>;
 }

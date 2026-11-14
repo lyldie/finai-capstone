@@ -1,14 +1,12 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { API_URL } from '../../config';
-import { logUnexpectedError } from '../../utils/userFacingError';
+import { logUnexpectedError, userFacingError } from '../../utils/userFacingError';
 import { useAuth } from '../../context/AuthContext';
 
 const DEEP_GREEN = '#1c3c36';
@@ -76,7 +74,7 @@ export default function UsersManagementScreen() {
           } else if (response.status === 403) {
             Alert.alert("Not Allowed", "Admin accounts cannot be archived this way.");
           } else {
-            Alert.alert("Error", "Couldn't archive this user.");
+            Alert.alert('Could not archive user', 'FinAI could not archive this account. Refresh the user list and try again.');
           }
         }
       }
@@ -90,7 +88,34 @@ export default function UsersManagementScreen() {
     });
     if (response.ok) fetchUsers(view);
     else if (response.status === 401) Alert.alert("Session Expired", "Please log in again.");
-    else Alert.alert("Error", "Couldn't restore this user.");
+    else Alert.alert('Could not restore user', 'FinAI could not restore this account. Refresh the archived users list and try again.');
+  };
+
+  const permanentlyDeleteUser = (item: User) => {
+    Alert.alert(
+      'Permanently delete user?',
+      `This will permanently remove ${item.name} and their transactions, budgets, goals, accounts, bills, and advisor history. This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete permanently', style: 'destructive',
+          onPress: async () => {
+            try {
+              const response = await fetch(`${API_URL}/api/users/${item.id}/permanent`, {
+                method: 'DELETE',
+                headers: { Authorization: `Bearer ${user?.token}` },
+              });
+              const result = await response.json().catch(() => ({}));
+              if (response.ok) fetchUsers(view);
+              else Alert.alert('Could not delete user', userFacingError(result.detail, 'FinAI could not permanently delete this user. Refresh the list and try again.'));
+            } catch (error) {
+              logUnexpectedError('Permanent user deletion failed unexpectedly:', error);
+              Alert.alert('Could not delete user', 'Check your connection and try again.');
+            }
+          },
+        },
+      ],
+    );
   };
 
   const renderUserItem = ({ item }: { item: User }) => (
@@ -118,10 +143,15 @@ export default function UsersManagementScreen() {
       </View>
 
       {item.is_archived ? (
-        <TouchableOpacity onPress={() => restoreUser(item.id)} style={styles.restoreBtn}>
-          <Ionicons name="refresh-outline" size={15} color={TEAL} />
-          <Text style={styles.restoreText}>Restore</Text>
-        </TouchableOpacity>
+        <View style={styles.archivedActions}>
+          <TouchableOpacity onPress={() => restoreUser(item.id)} style={styles.restoreBtn} accessibilityRole="button" accessibilityLabel={`Restore ${item.name}`}>
+            <Ionicons name="refresh-outline" size={15} color={TEAL} />
+            <Text style={styles.restoreText}>Restore</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => permanentlyDeleteUser(item)} style={styles.deleteBtn} accessibilityRole="button" accessibilityLabel={`Permanently delete ${item.name}`}>
+            <Ionicons name="trash-outline" size={16} color={DANGER} />
+          </TouchableOpacity>
+        </View>
       ) : item.role !== 'admin' ? (
         <TouchableOpacity onPress={() => archiveUser(item.id, item.name)} style={styles.archiveBtn}>
           <Ionicons name="archive-outline" size={17} color={DANGER} />
@@ -225,6 +255,8 @@ const styles = StyleSheet.create({
   roleText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
 
   archiveBtn: { padding: 10, backgroundColor: '#FFEDED', borderRadius: 12 },
+  archivedActions: { flexDirection: 'row', alignItems: 'center', gap: 8, marginLeft: 8 },
   restoreBtn: { flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: '#E0F2FE', paddingHorizontal: 12, paddingVertical: 8, borderRadius: 14 },
   restoreText: { color: TEAL, fontWeight: '800', fontSize: 12 },
+  deleteBtn: { width: 36, height: 36, alignItems: 'center', justifyContent: 'center', backgroundColor: '#FFEDED', borderRadius: 12 },
 });

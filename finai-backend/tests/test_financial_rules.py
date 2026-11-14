@@ -276,7 +276,8 @@ class TransactionEndpointTests(unittest.IsolatedAsyncioTestCase):
             "to_account": None, "to_account_id": None, "is_archived": False,
         })
         with self.assertRaises(HTTPException) as raised:
-            await main.update_expense(str(expense_id), transaction(amount=201), {"id": "u1"})
+            request = SimpleNamespace(url=SimpleNamespace(path=f"/update-expense/{expense_id}"))
+            await main.update_expense(str(expense_id), transaction(amount=201), request, {"id": "u1"})
         self.assertEqual(raised.exception.status_code, 409)
         self.assertEqual(self.fake_db.expenses.rows[0]["amount"], 50)
 
@@ -287,7 +288,8 @@ class TransactionEndpointTests(unittest.IsolatedAsyncioTestCase):
             "category": "Groceries", "account": "Cash", "account_id": str(self.cash_id),
             "to_account": None, "to_account_id": None, "is_archived": False,
         })
-        result = await main.update_expense(str(expense_id), transaction(amount=60), {"id": "u1"})
+        request = SimpleNamespace(url=SimpleNamespace(path=f"/update-expense/{expense_id}"))
+        result = await main.update_expense(str(expense_id), transaction(amount=60), request, {"id": "u1"})
         self.assertEqual(result["status"], "Success")
         self.assertEqual(self.fake_db.expenses.rows[0]["amount"], 60)
         self.assertEqual(

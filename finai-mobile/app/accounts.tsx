@@ -1,8 +1,6 @@
 import React, { useCallback, useState } from 'react';
-import {
-  ActivityIndicator, Alert, FlatList, Modal, StyleSheet, ScrollView,
-  Text, TextInput, TouchableOpacity, View, StatusBar, KeyboardAvoidingView, Platform
-} from 'react-native';
+import { ActivityIndicator, FlatList, Modal, StyleSheet, ScrollView, Text, TextInput, TouchableOpacity, View, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect, useRouter } from 'expo-router';

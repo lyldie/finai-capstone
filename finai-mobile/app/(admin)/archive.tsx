@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, Alert, StatusBar, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, StatusBar, ActivityIndicator } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -73,10 +74,10 @@ export default function AdminArchiveScreen() {
         Alert.alert('Success 🎉', 'The preset has been restored to the active list.');
         fetchArchivedData();
       } else {
-        Alert.alert('Could not restore item', 'Please try again.');
+        Alert.alert('Could not restore preset', 'FinAI could not restore this archived item. Refresh the list and try again.');
       }
     } catch (error) {
-      Alert.alert('Error', 'May nangyaring problema sa pag-restore.');
+      Alert.alert('Could not restore preset', 'FinAI could not reach the server. Check your connection and try again.');
     }
   };
 
@@ -102,10 +103,10 @@ export default function AdminArchiveScreen() {
               if (res.ok) {
                 fetchArchivedData();
               } else {
-                Alert.alert('Could not delete item', 'Please try again.');
+                Alert.alert('Could not permanently delete preset', 'FinAI could not delete this archived item. Refresh the list and try again.');
               }
             } catch (error) {
-              Alert.alert('Error', 'May nangyaring problema.');
+              Alert.alert('Could not permanently delete preset', 'FinAI could not reach the server. Check your connection and try again.');
             }
           }
         }

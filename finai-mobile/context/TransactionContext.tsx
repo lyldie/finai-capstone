@@ -1,6 +1,7 @@
 ﻿// finai-frontend/context/TransactionContext.tsx
 import React, { createContext, useContext, useState, useEffect, useMemo, useCallback, useRef } from 'react';
-import { Alert, AppState } from 'react-native';
+import { AppState } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { API_URL } from '../config';
 import { useAuth } from './AuthContext';
@@ -15,7 +16,7 @@ export type Category = { id: string; name: string; type: string; icon: string; }
 export type GoalTypePreset = { id: string; name: string; icon?: string };
 export type Account = { id: string; name: string; initial_balance: number; current_balance?: number; icon: string; card_color?: string | null; user_id?: string | null; account_role?: 'admin' | 'user'; parent_template_id?: string | null; };
 export type Budget = { id: string; category_id: string; category_name?: string; amount: number; available_limit?: number; rollover_enabled?: boolean; budget_kind?: 'fixed' | 'variable'; rollover_in?: number; rollover_out?: number; spent: number; remaining?: number; percentage_used?: number; period_type: 'weekly' | 'monthly' | 'annual'; period_key: string; start_date?: string; end_date?: string; month_year?: string; };
-export type AppNotification = { id: string; budget_id?: string | null; category_id?: string | null; category_name?: string; period_key?: string; event_type?: 'budget_threshold' | 'spending_spike' | 'offline_pending' | string; title?: string; current_amount?: number; baseline_amount?: number; change_amount?: number; change_percent?: number; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; advisor_conversation_id?: string; provisional?: boolean };
+export type AppNotification = { id: string; budget_id?: string | null; bill_id?: string | null; due_date?: string; category_id?: string | null; category_name?: string; period_key?: string; event_type?: 'budget_threshold' | 'spending_spike' | 'bill_due' | 'offline_pending' | string; title?: string; current_amount?: number; baseline_amount?: number; change_amount?: number; change_percent?: number; threshold: number; percentage_used?: number; level: string; message: string; is_read: boolean; created_at: string; advisor_conversation_id?: string; provisional?: boolean };
 export type TransactionToastNotice = { id: string; kind: 'success' | 'budget' | 'spending_spike'; title: string; messages: string[]; threshold?: number; percentage_used?: number; level?: string; advisorConversationId?: string };
 
 const transactionRequestError = async (response: Response, fallback: string) => {
@@ -34,6 +35,10 @@ export type Goal = {
   target_amount: number;
   current_savings: number;
   target_date: string;
+  status?: 'active' | 'target_reached' | 'completed';
+  target_reached_at?: string | null;
+  completed_at?: string | null;
+  is_archived?: boolean;
   client_request_id?: string;
 };
 
@@ -66,6 +71,7 @@ type TransactionContextType = {
   updateGoal: (id: string, name: string, target_amount: number, target_date: string, goal_type_id: string, current_savings?: number) => Promise<boolean>;
   deleteGoal: (id: string) => Promise<void>;
   archiveGoal: (id: string) => Promise<void>;
+  completeGoal: (id: string) => Promise<boolean>;
   depositToGoal: (goalId: string, amount: number, account: string) => Promise<'synced' | 'pending' | false>;
   withdrawFromGoal: (goalId: string, amount: number, account: string) => Promise<'synced' | 'pending' | false>;
   getAccountBalance: (name: string) => number;
@@ -412,7 +418,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
         let offset = 0;
         while (true) {
           const response = await fetch(`${API_URL}/get-expenses?user_id=${userId}&limit=500&offset=${offset}`, { headers: authHeaders });
-          if (!response.ok) throw new Error('Could not load transaction history.');
+          if (!response.ok) throw new Error(`Could not load transaction history (HTTP ${response.status}).`);
           const page = await response.json();
           if (page.status !== 'Success' || !Array.isArray(page.data)) throw new Error('Invalid transaction history response.');
           all.push(...page.data);
@@ -507,9 +513,17 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       for (const operation of pendingQueue.filter((item) => item.kind === 'goal.deposit' || item.kind === 'goal.withdraw')) {
         formattedGoals = formattedGoals.map((g) => {
           const localGoal = cachedGoals?.find((local: Goal) => local.id === g.id);
-          return g.id === operation.localEntityId && localGoal
-            ? { ...g, current_savings: Number(localGoal.current_savings) || 0 }
-            : g;
+          if (g.id !== operation.localEntityId || !localGoal) return g;
+          const localSavings = Number(localGoal.current_savings) || 0;
+          const targetReached = localGoal.status === 'target_reached' || localGoal.status === 'completed' || localSavings >= Number(g.target_amount || 0);
+          return {
+            ...g,
+            current_savings: localSavings,
+            ...(targetReached ? {
+              status: localGoal.status === 'completed' ? 'completed' as const : 'target_reached' as const,
+              target_reached_at: localGoal.target_reached_at || new Date().toISOString(),
+            } : {}),
+          };
         });
       }
       setGoals(formattedGoals);
@@ -674,6 +688,9 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
               try { await AsyncStorage.setItem(cachedTransactionsKey(userId), JSON.stringify((JSON.parse(cachedTransactions) as Transaction[]).map((t) => t.client_request_id === item.id ? { ...t, id: serverId, pending_sync: false } : t))); } catch { /* Refresh rebuilds this cache. */ }
             }
           }
+        } else {
+          await recordPermanentFailure('This saved change type is no longer supported. Review it before discarding it.');
+          continue;
         }
 
         if (!response.ok) {
@@ -683,7 +700,15 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
               ? 'Your session needs to be verified again before pending changes can sync.'
               : 'Sync paused because the server is temporarily unavailable. Your pending changes remain on this device.');
           }
-          await recordPermanentFailure(userFacingError(new Error(detail), 'The server rejected this change. Review it on the Transactions page.'));
+          const validationMessages = Array.isArray(body.detail)
+            ? body.detail.map((entry: any) => typeof entry?.msg === 'string' ? entry.msg : '').filter(Boolean).slice(0, 2).join(' ')
+            : '';
+          const rejectionMessage = typeof body.detail === 'string'
+            ? userFacingError(new Error(body.detail), 'The server rejected this change. Review it on the Transactions page.')
+            : validationMessages.length > 0
+              ? validationMessages.slice(0, 220)
+              : 'The server rejected this change. Review it on the Transactions page.';
+          await recordPermanentFailure(rejectionMessage);
           continue;
         }
         if ((kind === 'transaction' || kind === 'budget.set' || kind === 'goal.create') && !body.id) {
@@ -1177,7 +1202,8 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!userId) throw new Error('Your session has expired. Please sign in again.');
     const goal = goals.find((item) => item.id === id);
     if (!goal) return;
-    if (goal.current_savings > 0 || transactions.some((transaction) => transaction.goal_id === id)) throw new Error('This goal has contribution history. Archive it to preserve the records.');
+    if (goal.current_savings > 0) throw new Error('Withdraw the remaining goal funds before permanently deleting this goal.');
+    if (transactions.some((transaction) => transaction.goal_id === id)) throw new Error('This goal has linked transaction history, so it cannot be permanently deleted. Keep it in Archive to preserve its records.');
     await updatePendingQueue(userId, (queue) => {
       if (id.startsWith('offline-goal:')) return queue.filter((item) => item.localEntityId !== id);
       return [...queue.filter((item) => !(item.kind === 'goal.delete' && item.localEntityId === id)), { id: `goal-delete:${id}`, kind: 'goal.delete', payload: {}, localEntityId: id, created_at: new Date().toISOString() }];
@@ -1198,6 +1224,27 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!id.startsWith('offline-goal:')) void syncPendingTransactions().catch(() => undefined);
   };
 
+  const completeGoal = async (id: string): Promise<boolean> => {
+    const token = await getSecureItem('user_token');
+    if (!token) throw new Error('Your session has expired. Please sign in again.');
+    let response: Response;
+    try {
+      response = await fetch(`${API_URL}/api/goals/${encodeURIComponent(id)}/complete`, {
+        method: 'PATCH', headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch (error) {
+      throw new Error(userFacingError(error, 'Could not mark this goal complete. Check your connection and try again.'));
+    }
+    const body = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(typeof body.detail === 'string' ? body.detail : 'Could not mark this goal complete. Check your connection and try again.');
+    const completedAt = typeof body.completed_at === 'string' ? body.completed_at : new Date().toISOString();
+    const updatedGoals = goals.map((goal) => goal.id === id ? { ...goal, status: 'completed' as const, completed_at: completedAt } : goal);
+    setGoals(updatedGoals);
+    const userId = await AsyncStorage.getItem('user_id');
+    if (userId) await AsyncStorage.setItem(cachedGoalsKey(userId), JSON.stringify(updatedGoals));
+    return true;
+  };
+
   const depositToGoal = async (goalId: string, amount: number, account: string): Promise<'synced' | 'pending' | false> => {
     const currentBalance = getAccountBalance(account);
     if (amount <= 0 || amount > currentBalance) {
@@ -1208,6 +1255,10 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
     if (!userId) { Alert.alert('Sign-in required', 'Your session has expired. Please sign in again.'); return false; }
     const goal = goals.find((item) => item.id === goalId);
     if (!goal) { Alert.alert('Goal unavailable', 'This goal is not saved on this device. Connect to the internet and refresh your goals.'); return false; }
+    if (goal.status === 'target_reached' || goal.status === 'completed' || goal.current_savings >= goal.target_amount) {
+      Alert.alert('Target reached', 'This goal no longer accepts contributions. You can withdraw its funds or mark it complete.');
+      return false;
+    }
     if (!accounts.some((item) => item.name === account)) { Alert.alert('Account unavailable', 'This account is not saved on this device.'); return false; }
 
     const requestId = makeClientRequestId();
@@ -1223,7 +1274,12 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
       id: requestId, kind: 'goal.deposit', payload, localEntityId: goalId, transaction,
       created_at: new Date().toISOString(),
     }]);
-    const updatedGoals = goals.map((item) => item.id === goalId ? { ...item, current_savings: item.current_savings + amount } : item);
+    const newSavings = goal.current_savings + amount;
+    const reachedTarget = newSavings >= goal.target_amount;
+    const updatedGoals = goals.map((item) => item.id === goalId ? {
+      ...item, current_savings: newSavings,
+      ...(reachedTarget ? { status: 'target_reached' as const, target_reached_at: new Date().toISOString() } : {}),
+    } : item);
     setGoals(updatedGoals);
     const updatedTransactions = [...transactions, transaction];
     setTransactions(updatedTransactions);
@@ -1297,7 +1353,7 @@ export const TransactionProvider: React.FC<{ children: React.ReactNode }> = ({ c
   });
 
   return (
-    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, pendingTransactionCount, pendingChanges: displayedPendingChanges, failedPendingChangeCount: pendingChanges.filter((item) => Boolean(item.sync_error)).length, syncPendingTransactions, retryPendingChange, discardFailedPendingChange, addTransaction, updateTransaction, archiveTransaction, updateBudget, setBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, depositToGoal, withdrawFromGoal, getAccountBalance, totalIncome, totalExpense, totalSavings, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>
+    <TransactionContext.Provider value={{ transactions: visibleTransactions, categories: visibleCategories, accounts: visibleAccounts, budgets: visibleBudgets, notifications: visibleNotifications, transactionToast: hasCurrentUserData ? transactionToast : null, showTransactionToast, clearTransactionToast, goals: visibleGoals, goalTypes, isLoading, isRefreshing, pendingTransactionCount, pendingChanges: displayedPendingChanges, failedPendingChangeCount: pendingChanges.filter((item) => Boolean(item.sync_error)).length, syncPendingTransactions, retryPendingChange, discardFailedPendingChange, addTransaction, updateTransaction, archiveTransaction, updateBudget, setBudget, deleteBudget, addGoal, updateGoal, deleteGoal, archiveGoal, completeGoal, depositToGoal, withdrawFromGoal, getAccountBalance, totalIncome, totalExpense, totalSavings, balance, fetchTransactions, markNotificationRead, markAllNotificationsRead, clearAllNotifications }}>
       {children}
     </TransactionContext.Provider>
   );

@@ -1,16 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
-  StyleSheet,
-  Text,
-  TextInput,
-  TouchableOpacity,
-  View,
-} from 'react-native';
+import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { API_URL } from '../config';
 import { useAuth } from '../context/AuthContext';
@@ -69,10 +59,10 @@ export default function QuickAddCategoryModal({ visible, type, onClose, onCreate
       const result = await response.json().catch(() => ({}));
       if (!response.ok) {
         const message = typeof result?.detail === 'string'
-          ? userFacingError(result.detail, 'The category could not be created. Please try again.')
+          ? userFacingError(result.detail, 'FinAI could not create this category. Check the name and try again.')
           : response.status === 409
             ? 'A category with this name already exists. Choose another name or select the existing category.'
-            : 'The category could not be created. Please try again.';
+            : 'FinAI could not create this category. Check the name and try again.';
         Alert.alert('Could not create category', message);
         return;
       }

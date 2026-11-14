@@ -228,3 +228,37 @@ def send_spending_activity_alert(
         subtype="html",
     )
     return _send(msg)
+
+
+def send_bill_due_reminder(
+    target_email: str,
+    bill_name: str,
+    category: str,
+    amount: float,
+    due_date: str,
+) -> bool:
+    """Send one scheduled reminder for a user-entered bill record."""
+    safe_name = escape(str(bill_name or "Scheduled bill"))
+    safe_category = escape(str(category or "Uncategorized"))
+    safe_due_date = escape(str(due_date))
+    msg = EmailMessage()
+    msg["Subject"] = f"FinAI reminder: {str(bill_name or 'Scheduled bill')[:80]} is due soon"
+    _set_sender(msg)
+    msg["To"] = target_email
+    msg.set_content(
+        f"Your saved {bill_name or 'scheduled bill'} reminder is due on {due_date}. "
+        f"The saved amount is PHP {amount:,.2f} under {category or 'Uncategorized'}. "
+        "This is a reminder only; confirm the actual amount when you pay. Open FinAI to review your scheduled bills."
+    )
+    content = f"""
+      <div style="display:inline-block;margin-bottom:14px;padding:6px 10px;background:#f7f3e7;border-radius:20px;color:{BRAND_GREEN};font-size:11px;font-weight:700;letter-spacing:.5px">SCHEDULED BILL REMINDER</div>
+      <h1 style="margin:0 0 10px;color:{BRAND_GREEN};font-size:24px;line-height:30px">A bill is due soon</h1>
+      <p style="margin:0 0 18px;color:#435650;font-size:15px;line-height:23px"><strong>{safe_name}</strong> is due on <strong>{safe_due_date}</strong>.</p>
+      <div style="margin:0 0 18px;padding:16px;background:#f7f8f5;border-radius:12px;color:{BRAND_GREEN};font-size:20px;line-height:26px;font-weight:700">PHP {amount:,.2f}<div style="margin-top:5px;color:{MUTED};font-size:12px;line-height:18px;font-weight:400">Saved reminder amount - {safe_category}</div></div>
+      <p style="margin:0;color:{MUTED};font-size:13px;line-height:20px">This is a reminder based on the bill details saved in FinAI. Please confirm the actual bill amount when you pay.</p>
+    """
+    msg.add_alternative(
+        _email_shell("Upcoming bill reminder", content, f"{safe_name} is due on {safe_due_date}."),
+        subtype="html",
+    )
+    return _send(msg)

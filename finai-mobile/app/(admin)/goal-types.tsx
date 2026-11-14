@@ -1,8 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import {
-  View, Text, FlatList, TouchableOpacity, StyleSheet,
-  ActivityIndicator, StatusBar, Alert, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform
-} from 'react-native';
+import { View, Text, FlatList, TouchableOpacity, StyleSheet, ActivityIndicator, StatusBar, Modal, TextInput, Dimensions, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -116,7 +114,7 @@ export default function GoalTypesScreen() {
                 }
               }
             } catch (error) {
-              Alert.alert("Error", "Check connection.");
+              Alert.alert('Could not delete goal type', 'FinAI could not reach the server. Check your connection and try again.');
             }
           }
         }
@@ -149,10 +147,10 @@ export default function GoalTypesScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert('Could not update goal type', 'Please try again.');
+        Alert.alert('Could not update goal type', 'FinAI could not save this goal type. Review the name and try again.');
       }
     } catch (error) {
-      Alert.alert("Error", "Check connection.");
+      Alert.alert('Could not update goal type', 'FinAI could not reach the server. Check your connection and try again.');
     }
   };
 

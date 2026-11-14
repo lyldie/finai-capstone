@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, Alert, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
+import { StyleSheet, Text, View, TouchableOpacity, ScrollView, Modal, TextInput, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
@@ -109,7 +110,7 @@ export default function ProfileScreen() {
       return;
     }
     if (!Number.isFinite(parsedIncome) || parsedIncome < 0) {
-      Alert.alert('Oops!', 'Enter a valid amount of zero or more.');
+      Alert.alert('Invalid monthly income', 'Enter zero or a positive monthly amount.');
       return;
     }
     
@@ -123,12 +124,12 @@ export default function ProfileScreen() {
       if (response.ok) {
         setMonthlyBaseline(parsedIncome);
         setBaselineLoadFailed(false);
-        Alert.alert('Success', `Monthly money budget updated to ${formatBaseline(parsedIncome)}.`);
+        Alert.alert('Monthly income updated', `Your monthly income baseline is now ${formatBaseline(parsedIncome)}.`);
         setIncomeModalVisible(false);
         setNewIncome('');
       } else {
         const data = await response.json().catch(() => ({}));
-        Alert.alert('Could not update baseline', userFacingError(data.detail, 'Please try again.'));
+        Alert.alert('Could not update monthly income', userFacingError(data.detail, 'FinAI could not save your monthly income. Check your connection and try again.'));
       }
     } catch (error) {
       Alert.alert('Could not update baseline', 'We couldn’t reach FinAI. Check your internet connection and try again.');
@@ -138,7 +139,7 @@ export default function ProfileScreen() {
   const handleChangePin = async () => {
     if (isOnline === false) { Alert.alert('Internet required', 'Changing your app PIN updates your account security. Connect to the internet first.'); return; }
     if (!oldPin || !newPin || newPin.length !== 4) {
-      Alert.alert('Oops!', 'Kumpletuhin ang form. Ang bagong PIN ay dapat 4 digits.');
+      Alert.alert('Check the PIN details', 'Enter your current PIN and a new 4-digit PIN.');
       return;
     }
 
@@ -152,7 +153,7 @@ export default function ProfileScreen() {
       const data = await response.json();
       if (response.ok) {
         await setSecureItem('user_pin', newPin);
-        Alert.alert('Success', 'App PIN changed successfully!');
+        Alert.alert('App PIN changed', 'Your new PIN is ready to use.');
         setPinModalVisible(false);
         setOldPin('');
         setNewPin('');
@@ -235,12 +236,12 @@ export default function ProfileScreen() {
       if (await isAvailableAsync()) {
         await shareAsync(backupFile.uri);
       } else {
-        Alert.alert("Success", "Your backup file has been saved.");
+        Alert.alert('Backup saved', 'Your FinAI backup file has been saved on this device.');
       }
 
     } catch (error) {
       logUnexpectedError('Backup export failed unexpectedly:', error);
-      Alert.alert("Error", "There was a problem exporting your records.");
+      Alert.alert('Backup export failed', 'FinAI could not create the backup file. Check available device storage and try again.');
     }
   };
 

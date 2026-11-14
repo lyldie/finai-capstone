@@ -22,6 +22,33 @@ def is_vertex_configured() -> bool:
     return VERTEX_AI_ENABLED and bool(VERTEX_AI_PROJECT_ID and VERTEX_AI_MODEL)
 
 
+def _vertex_compatible_config(config):
+    """Copy request settings while omitting fields unsupported by Gemini 3.8."""
+    if config is None or not VERTEX_AI_MODEL.startswith("gemini-3.8"):
+        return config
+
+    if hasattr(config, "model_dump"):
+        config_values = config.model_dump(exclude_none=True)
+    elif isinstance(config, dict):
+        config_values = dict(config)
+    else:
+        return config
+
+    # Gemini 3.8 rejects these generation parameters. Keep supported settings
+    # such as system_instruction and response_mime_type intact for Vertex.
+    for unsupported in (
+        "temperature",
+        "top_p",
+        "top_k",
+        "frequency_penalty",
+        "presence_penalty",
+        "candidate_count",
+    ):
+        config_values.pop(unsupported, None)
+
+    return types.GenerateContentConfig(**config_values)
+
+
 def generate_vertex_response(
     contents,
     config=None,
@@ -49,7 +76,7 @@ def generate_vertex_response(
         response = client.models.generate_content(
             model=VERTEX_AI_MODEL,
             contents=contents,
-            config=config,
+            config=_vertex_compatible_config(config),
         )
         if not (getattr(response, "text", None) or "").strip():
             raise RuntimeError("Vertex AI returned an empty response")

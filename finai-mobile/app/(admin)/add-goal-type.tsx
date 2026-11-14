@@ -1,8 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  View, Text, TextInput, TouchableOpacity, StyleSheet, 
-  Alert, StatusBar, KeyboardAvoidingView, Platform
-} from 'react-native';
+import { View, Text, TextInput, TouchableOpacity, StyleSheet, StatusBar, KeyboardAvoidingView, Platform } from 'react-native';
+import { Alert } from '../../utils/FinAIAlert';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,6 +9,7 @@ import { API_URL } from '../../config';
 import { useAuth } from '../../context/AuthContext';
 import { getGoalEmoji } from '../../utils/goalEmoji';
 import EmojiPicker from '../../components/EmojiPicker';
+import { userFacingError } from '../../utils/userFacingError';
 
 const DEEP_GREEN = '#1c3c36';
 const TEAL = '#3D7D6C';
@@ -51,10 +50,11 @@ export default function AddGoalTypeScreen() {
       } else if (response.status === 401) {
         Alert.alert("Session Expired", "Please log in again.");
       } else {
-        Alert.alert('Could not save goal type', 'Please try again.');
+        const data = await response.json().catch(() => ({}));
+        Alert.alert('Could not save goal type', userFacingError(data.detail, 'FinAI could not save this goal type. Check the name and try again.'));
       }
     } catch (error) {
-      Alert.alert("Error", "Check your internet connection and try again.");
+      Alert.alert('Could not save goal type', 'FinAI could not reach the server. Check your connection and try again.');
     }
   };
 

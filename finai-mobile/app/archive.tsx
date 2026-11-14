@@ -1,5 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { StyleSheet, Text, View, FlatList, TouchableOpacity, Alert, StatusBar, ActivityIndicator } from 'react-native';
+import { StyleSheet, Text, View, FlatList, TouchableOpacity, StatusBar, ActivityIndicator } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -12,6 +13,7 @@ import { getCategoryEmoji } from '../utils/categoryEmoji';
 import { getGoalEmoji } from '../utils/goalEmoji';
 import { getDisplayEmoji } from '../components/EmojiPicker';
 import { getSecureItem } from '../utils/secureStorage';
+import { displayTransactionNote } from '../utils/transactionNote';
 
 
 // ---- FINAI BRAND TOKENS ----
@@ -24,6 +26,12 @@ const INCOME = '#10B981';
 const EXPENSE = '#FF6259';
 
 type ArchiveTab = 'Transactions' | 'Accounts' | 'Goals' | 'Bills';
+const archiveItemLabel = (tab: ArchiveTab) => ({
+  Transactions: 'transaction',
+  Accounts: 'account',
+  Goals: 'goal',
+  Bills: 'bill',
+}[tab]);
 
 // Same peso formatter style as the other screens (sign is handled by the caller).
 const peso = (value: number, fixed = false) =>
@@ -145,22 +153,28 @@ export default function ArchiveScreen() {
       const res = await fetch(endpoint, { method, headers: { Authorization: `Bearer ${token || ''}` } });
       const result = await res.json().catch(() => ({}));
       if (res.ok) {
-        Alert.alert('Restored', 'The item is back in the active list.');
+        const label = archiveItemLabel(activeTab);
+        Alert.alert(`${label[0].toUpperCase()}${label.slice(1)} restored`, `This ${label} is back in your active list.`);
         fetchArchivedData();
       } else {
-        Alert.alert('Cannot restore item', userFacingError(result.detail, 'Please check its linked account and try again.'));
+        const label = archiveItemLabel(activeTab);
+        Alert.alert(`Could not restore ${label}`, userFacingError(result.detail, `FinAI could not restore this ${label}. Check its linked records and try again.`));
       }
     } catch (error) {
-      Alert.alert('Cannot restore item', 'Check your connection and try again.');
+      const label = archiveItemLabel(activeTab);
+      Alert.alert(`Could not restore ${label}`, 'FinAI could not reach the server. Check your connection and try again.');
     } finally {
       setBusyId(null);
     }
   };
 
   const handlePermanentDelete = (id: string) => {
+    const label = archiveItemLabel(activeTab);
     Alert.alert(
       'Permanent Delete',
-      'Are you sure you want to permanently delete this item? This action cannot be undone.',
+      activeTab === 'Goals'
+        ? 'Are you sure you want to permanently delete this goal? Goals with linked transactions stay in Archive to preserve their history.'
+        : 'Are you sure you want to permanently delete this item? This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -181,10 +195,18 @@ export default function ArchiveScreen() {
               if (res.ok) {
                 fetchArchivedData();
               } else {
-                Alert.alert('Cannot delete item', userFacingError(result.detail, 'Please try again.'));
+                Alert.alert(
+                  `Could not permanently delete ${label}`,
+                  userFacingError(
+                    result.detail,
+                    activeTab === 'Goals'
+                      ? 'This goal may have remaining funds or linked transaction history. Keep it in Archive to preserve its records.'
+                      : `FinAI could not permanently delete this archived ${label}. Refresh the list and try again.`,
+                  ),
+                );
               }
             } catch (error) {
-              Alert.alert('Cannot delete item', 'Check your connection and try again.');
+              Alert.alert(`Could not permanently delete ${label}`, 'FinAI could not reach the server. Check your connection and try again.');
             } finally {
               setBusyId(null);
             }
@@ -302,7 +324,7 @@ export default function ArchiveScreen() {
             let primaryLine = '';
             let metaLine = '';
             if (activeTab === 'Transactions') {
-              primaryLine = item.note || '';
+              primaryLine = displayTransactionNote(item.note);
               metaLine = [formatDate(item.date), item.account].filter(Boolean).join(' · ');
             } else if (activeTab === 'Accounts') {
               primaryLine = `Initial balance ${peso(item.initial_balance || 0)}`;
@@ -310,8 +332,9 @@ export default function ArchiveScreen() {
               primaryLine = item.category || 'Scheduled bill';
               metaLine = `Due day ${item.due_day} each month`;
             } else {
-              primaryLine = `Target ${peso(item.target_amount || 0)}`;
-              metaLine = item.target_date ? `By ${formatDate(item.target_date)}` : '';
+              const goalStatus = item.status || (Number(item.current_savings || 0) >= Number(item.target_amount || 0) ? 'target_reached' : 'active');
+              primaryLine = `Target ${peso(item.target_amount || 0)} · Funds remaining ${peso(item.current_savings || 0)}`;
+              metaLine = [goalStatus === 'completed' ? 'Goal completed' : goalStatus === 'target_reached' ? 'Target reached' : '', item.target_date ? `By ${formatDate(item.target_date)}` : ''].filter(Boolean).join(' · ');
             }
             const archivedOn = item.archived_at ? `Archived ${formatDate(item.archived_at)}` : '';
 
@@ -383,10 +406,10 @@ const styles = StyleSheet.create({
   headerTitle: { color: '#FFFFFF', fontSize: 22, fontWeight: '800', letterSpacing: -0.3, textAlign: 'center' },
   headerSubtitle: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '600', marginTop: 2, textAlign: 'center' },
 
-  tabContainer: { flexDirection: 'row', gap: 6, backgroundColor: 'rgba(255,255,255,0.12)', padding: 4, borderRadius: 24 },
-  navTab: { flex: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, paddingVertical: 9, borderRadius: 20 },
+  tabContainer: { flexDirection: 'row', flexWrap: 'wrap', columnGap: 6, rowGap: 6, backgroundColor: 'rgba(255,255,255,0.12)', padding: 4, borderRadius: 20 },
+  navTab: { flexBasis: '47%', flexGrow: 1, flexShrink: 0, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', gap: 6, minHeight: 38, paddingHorizontal: 8, paddingVertical: 8, borderRadius: 18 },
   activeNavTab: { backgroundColor: GOLD },
-  navTabText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700', flexShrink: 1 },
+  navTabText: { color: 'rgba(255,255,255,0.7)', fontSize: 12, fontWeight: '700', flexShrink: 0 },
   activeNavTabText: { color: DEEP_GREEN, fontWeight: '800' },
   tabCount: { minWidth: 18, height: 18, borderRadius: 9, paddingHorizontal: 5, backgroundColor: 'rgba(255,255,255,0.2)', alignItems: 'center', justifyContent: 'center' },
   tabCountActive: { backgroundColor: DEEP_GREEN },

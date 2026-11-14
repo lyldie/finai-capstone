@@ -1,9 +1,6 @@
 import React, { useEffect, useState } from 'react';
-import { 
-  View, TextInput, TouchableOpacity, Alert, StyleSheet, Text, 
-  ScrollView, StatusBar, Image, KeyboardAvoidingView, Platform, Modal,
-  ActivityIndicator, Keyboard 
-} from 'react-native';
+import { View, TextInput, TouchableOpacity, StyleSheet, Text, ScrollView, StatusBar, Image, KeyboardAvoidingView, Platform, Modal, ActivityIndicator, Keyboard } from 'react-native';
+import { Alert } from '../utils/FinAIAlert';
 import { useRouter, Stack } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Checkbox } from 'expo-checkbox'; 
@@ -78,10 +75,6 @@ export default function SignupScreen() {
   const passwordHasSymbol = /[^A-Za-z0-9]/.test(password);
 
   const handleGoogleSignUp = async (idToken: string) => {
-    if (!isAgree) {
-      Alert.alert('Terms and privacy', 'Review and accept the Terms & Privacy statement before continuing.');
-      return;
-    }
     setLoading(true);
     try {
       const response = await fetch(`${API_URL}/google-signin`, {
@@ -123,6 +116,27 @@ export default function SignupScreen() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const confirmGoogleSignupTerms = async () => {
+    if (isAgree) return true;
+    return new Promise<boolean>((resolve) => {
+      Alert.alert(
+        'Terms & Privacy',
+        'Before FinAI creates your account, please agree to the Terms of Use and acknowledge the Privacy Notice shown on this signup screen.',
+        [
+          { text: 'Not now', style: 'cancel', onPress: () => resolve(false) },
+          {
+            text: 'Agree & continue',
+            onPress: () => {
+              setAgree(true);
+              resolve(true);
+            },
+          },
+        ],
+        { cancelable: false },
+      );
+    });
   };
 
   const handleSignup = async () => {
@@ -203,7 +217,7 @@ export default function SignupScreen() {
           );
           return;
         }
-        Alert.alert('Registration failed', userFacingError(data.detail, 'We could not create your account. Please try again.'));
+        Alert.alert('Could not create account', userFacingError(data.detail, 'FinAI could not create your account. Check the details and try again.'));
       }
     } catch (e) {
       Alert.alert('Connection error', 'Could not reach the server. Check your connection and try again.');
@@ -273,6 +287,7 @@ export default function SignupScreen() {
             editable={!loading}
           />
         </View>
+        <Text style={styles.emailHint}>Use an email address you can access. FinAI checks that its domain can receive email before sending a verification code.</Text>
 
         {/* Password with Eye Toggle */}
         <View style={styles.inputWrapper}>
@@ -359,8 +374,12 @@ export default function SignupScreen() {
         </TouchableOpacity>
         {!isExpoGo && <>
           <View style={styles.orRow}><View style={styles.orLine} /><Text style={styles.orText}>OR</Text><View style={styles.orLine} /></View>
-          <GoogleSignInButton disabled={loading || !isAgree} onIdToken={handleGoogleSignUp} />
-          {!isAgree && <Text style={styles.googleTermsHint}>Accept the Terms & Privacy statement above to continue with Google.</Text>}
+          {!isAgree && <Text style={styles.googleTermsHint}>Choose your Google account first. We’ll ask you to accept the Terms & Privacy before creating your FinAI account.</Text>}
+          <GoogleSignInButton
+            disabled={loading}
+            onGoogleAccountSelected={confirmGoogleSignupTerms}
+            onIdToken={handleGoogleSignUp}
+          />
         </>}
 
         {/* Footer Link */}
@@ -457,6 +476,7 @@ const styles = StyleSheet.create({
   inputWrapper: { flexDirection: 'row', alignItems: 'center', borderRadius: 30, borderWidth: 1.5, borderColor: TEAL, marginBottom: 15, paddingHorizontal: 20, height: 55 },
   icon: { marginRight: 10 },
   input: { flex: 1, color: DEEP_GREEN, fontSize: 16 },
+  emailHint: { color: SAGE, fontSize: 11, lineHeight: 16, marginTop: -8, marginBottom: 12, marginHorizontal: 8 },
   passwordGuidance: { marginTop: -8, marginBottom: 12, marginLeft: 8 },
   passwordStrength: { fontSize: 12, fontWeight: '700', marginBottom: 5 },
   passwordRule: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 3 },

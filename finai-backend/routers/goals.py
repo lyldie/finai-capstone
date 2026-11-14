@@ -12,51 +12,53 @@ from services.budget_service import ph_today
 
 router = APIRouter(prefix="/api/goals", tags=["Goals"])
 
+
+def _goal_status(goal: dict) -> str:
+    status_value = goal.get("status")
+    if status_value in {"completed", "target_reached"}:
+        return status_value
+    if float(goal.get("current_savings", 0) or 0) >= float(goal.get("target_amount", 0) or 0) > 0:
+        return "target_reached"
+    return "active"
+
+
+def _goal_response(goal: dict) -> GoalResponse:
+    return GoalResponse(
+        id=str(goal["_id"]),
+        user_id=goal.get("user_id", ""),
+        goal_type_id=goal.get("goal_type_id", ""),
+        target_name=goal.get("target_name", ""),
+        target_amount=float(goal.get("target_amount", 0.0)),
+        current_savings=float(goal.get("current_savings", 0.0)),
+        target_date=goal.get("target_date", ""),
+        is_archived=goal.get("is_archived", False),
+        client_request_id=goal.get("client_request_id"),
+        status=_goal_status(goal),
+        target_reached_at=goal.get("target_reached_at"),
+        completed_at=goal.get("completed_at"),
+    )
+
 # 1. GET ALL GOALS BY USER (FIXED: Added archived filter support)
 @router.get("/", response_model=list[GoalResponse])
 async def get_user_goals(user_id: str, archived: Optional[bool] = False, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     query = {"user_id": user_id}
-    # Kunin lang kung archived o hindi depende sa query param
+    # Include archived goals only when requested by the query parameter.
     query["is_archived"] = True if archived else {"$ne": True}
 
     goals = []
     async for g in db.goals.find(query):
-        goals.append(
-            GoalResponse(
-                id=str(g["_id"]),
-                user_id=g.get("user_id", ""),
-                goal_type_id=g.get("goal_type_id", ""),
-                target_name=g.get("target_name", ""),
-                target_amount=float(g.get("target_amount", 0.0)),
-                current_savings=float(g.get("current_savings", 0.0)),
-                target_date=g.get("target_date", ""),
-                is_archived=g.get("is_archived", False),
-                client_request_id=g.get("client_request_id"),
-            )
-        )
+        goals.append(_goal_response(g))
     return goals
 
 
-# 2. GET ARCHIVED GOALS SPECIFIC ENDPOINT (Para hindi mag-404 sa archive.tsx)
+# 2. GET ARCHIVED GOALS SPECIFIC ENDPOINT
 @router.get("/archived/{user_id}", response_model=list[GoalResponse])
 async def get_archived_goals(user_id: str, current_user: dict = Depends(get_current_user)):
     user_id = current_user["id"]
     goals = []
     async for g in db.goals.find({"user_id": user_id, "is_archived": True}):
-        goals.append(
-            GoalResponse(
-                id=str(g["_id"]),
-                user_id=g.get("user_id", ""),
-                goal_type_id=g.get("goal_type_id", ""),  
-                target_name=g.get("target_name", ""),
-                target_amount=float(g.get("target_amount", 0.0)),
-                current_savings=float(g.get("current_savings", 0.0)),
-                target_date=g.get("target_date", ""),
-                is_archived=g.get("is_archived", False),
-                client_request_id=g.get("client_request_id"),
-            )
-        )
+        goals.append(_goal_response(g))
     return goals
 
 
@@ -69,14 +71,7 @@ async def create_goal(goal: GoalCreate, current_user: dict = Depends(get_current
             "client_request_id": goal.client_request_id,
         })
         if existing:
-            return GoalResponse(
-                id=str(existing["_id"]), user_id=existing.get("user_id", ""),
-                goal_type_id=existing.get("goal_type_id", ""), target_name=existing.get("target_name", ""),
-                target_amount=float(existing.get("target_amount", 0)),
-                current_savings=float(existing.get("current_savings", 0)),
-                target_date=existing.get("target_date", ""), is_archived=existing.get("is_archived", False),
-                client_request_id=existing.get("client_request_id"),
-            )
+            return _goal_response(existing)
     try:
         goal_dict = goal.model_dump()
     except AttributeError:
@@ -107,17 +102,7 @@ async def create_goal(goal: GoalCreate, current_user: dict = Depends(get_current
     except Exception as exc:
         print(f"Could not evaluate proactive goal guidance for user {current_user['id']}: {exc}")
 
-    return GoalResponse(
-        id=str(created_goal["_id"]),
-        user_id=created_goal.get("user_id", ""),
-        goal_type_id=created_goal.get("goal_type_id", ""),
-        target_name=created_goal.get("target_name", ""),
-        target_amount=float(created_goal.get("target_amount", 0)),
-        current_savings=float(created_goal.get("current_savings", 0)),
-        target_date=created_goal.get("target_date", ""),
-        is_archived=created_goal.get("is_archived", False),
-        client_request_id=created_goal.get("client_request_id"),
-    )
+    return _goal_response(created_goal)
 
 
 # 4. UPDATE/EDIT GOAL (Full Update)
@@ -133,6 +118,8 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
         raise HTTPException(status_code=404, detail="Goal not found")
     if existing_goal.get("is_archived", False):
         raise HTTPException(status_code=409, detail="Restore this goal before editing it.")
+    if _goal_status(existing_goal) in {"target_reached", "completed"} and goal.target_amount != float(existing_goal.get("target_amount", 0) or 0):
+        raise HTTPException(status_code=409, detail="The target amount is locked after the goal has been reached.")
 
     try:
         goal_dict = goal.model_dump()
@@ -168,17 +155,7 @@ async def update_goal(goal_id: str, goal: GoalCreate, current_user: dict = Depen
     except Exception as exc:
         print(f"Could not evaluate proactive goal guidance for user {current_user['id']}: {exc}")
 
-    return GoalResponse(
-        id=str(updated["_id"]),
-        user_id=updated.get("user_id", ""),
-        goal_type_id=updated.get("goal_type_id", ""),
-        target_name=updated.get("target_name", ""),
-        target_amount=float(updated.get("target_amount", 0)),
-        current_savings=float(updated.get("current_savings", 0)),
-        target_date=updated.get("target_date", ""),
-        is_archived=updated.get("is_archived", False),
-        client_request_id=updated.get("client_request_id"),
-    )
+    return _goal_response(updated)
 
 
 # 5. ARCHIVE GOAL (Soft Delete)
@@ -236,11 +213,13 @@ async def permanent_delete_goal(goal_id: str, current_user: dict = Depends(get_c
     goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"], "is_archived": True})
     if not goal:
         raise HTTPException(status_code=404, detail="Archived goal not found")
+    if float(goal.get("current_savings", 0) or 0) > 0:
+        raise HTTPException(status_code=409, detail="This goal still has funds. Withdraw the remaining amount before permanently deleting it.")
     linked = await db.expenses.find_one({
         "user_id": current_user["id"], "goal_id": {"$in": [str(oid), oid]},
     })
     if linked:
-        raise HTTPException(status_code=409, detail="This goal has contribution history and cannot be permanently deleted.")
+        raise HTTPException(status_code=409, detail="This goal has linked contribution or withdrawal transactions, so it cannot be permanently deleted. Keep it in Archive to preserve its transaction history.")
     result = await db.goals.delete_one({"_id": oid, "user_id": current_user["id"], "is_archived": True})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Goal not found")
@@ -256,6 +235,9 @@ async def delete_goal(goal_id: str, current_user: dict = Depends(get_current_use
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid goal ID format")
 
+    goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"]})
+    if goal and float(goal.get("current_savings", 0) or 0) > 0:
+        raise HTTPException(status_code=409, detail="Withdraw the remaining goal funds before deleting this goal.")
     linked = await db.expenses.find_one({
         "user_id": current_user["id"], "goal_id": {"$in": [str(oid), oid]},
     })
@@ -266,6 +248,29 @@ async def delete_goal(goal_id: str, current_user: dict = Depends(get_current_use
         return {"status": "Success", "message": "Goal already deleted"}
         
     return {"message": "Goal deleted successfully"}
+
+
+@router.patch("/{goal_id}/complete")
+async def complete_goal(goal_id: str, current_user: dict = Depends(get_current_user)):
+    try:
+        oid = ObjectId(goal_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid goal ID format") from exc
+    goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"]})
+    if not goal:
+        raise HTTPException(status_code=404, detail="Goal not found")
+    if goal.get("is_archived", False):
+        raise HTTPException(status_code=409, detail="Restore this goal before marking it complete.")
+    if _goal_status(goal) == "active":
+        raise HTTPException(status_code=409, detail="Reach the savings target before marking this goal complete.")
+    if _goal_status(goal) == "completed":
+        return {"status": "Success", "message": "Goal is already complete."}
+    now = datetime.utcnow()
+    await db.goals.update_one(
+        {"_id": oid, "user_id": current_user["id"], "status": {"$ne": "completed"}},
+        {"$set": {"status": "completed", "completed_at": now}},
+    )
+    return {"status": "Success", "message": "Goal marked complete.", "completed_at": now.isoformat()}
 
 
 # 9. PATCH DEPOSIT TO GOAL
@@ -286,6 +291,8 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
     goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}})
     if not goal:
         raise HTTPException(status_code=404, detail="Goal not found")
+    if _goal_status(goal) != "active":
+        raise HTTPException(status_code=409, detail="This goal has reached its target and no longer accepts contributions.")
 
     account_name = deposit.account.strip()
     if not account_name:
@@ -308,7 +315,7 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         "category": "Goal Contribution",
         "title": f"Contribution for {goal.get('target_name')}",
         "item_name": f"Contribution for {goal.get('target_name')}",
-        "note": f"Inihulog sa goal: {goal.get('target_name')}",
+        "note": f"Contribution to goal: {goal.get('target_name')}",
         "type": "Contribution",
         "account": account.get("name", account_name),
         "account_id": str(account["_id"]), "to_account": None, "to_account_id": None, "category_id": None,
@@ -325,6 +332,8 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
         )
         if not current_goal:
             raise HTTPException(status_code=404, detail="Goal not found")
+        if _goal_status(current_goal) != "active":
+            raise HTTPException(status_code=409, detail="This goal has reached its target and no longer accepts contributions.")
         current_account = await db.accounts.find_one(
             {"_id": account["_id"], "is_archived": {"$ne": True}}, session=session
         )
@@ -338,9 +347,13 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
             raise HTTPException(status_code=409, detail="The selected account does not have enough balance for this contribution.")
         inserted = await db.expenses.insert_one(expense_log, session=session)
         expense_log["_id"] = inserted.inserted_id
+        new_savings = float(current_goal.get("current_savings", 0) or 0) + deposit.amount
+        goal_update = {"current_savings": new_savings}
+        if new_savings >= float(current_goal.get("target_amount", 0) or 0):
+            goal_update.update({"status": "target_reached", "target_reached_at": datetime.utcnow()})
         await db.goals.update_one(
             {"_id": oid, "user_id": current_user["id"], "is_archived": {"$ne": True}},
-            {"$inc": {"current_savings": deposit.amount}}, session=session,
+            {"$set": goal_update}, session=session,
         )
     try:
         async with await db.client.start_session() as session:
@@ -352,10 +365,13 @@ async def deposit_to_goal(goal_id: str, deposit: GoalDeposit, current_user: dict
     updated_goal = await db.goals.find_one({"_id": oid, "user_id": current_user["id"]})
     if updated_goal:
         from . import advisor
-        await advisor.queue_proactive_goal_milestone(
-            current_user["id"], goal, float(goal.get("current_savings", 0) or 0),
-            float(updated_goal.get("current_savings", 0) or 0),
-        )
+        try:
+            await advisor.queue_proactive_goal_milestone(
+                current_user["id"], goal, float(goal.get("current_savings", 0) or 0),
+                float(updated_goal.get("current_savings", 0) or 0),
+            )
+        except Exception as exc:
+            print(f"Could not queue goal milestone message for user {current_user['id']}: {exc}")
     return {"status": "Success", "id": str(expense_log["_id"]), "message": f"Successfully deposited ₱{deposit.amount} to {goal.get('target_name')}"}
 
 
